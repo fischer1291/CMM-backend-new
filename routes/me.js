@@ -12,21 +12,19 @@ function normalizePhone(phone) {
 
 // GET /me?phone=...
 router.get("/", async (req, res) => {
-  const { phone } = req.query;
-  console.log("📞 Anfrage erhalten mit phone:", phone);
-
+  let { phone } = req.query;
   if (!phone)
     return res
       .status(400)
       .json({ success: false, error: "Phone number required" });
 
+  phone = normalizePhone(phone);
+  console.log("📞 Normalized phone:", phone);
+
   try {
     const user = await User.findOne({ phone });
-
-    if (!user) {
-      console.log("❌ Kein User gefunden mit phone:", phone);
+    if (!user)
       return res.status(404).json({ success: false, error: "User not found" });
-    }
 
     res.json({
       success: true,
@@ -37,19 +35,19 @@ router.get("/", async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("❌ Fehler in /me:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
 // POST /me/update
 router.post("/update", async (req, res) => {
-  const { phone, name, avatarUrl } = req.body;
+  let { phone, name, avatarUrl } = req.body;
   if (!phone)
     return res
       .status(400)
       .json({ success: false, error: "Phone number is required" });
 
+  phone = normalizePhone(phone);
   try {
     const user = await User.findOneAndUpdate(
       { phone },
