@@ -1,6 +1,7 @@
 const express = require("express");
 const User = require("../models/User");
-const fetch = require("node-fetch"); // notwendig für Expo Push API
+const fetch = (...args) =>
+  import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 module.exports = (io) => {
   const router = express.Router();
