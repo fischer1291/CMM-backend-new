@@ -1,8 +1,9 @@
 const mongoose = require("mongoose");
 
-const UserSchema = new mongoose.Schema({
-  phone: { type: String, unique: true },
-  isAvailable: { type: Boolean, default: true },
+const userSchema = new mongoose.Schema({
+  phone: { type: String, required: true, unique: true },
+  isAvailable: { type: Boolean, default: false },
+  pushToken: { type: String }, // ✅ NEU
 });
 
-module.exports = mongoose.model("User", UserSchema);
+module.exports = mongoose.model("User", userSchema);
