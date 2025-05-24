@@ -2,6 +2,14 @@ const express = require("express");
 const router = express.Router();
 const User = require("../models/User");
 
+function normalizePhone(phone) {
+  return phone
+    .trim()
+    .replace(/^00/, "+")
+    .replace(/^(\s*)/, "")
+    .replace(/^(?!\+)/, "+");
+}
+
 // GET /me?phone=...
 router.get("/", async (req, res) => {
   const { phone } = req.query;
