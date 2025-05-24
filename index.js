@@ -31,6 +31,7 @@ app.use("/auth", require("./routes/auth"));
 app.use("/contacts", require("./routes/contacts"));
 app.use("/status", require("./routes/status")(io)); // io wird übergeben
 app.use("/verify", require("./routes/verify"));
+app.use("/me", require("./routes/me"));
 
 // WebSocket Listener
 io.on("connection", (socket) => {
