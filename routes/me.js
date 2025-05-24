@@ -5,6 +5,8 @@ const User = require("../models/User");
 // GET /me?phone=...
 router.get("/", async (req, res) => {
   const { phone } = req.query;
+  console.log("📞 Anfrage erhalten mit phone:", phone);
+
   if (!phone)
     return res
       .status(400)
@@ -12,8 +14,11 @@ router.get("/", async (req, res) => {
 
   try {
     const user = await User.findOne({ phone });
-    if (!user)
+
+    if (!user) {
+      console.log("❌ Kein User gefunden mit phone:", phone);
       return res.status(404).json({ success: false, error: "User not found" });
+    }
 
     res.json({
       success: true,
@@ -24,6 +29,7 @@ router.get("/", async (req, res) => {
       },
     });
   } catch (err) {
+    console.error("❌ Fehler in /me:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
