@@ -31,7 +31,6 @@ module.exports = (io) => {
       // ✅ Nur bei Aktivierung: Push an andere senden
       if (isAvailable) {
         const contacts = await User.find({
-          isAvailable: true,
           pushToken: { $ne: null },
           phone: { $ne: user.phone },
         });
