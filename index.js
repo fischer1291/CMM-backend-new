@@ -4,6 +4,7 @@ const dotenv = require("dotenv");
 const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
+const momentRoutes = require("./routes/moment");
 
 dotenv.config();
 
@@ -32,6 +33,7 @@ app.use("/contacts", require("./routes/contacts"));
 app.use("/status", require("./routes/status")(io)); // io wird übergeben
 app.use("/verify", require("./routes/verify"));
 app.use("/me", require("./routes/me"));
+app.use("/moment", momentRoutes);
 
 // WebSocket Listener
 io.on("connection", (socket) => {

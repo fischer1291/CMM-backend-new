@@ -6,7 +6,8 @@ const userSchema = new mongoose.Schema({
   pushToken: { type: String },
   name: String,
   avatarUrl: String,
-  lastOnline: { type: Date, default: null }, // ✅ Neu
+  lastOnline: { type: Date, default: null },
+  momentActiveUntil: { type: Date, default: null },
 });
 
 module.exports = mongoose.model("User", userSchema);
