@@ -32,6 +32,7 @@ router.get("/", async (req, res) => {
         phone: user.phone,
         name: user.name || "",
         avatarUrl: user.avatarUrl || "",
+        lastOnline: user.lastOnline || null, // ✅ hinzugefügt
       },
     });
   } catch (err) {
@@ -58,7 +59,15 @@ router.post("/update", async (req, res) => {
     if (!user)
       return res.status(404).json({ success: false, error: "User not found" });
 
-    res.json({ success: true, user });
+    res.json({
+      success: true,
+      user: {
+        phone: user.phone,
+        name: user.name || "",
+        avatarUrl: user.avatarUrl || "",
+        lastOnline: user.lastOnline || null, // ✅ optional auch hier mitliefern
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
