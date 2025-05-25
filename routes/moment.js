@@ -44,7 +44,6 @@ router.post("/push-broadcast", async (req, res) => {
       isAvailable: false, // Nur Nutzer, die NICHT erreichbar sind
     });
 
-    // 🔁 Filter: max 1x pro Tag
     users = users.filter((u) => !wasInvitedToday(u.lastMomentInvite));
 
     const selected = shuffleArray(users).slice(0, 10);
@@ -63,14 +62,12 @@ router.post("/push-broadcast", async (req, res) => {
       data: { type: "callMeMoment" },
     }));
 
-    // Update Invite Timestamp
     await Promise.all(
       selected.map((u) =>
         User.findByIdAndUpdate(u._id, { lastMomentInvite: new Date() }),
       ),
     );
 
-    // Push senden
     const fetch = (...args) =>
       import("node-fetch").then(({ default: fetch }) => fetch(...args));
     const response = await fetch("https://exp.host/--/api/v2/push/send", {
@@ -100,6 +97,7 @@ router.post("/confirm", async (req, res) => {
 
   try {
     const normalizedPhone = normalizePhone(phone);
+    const activeUntil = new Date(Date.now() + 15 * 60 * 1000);
 
     const user = await User.findOneAndUpdate(
       { phone: normalizedPhone },
@@ -107,6 +105,7 @@ router.post("/confirm", async (req, res) => {
         isAvailable: true,
         mood: mood || null,
         lastOnline: new Date(),
+        momentActiveUntil: activeUntil,
       },
       { new: true },
     );
@@ -115,14 +114,12 @@ router.post("/confirm", async (req, res) => {
       return res.status(404).json({ success: false, error: "User not found" });
     }
 
-    // WebSocket: Status-Update an alle
     req.app.get("io").emit("statusUpdate", {
       phone: user.phone,
       isAvailable: true,
       mood: user.mood || null,
     });
 
-    // Auto-Deaktivierung nach 15 Minuten
     setTimeout(
       async () => {
         await User.findOneAndUpdate(
@@ -131,6 +128,7 @@ router.post("/confirm", async (req, res) => {
             isAvailable: false,
             lastOnline: new Date(),
             mood: null,
+            momentActiveUntil: null,
           },
         );
 
@@ -142,7 +140,7 @@ router.post("/confirm", async (req, res) => {
         console.log(`⏱️ Auto-offline for ${normalizedPhone}`);
       },
       15 * 60 * 1000,
-    ); // 15 min
+    ); // 15 Minuten
 
     res.json({ success: true, user });
   } catch (err) {
