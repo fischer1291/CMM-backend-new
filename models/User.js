@@ -8,6 +8,8 @@ const userSchema = new mongoose.Schema({
   avatarUrl: String,
   lastOnline: { type: Date, default: null },
   momentActiveUntil: { type: Date, default: null },
+  mood: { type: String, default: null },
+  lastMomentInvite: { type: Date },
 });
 
 module.exports = mongoose.model("User", userSchema);
