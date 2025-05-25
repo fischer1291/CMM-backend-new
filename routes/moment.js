@@ -39,7 +39,10 @@ router.post("/push-broadcast", async (req, res) => {
   }
 
   try {
-    let users = await User.find({ pushToken: { $ne: null } });
+    let users = await User.find({
+      pushToken: { $ne: null },
+      isAvailable: false, // Nur Nutzer, die NICHT erreichbar sind
+    });
 
     // 🔁 Filter: max 1x pro Tag
     users = users.filter((u) => !wasInvitedToday(u.lastMomentInvite));
