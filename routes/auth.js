@@ -2,9 +2,27 @@ const express = require("express");
 const router = express.Router();
 const User = require("../models/User");
 
+// 📞 Telefonnummer vereinheitlichen
+function normalizePhone(phone) {
+  return phone
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/^00/, "+")
+    .replace(/^(\s*)/, "")
+    .replace(/^(?!\+)/, "+");
+}
+
 // ✅ Registrierung mit Telefonnummer
 router.post("/register", async (req, res) => {
-  const { phone } = req.body;
+  let { phone } = req.body;
+  if (!phone) {
+    return res
+      .status(400)
+      .json({ success: false, error: "Phone number required" });
+  }
+
+  phone = normalizePhone(phone);
+
   try {
     let user = await User.findOne({ phone });
     if (!user) {
@@ -19,7 +37,15 @@ router.post("/register", async (req, res) => {
 
 // ✅ Push Token speichern
 router.post("/push-token", async (req, res) => {
-  const { phone, pushToken } = req.body;
+  let { phone, pushToken } = req.body;
+  if (!phone || !pushToken) {
+    return res
+      .status(400)
+      .json({ success: false, error: "Phone and pushToken required" });
+  }
+
+  phone = normalizePhone(phone);
+
   try {
     const user = await User.findOneAndUpdate(
       { phone },
@@ -37,4 +63,4 @@ router.post("/push-token", async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = router;^

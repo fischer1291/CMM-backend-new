@@ -5,26 +5,29 @@ const User = require("../models/User");
 function normalizePhone(phone) {
   return phone
     .trim()
+    .replace(/\s+/g, "")
     .replace(/^00/, "+")
     .replace(/^(\s*)/, "")
     .replace(/^(?!\+)/, "+");
 }
 
-// GET /me?phone=...
+// ✅ GET /me?phone=...
 router.get("/", async (req, res) => {
   let { phone } = req.query;
-  if (!phone)
+  if (!phone) {
     return res
       .status(400)
       .json({ success: false, error: "Phone number required" });
+  }
 
   phone = normalizePhone(phone);
   console.log("📞 Normalized phone:", phone);
 
   try {
     const user = await User.findOne({ phone });
-    if (!user)
+    if (!user) {
       return res.status(404).json({ success: false, error: "User not found" });
+    }
 
     res.json({
       success: true,
@@ -32,7 +35,8 @@ router.get("/", async (req, res) => {
         phone: user.phone,
         name: user.name || "",
         avatarUrl: user.avatarUrl || "",
-        lastOnline: user.lastOnline || null, // ✅ hinzugefügt
+        lastOnline: user.lastOnline || null,
+        momentActiveUntil: user.momentActiveUntil || null, // ✅ optional
       },
     });
   } catch (err) {
@@ -40,15 +44,17 @@ router.get("/", async (req, res) => {
   }
 });
 
-// POST /me/update
+// ✅ POST /me/update
 router.post("/update", async (req, res) => {
   let { phone, name, avatarUrl } = req.body;
-  if (!phone)
+  if (!phone) {
     return res
       .status(400)
       .json({ success: false, error: "Phone number is required" });
+  }
 
   phone = normalizePhone(phone);
+
   try {
     const user = await User.findOneAndUpdate(
       { phone },
@@ -56,8 +62,9 @@ router.post("/update", async (req, res) => {
       { new: true, upsert: false },
     );
 
-    if (!user)
+    if (!user) {
       return res.status(404).json({ success: false, error: "User not found" });
+    }
 
     res.json({
       success: true,
@@ -65,7 +72,8 @@ router.post("/update", async (req, res) => {
         phone: user.phone,
         name: user.name || "",
         avatarUrl: user.avatarUrl || "",
-        lastOnline: user.lastOnline || null, // ✅ optional auch hier mitliefern
+        lastOnline: user.lastOnline || null,
+        momentActiveUntil: user.momentActiveUntil || null,
       },
     });
   } catch (err) {

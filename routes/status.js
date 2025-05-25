@@ -3,12 +3,29 @@ const User = require("../models/User");
 const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
+function normalizePhone(phone) {
+  return phone
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/^00/, "+")
+    .replace(/^(\s*)/, "")
+    .replace(/^(?!\+)/, "+");
+}
+
 module.exports = (io) => {
   const router = express.Router();
 
   // ✅ Status setzen
   router.post("/set", async (req, res) => {
-    const { phone, isAvailable } = req.body;
+    let { phone, isAvailable } = req.body;
+    if (!phone) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Phone number required" });
+    }
+
+    phone = normalizePhone(phone);
+
     try {
       const updateFields = { isAvailable };
       if (!isAvailable) {
@@ -68,7 +85,15 @@ module.exports = (io) => {
 
   // ✅ Status abfragen
   router.get("/get", async (req, res) => {
-    const { phone } = req.query;
+    let { phone } = req.query;
+    if (!phone) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Phone number required" });
+    }
+
+    phone = normalizePhone(phone);
+
     try {
       const user = await User.findOne({ phone });
       if (!user) {
@@ -76,7 +101,11 @@ module.exports = (io) => {
           .status(404)
           .json({ success: false, error: "User nicht gefunden" });
       }
-      res.json({ success: true, isAvailable: user.isAvailable });
+      res.json({
+        success: true,
+        isAvailable: user.isAvailable,
+        lastOnline: user.lastOnline,
+      });
     } catch (err) {
       console.error("❌ Fehler bei Statusabfrage:", err);
       res.status(500).json({ success: false, error: err.message });

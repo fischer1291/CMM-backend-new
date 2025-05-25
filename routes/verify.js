@@ -7,9 +7,25 @@ const client = twilio(
   process.env.TWILIO_AUTH_TOKEN,
 );
 
+// 🔧 Telefonnummer vereinheitlichen
+function normalizePhone(phone) {
+  return phone
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/^00/, "+")
+    .replace(/^(\s*)/, "")
+    .replace(/^(?!\+)/, "+");
+}
+
 // 1. Code senden
 router.post("/start", async (req, res) => {
-  const { phone } = req.body;
+  let { phone } = req.body;
+  if (!phone)
+    return res
+      .status(400)
+      .json({ success: false, error: "Phone number required" });
+
+  phone = normalizePhone(phone);
   try {
     await client.verify.v2
       .services(process.env.TWILIO_VERIFY_SID)
@@ -22,7 +38,13 @@ router.post("/start", async (req, res) => {
 
 // 2. Code überprüfen
 router.post("/check", async (req, res) => {
-  const { phone, code } = req.body;
+  let { phone, code } = req.body;
+  if (!phone || !code)
+    return res
+      .status(400)
+      .json({ success: false, error: "Phone and code required" });
+
+  phone = normalizePhone(phone);
   try {
     const verification_check = await client.verify.v2
       .services(process.env.TWILIO_VERIFY_SID)

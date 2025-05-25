@@ -5,6 +5,7 @@ const User = require("../models/User");
 function normalizePhone(phone) {
   return phone
     .trim()
+    .replace(/\s+/g, "")
     .replace(/^00/, "+")
     .replace(/^(\s*)/, "")
     .replace(/^(?!\+)/, "+");
