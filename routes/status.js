@@ -10,11 +10,14 @@ module.exports = (io) => {
   router.post("/set", async (req, res) => {
     const { phone, isAvailable } = req.body;
     try {
-      const user = await User.findOneAndUpdate(
-        { phone },
-        { isAvailable },
-        { new: true },
-      );
+      const updateFields = { isAvailable };
+      if (!isAvailable) {
+        updateFields.lastOnline = new Date(); // ⬅️ Zeit speichern
+      }
+
+      const user = await User.findOneAndUpdate({ phone }, updateFields, {
+        new: true,
+      });
 
       if (!user) {
         return res
@@ -22,22 +25,21 @@ module.exports = (io) => {
           .json({ success: false, error: "User nicht gefunden" });
       }
 
-      // 🔔 WebSocket Broadcast an alle Clients
+      // 🔔 WebSocket senden
       io.emit("statusUpdate", {
         phone: user.phone,
         isAvailable: user.isAvailable,
+        lastOnline: user.lastOnline,
       });
 
-      // ✅ Nur bei Aktivierung: Push an andere senden
+      // ✅ Push senden nur bei Aktivierung
       if (isAvailable) {
         const contacts = await User.find({
           pushToken: { $ne: null },
           phone: { $ne: user.phone },
         });
 
-        if (contacts.length === 0) {
-          console.log("ℹ️ Keine Kontakte zum Benachrichtigen");
-        } else {
+        if (contacts.length > 0) {
           const messages = contacts.map((c) => ({
             to: c.pushToken,
             sound: "default",
@@ -46,7 +48,6 @@ module.exports = (io) => {
             data: { phone: user.phone },
           }));
 
-          // Expo Push API aufrufen
           const response = await fetch("https://exp.host/--/api/v2/push/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -54,10 +55,7 @@ module.exports = (io) => {
           });
 
           const result = await response.json();
-          console.log(
-            "✅ Expo Push Ergebnis:",
-            JSON.stringify(result, null, 2),
-          );
+          console.log("✅ Push Result:", JSON.stringify(result, null, 2));
         }
       }
 
