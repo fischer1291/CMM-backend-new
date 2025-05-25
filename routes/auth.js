@@ -12,9 +12,10 @@ function normalizePhone(phone) {
     .replace(/^(?!\+)/, "+");
 }
 
-// ✅ Registrierung mit Telefonnummer
+// ✅ Registrierung mit Telefonnummer und optionalem PushToken
 router.post("/register", async (req, res) => {
-  let { phone } = req.body;
+  let { phone, pushToken } = req.body;
+
   if (!phone) {
     return res
       .status(400)
@@ -25,19 +26,28 @@ router.post("/register", async (req, res) => {
 
   try {
     let user = await User.findOne({ phone });
+
     if (!user) {
-      user = new User({ phone });
+      user = new User({ phone, pushToken });
       await user.save();
+    } else {
+      // Update pushToken bei bestehendem User, falls vorhanden
+      if (pushToken) {
+        user.pushToken = pushToken;
+        await user.save();
+      }
     }
+
     res.json({ success: true, user });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ✅ Push Token speichern
+// ✅ Push Token separat speichern oder aktualisieren
 router.post("/push-token", async (req, res) => {
   let { phone, pushToken } = req.body;
+
   if (!phone || !pushToken) {
     return res
       .status(400)
@@ -52,11 +62,13 @@ router.post("/push-token", async (req, res) => {
       { pushToken },
       { new: true },
     );
+
     if (!user) {
       return res
         .status(404)
         .json({ success: false, error: "User nicht gefunden" });
     }
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
