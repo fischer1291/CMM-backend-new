@@ -6,6 +6,9 @@ const http = require("http");
 const { Server } = require("socket.io");
 const momentRoutes = require("./routes/moment");
 
+// Agora Token-Builder importieren
+const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
+
 dotenv.config();
 
 const AGORA_APP_ID = "ed6595c40c124d7597ab7a2888296fe0";
@@ -33,12 +36,12 @@ mongoose
 // Routen einbinden
 app.use("/auth", require("./routes/auth"));
 app.use("/contacts", require("./routes/contacts"));
-app.use("/status", require("./routes/status")(io)); // io wird übergeben
+app.use("/status", require("./routes/status")(io));
 app.use("/verify", require("./routes/verify"));
 app.use("/me", require("./routes/me"));
 app.use("/moment", momentRoutes);
 
-//Token Server
+// 🎯 Token Server für Agora
 app.post("/rtcToken", (req, res) => {
   const { channelName, uid, role } = req.body;
 
@@ -59,7 +62,7 @@ app.post("/rtcToken", (req, res) => {
       AGORA_APP_ID,
       AGORA_APP_CERTIFICATE,
       channelName,
-      uid,
+      parseInt(uid), // Agora erwartet UID als Zahl
       tokenRole,
       privilegeExpiredTs,
     );
@@ -77,13 +80,11 @@ const userSockets = new Map(); // phone => socket.id
 io.on("connection", (socket) => {
   console.log("🔌 WebSocket verbunden:", socket.id);
 
-  // Registrierung eines Nutzers mit seiner Telefonnummer
   socket.on("register", (phone) => {
     userSockets.set(phone, socket.id);
     console.log(`📱 User registriert: ${phone} → ${socket.id}`);
   });
 
-  // Handle eingehenden Call-Request
   socket.on("callRequest", ({ from, to, channel }) => {
     const targetSocketId = userSockets.get(to);
     if (targetSocketId) {
@@ -96,7 +97,6 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Handle Anruf-Annahme durch angerufenen User
   socket.on("acceptCall", ({ from, to, channel }) => {
     const targetSocketId = userSockets.get(from);
     if (targetSocketId) {
@@ -107,7 +107,6 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Optional: Handle Disconnect
   socket.on("disconnect", () => {
     for (let [phone, id] of userSockets.entries()) {
       if (id === socket.id) {
