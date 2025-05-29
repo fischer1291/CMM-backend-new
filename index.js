@@ -8,6 +8,9 @@ const momentRoutes = require("./routes/moment");
 
 dotenv.config();
 
+const AGORA_APP_ID = "ed6595c40c124d7597ab7a2888296fe0";
+const AGORA_APP_CERTIFICATE = "3fc8e469e8b241d3866c6a77aaec81ec";
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -34,6 +37,39 @@ app.use("/status", require("./routes/status")(io)); // io wird übergeben
 app.use("/verify", require("./routes/verify"));
 app.use("/me", require("./routes/me"));
 app.use("/moment", momentRoutes);
+
+//Token Server
+app.post("/rtcToken", (req, res) => {
+  const { channelName, uid, role } = req.body;
+
+  if (!channelName || uid === undefined) {
+    return res
+      .status(400)
+      .json({ error: "channelName und uid sind erforderlich" });
+  }
+
+  const tokenRole =
+    role === "publisher" ? RtcRole.PUBLISHER : RtcRole.SUBSCRIBER;
+  const expirationTimeInSeconds = 3600;
+  const currentTimestamp = Math.floor(Date.now() / 1000);
+  const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
+
+  try {
+    const token = RtcTokenBuilder.buildTokenWithUid(
+      AGORA_APP_ID,
+      AGORA_APP_CERTIFICATE,
+      channelName,
+      uid,
+      tokenRole,
+      privilegeExpiredTs,
+    );
+
+    return res.json({ token });
+  } catch (err) {
+    console.error("❌ Fehler beim Erstellen des Tokens:", err);
+    return res.status(500).json({ error: "Token-Generierung fehlgeschlagen" });
+  }
+});
 
 // 🔌 WebSocket Logic
 const userSockets = new Map(); // phone => socket.id
