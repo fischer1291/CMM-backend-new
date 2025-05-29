@@ -35,9 +35,52 @@ app.use("/verify", require("./routes/verify"));
 app.use("/me", require("./routes/me"));
 app.use("/moment", momentRoutes);
 
-// WebSocket Listener
+// 🔌 WebSocket Logic
+const userSockets = new Map(); // phone => socket.id
+
 io.on("connection", (socket) => {
   console.log("🔌 WebSocket verbunden:", socket.id);
+
+  // Registrierung eines Nutzers mit seiner Telefonnummer
+  socket.on("register", (phone) => {
+    userSockets.set(phone, socket.id);
+    console.log(`📱 User registriert: ${phone} → ${socket.id}`);
+  });
+
+  // Handle eingehenden Call-Request
+  socket.on("callRequest", ({ from, to, channel }) => {
+    const targetSocketId = userSockets.get(to);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("incomingCall", { from, channel });
+      console.log(
+        `📞 Weiterleitung: ${from} ruft ${to} an (Channel: ${channel})`,
+      );
+    } else {
+      console.log(`❌ User ${to} nicht verbunden.`);
+    }
+  });
+
+  // Handle Anruf-Annahme durch angerufenen User
+  socket.on("acceptCall", ({ from, to, channel }) => {
+    const targetSocketId = userSockets.get(from);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("startCall", { channel, from: to });
+      console.log(
+        `✅ Anruf angenommen von ${to}, Info an ${from} weitergeleitet`,
+      );
+    }
+  });
+
+  // Optional: Handle Disconnect
+  socket.on("disconnect", () => {
+    for (let [phone, id] of userSockets.entries()) {
+      if (id === socket.id) {
+        userSockets.delete(phone);
+        console.log(`❌ Disconnected: ${phone}`);
+        break;
+      }
+    }
+  });
 });
 
 // Start
