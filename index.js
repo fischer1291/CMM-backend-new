@@ -58,11 +58,12 @@ app.post("/rtcToken", (req, res) => {
   const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
 
   try {
-    const token = RtcTokenBuilder.buildTokenWithUid(
+    // ⛳ WICHTIG: UID als string verwenden (z. B. Telefonnummer)
+    const token = RtcTokenBuilder.buildTokenWithAccount(
       AGORA_APP_ID,
       AGORA_APP_CERTIFICATE,
       channelName,
-      parseInt(uid), // Agora erwartet UID als Zahl
+      String(uid),
       tokenRole,
       privilegeExpiredTs,
     );
