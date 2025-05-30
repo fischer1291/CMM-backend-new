@@ -41,11 +41,14 @@ app.use("/verify", require("./routes/verify"));
 app.use("/me", require("./routes/me"));
 app.use("/moment", momentRoutes);
 
-// 🎯 Token Server für Agora
+// 🎯 Token Server für Agora – überarbeitet mit Logging
 app.post("/rtcToken", (req, res) => {
   const { channelName, uid, role } = req.body;
 
+  console.log("📥 Token-Request empfangen:", { channelName, uid, role });
+
   if (!channelName || uid === undefined) {
+    console.warn("⚠️ Ungültige Anfrage – channelName oder uid fehlt");
     return res
       .status(400)
       .json({ error: "channelName und uid sind erforderlich" });
@@ -58,19 +61,38 @@ app.post("/rtcToken", (req, res) => {
   const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
 
   try {
-    // 🔒 Token mit Account (z. B. Telefonnummer) generieren
+    // 👇 Logging für Debug
+    console.log("🔐 Erstelle Token mit:");
+    console.log("   📡 App ID:", AGORA_APP_ID);
+    console.log(
+      "   🔑 App Cert:",
+      AGORA_APP_CERTIFICATE.substring(0, 4) + "...",
+    );
+    console.log("   📺 Channel:", channelName);
+    console.log("   👤 Account (uid):", uid);
+    console.log("   🎭 Rolle:", tokenRole);
+    console.log(
+      "   🕒 Gültig bis:",
+      new Date(privilegeExpiredTs * 1000).toISOString(),
+    );
+
     const token = RtcTokenBuilder.buildTokenWithAccount(
       AGORA_APP_ID,
       AGORA_APP_CERTIFICATE,
       channelName,
-      String(uid), // z. B. "+4915..."
+      String(uid),
       tokenRole,
       privilegeExpiredTs,
     );
 
+    console.log("✅ Token erfolgreich generiert");
     return res.json({ token });
   } catch (err) {
-    console.error("❌ Fehler beim Erstellen des Tokens:", err);
+    console.error(
+      "❌ Fehler beim Erstellen des Tokens:",
+      err.message,
+      err.stack,
+    );
     return res.status(500).json({ error: "Token-Generierung fehlgeschlagen" });
   }
 });
