@@ -11,7 +11,7 @@ const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
 
 dotenv.config();
 
-const AGORA_APP_ID = "ed6595c40c124d7597ab7a2888296fe0";
+const AGORA_APP_ID = "28a507f76f1a400ba047aa629af4b81d";
 const AGORA_APP_CERTIFICATE = "3fc8e469e8b241d3866c6a77aaec81ec";
 
 const app = express();
