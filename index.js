@@ -45,7 +45,7 @@ app.use("/moment", momentRoutes);
 app.post("/rtcToken", (req, res) => {
   const { channelName, uid, role } = req.body;
 
-  if (!channelName || !uid) {
+  if (!channelName || uid === undefined) {
     return res
       .status(400)
       .json({ error: "channelName und uid sind erforderlich" });
@@ -58,12 +58,12 @@ app.post("/rtcToken", (req, res) => {
   const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
 
   try {
-    // ✅ Token wird mit UserAccount erstellt (z. B. Telefonnummer als UID)
-    const token = RtcTokenBuilder.buildTokenWithUserAccount(
+    // 🔒 Token mit Account (z. B. Telefonnummer) generieren
+    const token = RtcTokenBuilder.buildTokenWithAccount(
       AGORA_APP_ID,
       AGORA_APP_CERTIFICATE,
       channelName,
-      String(uid),
+      String(uid), // z. B. "+4915..."
       tokenRole,
       privilegeExpiredTs,
     );
