@@ -41,7 +41,7 @@ app.use("/verify", require("./routes/verify"));
 app.use("/me", require("./routes/me"));
 app.use("/moment", momentRoutes);
 
-// 🎯 Token Server für Agora – überarbeitet mit Logging
+// 🎯 Token Server für Agora – korrekt mit buildTokenWithAccount
 app.post("/rtcToken", (req, res) => {
   const { channelName, uid, role } = req.body;
 
@@ -69,18 +69,19 @@ app.post("/rtcToken", (req, res) => {
       AGORA_APP_CERTIFICATE.substring(0, 4) + "...",
     );
     console.log("   📺 Channel:", channelName);
-    console.log("   👤 Account (uid):", uid);
+    console.log("   👤 Account (userAccount):", uid);
     console.log("   🎭 Rolle:", tokenRole);
     console.log(
       "   🕒 Gültig bis:",
       new Date(privilegeExpiredTs * 1000).toISOString(),
     );
 
+    // 🟢 WICHTIG: Token mit "Account" (nicht UID!) erzeugen
     const token = RtcTokenBuilder.buildTokenWithAccount(
       AGORA_APP_ID,
       AGORA_APP_CERTIFICATE,
       channelName,
-      String(uid),
+      String(uid), // sicherstellen, dass es ein String ist
       tokenRole,
       privilegeExpiredTs,
     );
