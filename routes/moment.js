@@ -194,7 +194,6 @@ router.post("/callmoment", async (req, res) => {
     });
 
     await callMoment.save();
-
     res.json({
       success: true,
       message: "CallMoment created successfully",
@@ -202,10 +201,7 @@ router.post("/callmoment", async (req, res) => {
     });
   } catch (error) {
     console.error("Error creating CallMoment:", error);
-    res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
@@ -215,7 +211,6 @@ router.get("/callmoments", async (req, res) => {
     const callMoments = await CallMoment.find()
       .sort({ timestamp: -1 })
       .limit(50);
-
     res.json({
       success: true,
       callMoments: callMoments.map((moment) => ({
@@ -233,10 +228,7 @@ router.get("/callmoments", async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching CallMoments:", error);
-    res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
