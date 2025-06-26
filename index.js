@@ -131,6 +131,18 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("callEnded", ({ from, to, channel }) => {
+    const targetSocketId = userSockets.get(to);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("callEnded", { from, channel });
+      console.log(
+        `📞 Call ended: ${from} ended call to ${to} (Channel: ${channel})`,
+      );
+    } else {
+      console.log(`❌ User ${to} not connected for call end notification.`);
+    }
+  });
+
   socket.on("disconnect", () => {
     for (let [phone, id] of userSockets.entries()) {
       if (id === socket.id) {
