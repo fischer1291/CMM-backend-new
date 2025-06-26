@@ -163,22 +163,12 @@ router.post("/callmoment", async (req, res) => {
       note,
       mood,
       callDuration,
-      timestamp,
     } = req.body;
 
-    if (
-      !userPhone ||
-      !userName ||
-      !targetPhone ||
-      !targetName ||
-      !screenshot ||
-      !mood ||
-      !callDuration
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Required fields missing",
-      });
+    if (!userPhone || !screenshot || !mood) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Required fields missing" });
     }
 
     const callMoment = new CallMoment({
@@ -190,17 +180,12 @@ router.post("/callmoment", async (req, res) => {
       note: note || "",
       mood,
       callDuration,
-      timestamp: timestamp || new Date(),
     });
 
     await callMoment.save();
-    res.json({
-      success: true,
-      message: "CallMoment created successfully",
-      callMoment,
-    });
+    res.json({ success: true, callMoment });
   } catch (error) {
-    console.error("Error creating CallMoment:", error);
+    console.error("CallMoment error:", error);
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
@@ -211,23 +196,8 @@ router.get("/callmoments", async (req, res) => {
     const callMoments = await CallMoment.find()
       .sort({ timestamp: -1 })
       .limit(50);
-    res.json({
-      success: true,
-      callMoments: callMoments.map((moment) => ({
-        id: moment._id,
-        userPhone: moment.userPhone,
-        userName: moment.userName,
-        targetPhone: moment.targetPhone,
-        targetName: moment.targetName,
-        screenshot: moment.screenshot,
-        note: moment.note,
-        mood: moment.mood,
-        callDuration: moment.callDuration,
-        timestamp: moment.timestamp,
-      })),
-    });
+    res.json({ success: true, callMoments });
   } catch (error) {
-    console.error("Error fetching CallMoments:", error);
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
