@@ -9,11 +9,6 @@ const cloudinary = require("cloudinary").v2;
 const multer = require("multer");
 const User = require("./models/User");
 const reactionRoutes = require("./routes/reactions");
-// Add this after your existing imports
-const { Expo } = require("expo-server-sdk");
-
-// Create Expo SDK client
-const expo = new Expo();
 
 // Agora Token-Builder importieren
 const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
@@ -264,13 +259,7 @@ async function sendCallNotification(
 
     const { pushToken } = calleeUser;
 
-    // Validate the push token
-    if (!Expo.isExpoPushToken(pushToken)) {
-      console.log(`Invalid push token for user ${calleePhone}`);
-      return false;
-    }
-
-    // Create the push notification message
+    // Create the push notification message using the SAME format as status.js
     const message = {
       to: pushToken,
       sound: "default",
@@ -284,23 +273,32 @@ async function sendCallNotification(
         channel: channel,
         callerName: callerName,
       },
-      categoryId: "incoming_call",
       priority: "high",
-      ttl: 30, // 30 seconds TTL for call notifications
+      ttl: 30,
       badge: 1,
     };
 
-    // Send the push notification
-    const ticket = await expo.sendPushNotificationsAsync([message]);
-    console.log("Push notification sent:", ticket);
+    // Use the SAME HTTP method as status.js (not expo-server-sdk)
+    const response = await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Accept-encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify([message]),
+    });
 
-    // Check for errors
-    if (ticket[0].status === "error") {
-      console.error("Push notification error:", ticket[0].details);
+    const result = await response.json();
+    console.log("Push notification sent (HTTP method):", result);
+
+    if (result.data && result.data[0] && result.data[0].status === "ok") {
+      console.log("✅ Call notification sent successfully");
+      return true;
+    } else {
+      console.log("❌ Call notification failed:", result);
       return false;
     }
-
-    return true;
   } catch (error) {
     console.error("Error sending call notification:", error);
     return false;
