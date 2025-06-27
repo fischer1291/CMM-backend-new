@@ -9,6 +9,11 @@ const cloudinary = require("cloudinary").v2;
 const multer = require("multer");
 const User = require("./models/User");
 const reactionRoutes = require("./routes/reactions");
+// Add this after your existing imports
+const { Expo } = require("expo-server-sdk");
+
+// Create Expo SDK client
+const expo = new Expo();
 
 // Agora Token-Builder importieren
 const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
@@ -165,6 +170,143 @@ app.post("/rtcToken", (req, res) => {
   }
 });
 
+// Push token registration endpoint
+app.post("/user/push-token", async (req, res) => {
+  try {
+    const { userPhone, token, deviceId, platform } = req.body;
+
+    if (!userPhone || !token) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required fields: userPhone, token",
+      });
+    }
+
+    // Validate the push token
+    if (!Expo.isExpoPushToken(token)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid Expo push token",
+      });
+    }
+
+    // Update user's push token in database
+    const user = await User.findOneAndUpdate(
+      { phone: userPhone },
+      {
+        pushToken: token,
+        lastOnline: new Date(),
+      },
+      { new: true, upsert: true },
+    );
+
+    console.log(
+      `Push token registered for user ${userPhone}: ${token.substring(0, 20)}...`,
+    );
+
+    res.json({
+      success: true,
+      message: "Push token registered successfully",
+    });
+  } catch (error) {
+    console.error("Error registering push token:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+});
+
+// Debug endpoint to check user's push token
+app.get("/user/push-token/:phone", async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const user = await User.findOne({ phone });
+
+    if (user && user.pushToken) {
+      res.json({
+        success: true,
+        hasToken: true,
+        tokenPreview: user.pushToken.substring(0, 20) + "...",
+        lastOnline: user.lastOnline,
+      });
+    } else {
+      res.json({
+        success: false,
+        hasToken: false,
+        message: "No push token found for this user",
+      });
+    }
+  } catch (error) {
+    console.error("Error fetching push token:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+});
+
+// Function to send push notification for incoming calls
+async function sendCallNotification(
+  callerPhone,
+  calleePhone,
+  channel,
+  callerName = null,
+) {
+  try {
+    // Find the callee's push token
+    const calleeUser = await User.findOne({ phone: calleePhone });
+
+    if (!calleeUser || !calleeUser.pushToken) {
+      console.log(`No push token found for user ${calleePhone}`);
+      return false;
+    }
+
+    const { pushToken } = calleeUser;
+
+    // Validate the push token
+    if (!Expo.isExpoPushToken(pushToken)) {
+      console.log(`Invalid push token for user ${calleePhone}`);
+      return false;
+    }
+
+    // Create the push notification message
+    const message = {
+      to: pushToken,
+      sound: "default",
+      title: callerName ? `${callerName} ruft dich an` : "Eingehender Anruf",
+      body: callerName
+        ? `${callerName} möchte mit dir sprechen`
+        : `${callerPhone} ruft dich an`,
+      data: {
+        type: "incoming_call",
+        callerPhone: callerPhone,
+        channel: channel,
+        callerName: callerName,
+      },
+      categoryId: "incoming_call",
+      priority: "high",
+      ttl: 30, // 30 seconds TTL for call notifications
+      badge: 1,
+    };
+
+    // Send the push notification
+    const ticket = await expo.sendPushNotificationsAsync([message]);
+    console.log("Push notification sent:", ticket);
+
+    // Check for errors
+    if (ticket[0].status === "error") {
+      console.error("Push notification error:", ticket[0].details);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error("Error sending call notification:", error);
+    return false;
+  }
+}
+
 // 🔌 WebSocket Logic
 const userSockets = new Map(); // phone => socket.id
 
@@ -176,15 +318,50 @@ io.on("connection", (socket) => {
     console.log(`📱 User registriert: ${phone} → ${socket.id}`);
   });
 
-  socket.on("callRequest", ({ from, to, channel }) => {
-    const targetSocketId = userSockets.get(to);
-    if (targetSocketId) {
-      io.to(targetSocketId).emit("incomingCall", { from, channel });
+  socket.on("callRequest", async (data) => {
+    const { from, to, channel } = data;
+
+    try {
+      console.log(`Call request from ${from} to ${to} on channel ${channel}`);
+
+      // Get caller's name for the notification
+      let callerName = null;
+      try {
+        const callerUser = await User.findOne({ phone: from });
+        if (callerUser && callerUser.name) {
+          callerName = callerUser.name;
+        }
+      } catch (err) {
+        console.log("Could not fetch caller name:", err);
+      }
+
+      // Send push notification to the callee (if they're not currently connected)
+      const calleeSocket = userSockets.get(to);
+      if (!calleeSocket) {
+        console.log(
+          `User ${to} not connected via socket, sending push notification`,
+        );
+        await sendCallNotification(from, to, channel, callerName);
+      } else {
+        console.log(
+          `User ${to} is connected via socket, sending real-time notification`,
+        );
+      }
+
+      // Always emit the call request via socket (for users currently in the app)
+      if (calleeSocket) {
+        io.to(calleeSocket).emit("incomingCall", {
+          from,
+          channel,
+          callerName,
+        });
+      }
+
       console.log(
-        `📞 Weiterleitung: ${from} ruft ${to} an (Channel: ${channel})`,
+        `Call request processed for ${from} to ${to} on channel ${channel}`,
       );
-    } else {
-      console.log(`❌ User ${to} nicht verbunden.`);
+    } catch (error) {
+      console.error("Error handling call request:", error);
     }
   });
 
