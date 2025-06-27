@@ -7,6 +7,7 @@ const { Server } = require("socket.io");
 const momentRoutes = require("./routes/moment");
 const cloudinary = require("cloudinary").v2;
 const multer = require("multer");
+const User = require("./models/User");
 
 // Agora Token-Builder importieren
 const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
