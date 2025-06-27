@@ -8,13 +8,6 @@ const momentRoutes = require("./routes/moment");
 const cloudinary = require("cloudinary").v2;
 const multer = require("multer");
 
-// Configure Cloudinary (add these to your environment variables)
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME, // e.g., 'your-app-name'
-  api_key: process.env.CLOUDINARY_API_KEY, // e.g., '123456789012345'
-  api_secret: process.env.CLOUDINARY_API_SECRET, // e.g., 'abcdefghijklmnopqrstuvwxyz123'
-});
-
 // Agora Token-Builder importieren
 const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
 
@@ -30,6 +23,13 @@ const io = new Server(server, {
     origin: "*",
     methods: ["GET", "POST"],
   },
+});
+
+// Configure Cloudinary (add these to your environment variables)
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME, // e.g., 'your-app-name'
+  api_key: process.env.CLOUDINARY_API_KEY, // e.g., '123456789012345'
+  api_secret: process.env.CLOUDINARY_API_SECRET, // e.g., 'abcdefghijklmnopqrstuvwxyz123'
 });
 
 // Middlewares
