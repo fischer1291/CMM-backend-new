@@ -333,26 +333,23 @@ io.on("connection", (socket) => {
         console.log("Could not fetch caller name:", err);
       }
 
-      // Send push notification to the callee (if they're not currently connected)
-      const calleeSocket = userSockets.get(to);
-      if (!calleeSocket) {
-        console.log(
-          `User ${to} not connected via socket, sending push notification`,
-        );
-        await sendCallNotification(from, to, channel, callerName);
-      } else {
-        console.log(
-          `User ${to} is connected via socket, sending real-time notification`,
-        );
-      }
+      // Always send push notification (like status notifications do)
+      console.log(`Sending push notification to ${to}`);
+      await sendCallNotification(from, to, channel, callerName);
 
-      // Always emit the call request via socket (for users currently in the app)
+      // Also send socket notification if connected
+      const calleeSocket = userSockets.get(to);
       if (calleeSocket) {
+        console.log(
+          `User ${to} is also connected via socket, sending real-time notification`,
+        );
         io.to(calleeSocket).emit("incomingCall", {
           from,
           channel,
           callerName,
         });
+      } else {
+        console.log(`User ${to} not connected via socket`);
       }
 
       console.log(
