@@ -8,6 +8,7 @@ const momentRoutes = require("./routes/moment");
 const cloudinary = require("cloudinary").v2;
 const multer = require("multer");
 const User = require("./models/User");
+const reactionRoutes = require("./routes/reactions");
 
 // Agora Token-Builder importieren
 const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
@@ -50,6 +51,7 @@ app.use("/status", require("./routes/status")(io));
 app.use("/verify", require("./routes/verify"));
 app.use("/me", require("./routes/me"));
 app.use("/moment", momentRoutes);
+app.use("/moment", reactionRoutes);
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();

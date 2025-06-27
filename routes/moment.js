@@ -3,6 +3,14 @@ const router = express.Router();
 const User = require("../models/User");
 const CallMoment = require("../models/CallMoment");
 
+const formatReactionsForUser = (reactions, userPhone) => {
+  return reactions.map((reaction) => ({
+    emoji: reaction.emoji,
+    count: reaction.count,
+    userReacted: reaction.users.some((u) => u.phone === userPhone),
+  }));
+};
+
 function normalizePhone(phone) {
   return phone
     .trim()
@@ -190,15 +198,32 @@ router.post("/callmoment", async (req, res) => {
   }
 });
 
-// Get CallMoments feed
+// Update your existing GET /callmoments endpoint
 router.get("/callmoments", async (req, res) => {
   try {
+    const { userPhone } = req.query; // Add userPhone to see which reactions user made
+
     const callMoments = await CallMoment.find()
       .sort({ timestamp: -1 })
-      .limit(50);
-    res.json({ success: true, callMoments });
+      .limit(50); // Limit for performance
+
+    // Format reactions for the requesting user
+    const formattedMoments = callMoments.map((moment) => ({
+      ...moment.toObject(),
+      reactions: formatReactionsForUser(moment.reactions, userPhone || ""),
+      totalReactions: moment.totalReactions,
+    }));
+
+    res.json({
+      success: true,
+      callMoments: formattedMoments,
+    });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Server error" });
+    console.error("Fetch call moments error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
   }
 });
 
