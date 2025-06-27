@@ -5,6 +5,15 @@ const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
 const momentRoutes = require("./routes/moment");
+const cloudinary = require("cloudinary").v2;
+const multer = require("multer");
+
+// Configure Cloudinary (add these to your environment variables)
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME, // e.g., 'your-app-name'
+  api_key: process.env.CLOUDINARY_API_KEY, // e.g., '123456789012345'
+  api_secret: process.env.CLOUDINARY_API_SECRET, // e.g., 'abcdefghijklmnopqrstuvwxyz123'
+});
 
 // Agora Token-Builder importieren
 const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
@@ -40,6 +49,61 @@ app.use("/status", require("./routes/status")(io));
 app.use("/verify", require("./routes/verify"));
 app.use("/me", require("./routes/me"));
 app.use("/moment", momentRoutes);
+
+// Configure multer for memory storage
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
+
+// New endpoint for avatar upload
+app.post("/upload/avatar", upload.single("avatar"), async (req, res) => {
+  try {
+    const { phone } = req.body;
+
+    if (!phone || !req.file) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Phone and avatar file required" });
+    }
+
+    // Upload to Cloudinary
+    const result = await new Promise((resolve, reject) => {
+      cloudinary.uploader
+        .upload_stream(
+          {
+            resource_type: "image",
+            folder: "avatars", // Organize uploads in folders
+            public_id: `avatar_${phone.replace("+", "")}`, // Unique filename
+            overwrite: true, // Replace existing avatar
+            transformation: [
+              { width: 256, height: 256, crop: "fill", gravity: "face" }, // Auto-crop to face
+              { quality: "auto", format: "auto" }, // Optimize file size
+            ],
+          },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result);
+          },
+        )
+        .end(req.file.buffer);
+    });
+
+    // Update user in database with new avatar URL
+    await User.findOneAndUpdate(
+      { phone: phone },
+      { avatarUrl: result.secure_url }, // This is the web URL!
+      { upsert: true },
+    );
+
+    res.json({
+      success: true,
+      avatarUrl: result.secure_url,
+      message: "Avatar uploaded successfully",
+    });
+  } catch (error) {
+    console.error("Avatar upload error:", error);
+    res.status(500).json({ success: false, message: "Upload failed" });
+  }
+});
 
 // 🎯 Token Server für Agora – korrekt mit buildTokenWithAccount
 app.post("/rtcToken", (req, res) => {
