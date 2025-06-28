@@ -9,6 +9,7 @@ const cloudinary = require("cloudinary").v2;
 const multer = require("multer");
 const User = require("./models/User");
 const reactionRoutes = require("./routes/reactions");
+const { Expo } = require("expo-server-sdk");
 
 // Agora Token-Builder importieren
 const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
