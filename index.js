@@ -29,27 +29,42 @@ let voipProvider = null;
 // Initialize VoIP push provider (iOS only)
 function initializeVoipPush() {
   try {
-    // For now, we'll set this up conditionally
-    // You'll need to add your Apple credentials later
+    // Check if VoIP credentials are available
     if (
-      process.env.VOIP_KEY_PATH &&
+      process.env.VOIP_KEY_CONTENT &&
       process.env.VOIP_KEY_ID &&
       process.env.VOIP_TEAM_ID
     ) {
       voipProvider = new apn.Provider({
         token: {
-          key: process.env.VOIP_KEY_PATH, // Path to your .p8 key file
-          keyId: process.env.VOIP_KEY_ID, // Your Key ID from Apple
-          teamId: process.env.VOIP_TEAM_ID, // Your Team ID
+          key: process.env.VOIP_KEY_CONTENT, // Key content as string (not path!)
+          keyId: process.env.VOIP_KEY_ID,
+          teamId: process.env.VOIP_TEAM_ID,
         },
         production: process.env.NODE_ENV === "production",
       });
+
       console.log("✅ VoIP push provider initialized");
+      console.log("   - Environment:", process.env.NODE_ENV);
+      console.log("   - Key ID:", process.env.VOIP_KEY_ID);
+      console.log("   - Team ID:", process.env.VOIP_TEAM_ID);
     } else {
-      console.log("⚠️ VoIP push not configured - will use regular push");
+      console.log("⚠️ VoIP push not configured - missing credentials");
+      console.log(
+        "   - VOIP_KEY_CONTENT:",
+        process.env.VOIP_KEY_CONTENT ? "Set" : "Missing",
+      );
+      console.log(
+        "   - VOIP_KEY_ID:",
+        process.env.VOIP_KEY_ID ? "Set" : "Missing",
+      );
+      console.log(
+        "   - VOIP_TEAM_ID:",
+        process.env.VOIP_TEAM_ID ? "Set" : "Missing",
+      );
     }
   } catch (error) {
-    console.error("❌ Failed to initialize VoIP push:", error);
+    console.error("❌ Failed to initialize VoIP push:", error.message);
   }
 }
 
