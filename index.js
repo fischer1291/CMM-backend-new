@@ -33,13 +33,14 @@ function initializeVoipPush() {
       process.env.VOIP_TEAM_ID
     ) {
       voipProvider = new apn.Provider({
-        token: {
-          key: process.env.VOIP_KEY_CONTENT, // Key content as string (not path!)
-          keyId: process.env.VOIP_KEY_ID,
-          teamId: process.env.VOIP_TEAM_ID,
-        },
-        production: process.env.NODE_ENV === "production",
-      });
+   token: {
+     key: process.env.VOIP_KEY_CONTENT.replace(/\\n/g, '\n'),
+     keyId: process.env.VOIP_KEY_ID,
+     teamId: process.env.VOIP_TEAM_ID,
+   },
+   production: process.env.NODE_ENV === "production",
+ });
+
 
       console.log("✅ VoIP push provider initialized");
       console.log("   - Environment:", process.env.NODE_ENV);
