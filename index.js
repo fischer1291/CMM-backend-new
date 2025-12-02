@@ -14,9 +14,6 @@ const expo = new Expo({
   accessToken: process.env.EXPO_ACCESS_TOKEN, // Optional but recommended
   useFcmV1: true, // Use the newer FCM v1 API
 });
-// Add to your main backend file
-const callRoutes = require("./routes/calls");
-app.use("/calls", callRoutes);
 
 // Agora Token-Builder importieren
 const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
