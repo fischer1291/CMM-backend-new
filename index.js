@@ -14,9 +14,47 @@ const expo = new Expo({
   accessToken: process.env.EXPO_ACCESS_TOKEN, // Optional but recommended
   useFcmV1: true, // Use the newer FCM v1 API
 });
+// Add to your main backend file
+const callRoutes = require("./routes/calls");
+app.use("/calls", callRoutes);
 
 // Agora Token-Builder importieren
 const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
+
+const apn = require("node-apn");
+
+// VoIP push configuration
+let voipProvider = null;
+
+// Initialize VoIP push provider (iOS only)
+function initializeVoipPush() {
+  try {
+    // For now, we'll set this up conditionally
+    // You'll need to add your Apple credentials later
+    if (
+      process.env.VOIP_KEY_PATH &&
+      process.env.VOIP_KEY_ID &&
+      process.env.VOIP_TEAM_ID
+    ) {
+      voipProvider = new apn.Provider({
+        token: {
+          key: process.env.VOIP_KEY_PATH, // Path to your .p8 key file
+          keyId: process.env.VOIP_KEY_ID, // Your Key ID from Apple
+          teamId: process.env.VOIP_TEAM_ID, // Your Team ID
+        },
+        production: process.env.NODE_ENV === "production",
+      });
+      console.log("✅ VoIP push provider initialized");
+    } else {
+      console.log("⚠️ VoIP push not configured - will use regular push");
+    }
+  } catch (error) {
+    console.error("❌ Failed to initialize VoIP push:", error);
+  }
+}
+
+// Call this on startup
+initializeVoipPush();
 
 dotenv.config();
 
@@ -230,6 +268,52 @@ app.post("/user/push-token", async (req, res) => {
   }
 });
 
+/**
+ * Register VoIP push token (iOS only)
+ */
+app.post("/user/voip-token", async (req, res) => {
+  try {
+    const { userPhone, voipToken, deviceId, platform } = req.body;
+
+    if (!userPhone || !voipToken) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required fields: userPhone, voipToken",
+      });
+    }
+
+    // Update user's VoIP token in database
+    const user = await User.findOneAndUpdate(
+      { phone: userPhone },
+      {
+        voipToken: voipToken, // Store VoIP token separately
+        voipTokenMetadata: {
+          deviceId,
+          platform,
+          registeredAt: new Date(),
+        },
+        lastOnline: new Date(),
+      },
+      { new: true, upsert: true },
+    );
+
+    console.log(
+      `✅ VoIP token registered for ${userPhone}: ${voipToken.substring(0, 20)}...`,
+    );
+
+    res.json({
+      success: true,
+      message: "VoIP token registered successfully",
+    });
+  } catch (error) {
+    console.error("❌ Error registering VoIP token:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+});
+
 // Debug endpoint to check user's push token
 app.get("/user/push-token/:phone", async (req, res) => {
   try {
@@ -280,6 +364,84 @@ app.get("/api/push-health", async (req, res) => {
     });
   }
 });
+
+/**
+ * Send VoIP push notification for incoming call
+ */
+async function sendVoipPushNotification(
+  callerPhone,
+  calleePhone,
+  channel,
+  callerName,
+) {
+  try {
+    console.log(`📞 Attempting VoIP push: ${callerPhone} -> ${calleePhone}`);
+
+    // Get callee's VoIP token
+    const calleeUser = await User.findOne({ phone: calleePhone });
+    if (!calleeUser || !calleeUser.voipToken) {
+      console.log(`❌ No VoIP token found for user: ${calleePhone}`);
+      return false;
+    }
+
+    // If VoIP provider is not configured, return false to fall back to regular push
+    if (!voipProvider) {
+      console.log(
+        "⚠️ VoIP provider not configured, falling back to regular push",
+      );
+      return false;
+    }
+
+    const voipToken = calleeUser.voipToken;
+
+    // Create VoIP notification
+    const notification = new apn.Notification();
+
+    // VoIP notifications use a special topic: your bundle ID + .voip
+    notification.topic = "com.schly21.kontaktlisteapp.voip"; // YOUR_BUNDLE_ID.voip
+
+    // VoIP push type
+    notification.pushType = "voip";
+
+    // Payload for the app
+    notification.payload = {
+      callerPhone: callerPhone,
+      calleePhone: calleePhone,
+      channel: channel,
+      callerName: callerName || callerPhone,
+      hasVideo: true,
+      timestamp: Date.now(),
+    };
+
+    // No alert/badge/sound needed for VoIP - it wakes the app directly
+    notification.priority = 10; // High priority
+    notification.expiry = Math.floor(Date.now() / 1000) + 30; // Expire after 30 seconds
+
+    // Send the notification
+    const result = await voipProvider.send(notification, voipToken);
+
+    // Check for errors
+    if (result.failed && result.failed.length > 0) {
+      console.error("❌ VoIP push failed:", result.failed[0].response);
+
+      // If token is invalid, remove it
+      if (result.failed[0].status === "410") {
+        await User.findOneAndUpdate(
+          { phone: calleePhone },
+          { $unset: { voipToken: 1 } },
+        );
+        console.log(`🧹 Removed invalid VoIP token for user: ${calleePhone}`);
+      }
+      return false;
+    }
+
+    console.log(`✅ VoIP push sent successfully to: ${calleePhone}`);
+    return true;
+  } catch (error) {
+    console.error("❌ Error sending VoIP push:", error);
+    return false;
+  }
+}
 
 /**
  * Enhanced push notification sending with proper error handling
@@ -441,19 +603,36 @@ io.on("connection", (socket) => {
         console.log(`🔔 Socket notification sent to: ${to}`);
       }
 
-      // Always send push notification (for offline users and notification actions)
-      const pushSent = await sendEnhancedCallNotification(
+      // Try VoIP push first (iOS only, works in background)
+      let notificationSent = false;
+      const voipSent = await sendVoipPushNotification(
         from,
         to,
         channel,
         callerName,
       );
 
-      if (!pushSent && !targetSocketId) {
+      if (voipSent) {
+        console.log(`✅ VoIP push sent to: ${to}`);
+        notificationSent = true;
+      } else {
+        // Fallback to regular push notification
         console.log(
-          `❌ Failed to notify user: ${to} (no socket connection and push failed)`,
+          `⚠️ VoIP push failed/unavailable, using regular push for: ${to}`,
         );
-        // Optionally emit back to caller that user is unreachable
+        const pushSent = await sendEnhancedCallNotification(
+          from,
+          to,
+          channel,
+          callerName,
+        );
+        notificationSent = pushSent;
+      }
+
+      if (!notificationSent && !targetSocketId) {
+        console.log(
+          `❌ Failed to notify user: ${to} (no socket, VoIP, or push)`,
+        );
         socket.emit("callFailed", {
           reason: "User unreachable",
           target: to,
