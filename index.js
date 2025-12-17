@@ -661,12 +661,18 @@ io.on("connection", (socket) => {
   });
 
   socket.on("acceptCall", ({ from, to, channel }) => {
-    const targetSocketId = userSockets.get(from);
-    if (targetSocketId) {
-      io.to(targetSocketId).emit("startCall", { channel, from: to });
-      console.log(
-        `✅ Anruf angenommen von ${to}, Info an ${from} weitergeleitet`,
-      );
+    console.log(`📞 Call accepted: ${to} answered call from ${from} (${channel})`);
+
+    const callerSocketId = userSockets.get(from);
+    if (callerSocketId) {
+      io.to(callerSocketId).emit("callAccepted", {
+        channel,
+        from: to,
+        timestamp: Date.now()
+      });
+      console.log(`✅ Call accepted notification sent to caller: ${from}`);
+    } else {
+      console.log(`⚠️ Caller ${from} not connected via socket`);
     }
   });
 
