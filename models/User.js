@@ -19,6 +19,8 @@ const userSchema = new mongoose.Schema({
     deviceId: String,
     platform: String,
     registeredAt: Date,
+    // "production" | "sandbox"; learned on the first successful VoIP push
+    environment: String,
   },
 
   name: String,

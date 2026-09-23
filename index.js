@@ -1,6 +1,7 @@
+require("dotenv").config();
+const crypto = require("crypto");
 const express = require("express");
 const mongoose = require("mongoose");
-const dotenv = require("dotenv");
 const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -21,7 +22,10 @@ const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
 const apn = require("node-apn");
 
 // VoIP push configuration
-let voipProvider = null;
+// One provider per APNs environment: development builds get sandbox tokens,
+// TestFlight/App Store/ad-hoc builds get production tokens.
+const voipProviders = { production: null, sandbox: null };
+const VOIP_TOPIC = process.env.VOIP_TOPIC || "com.schly21.kontaktlisteapp.voip";
 
 // Initialize VoIP push provider (iOS only)
 function initializeVoipPush() {
@@ -32,17 +36,15 @@ function initializeVoipPush() {
       process.env.VOIP_KEY_ID &&
       process.env.VOIP_TEAM_ID
     ) {
-      voipProvider = new apn.Provider({
-   token: {
-     key: process.env.VOIP_KEY_CONTENT.replace(/\\n/g, '\n'),
-     keyId: process.env.VOIP_KEY_ID,
-     teamId: process.env.VOIP_TEAM_ID,
-   },
-   production: process.env.NODE_ENV === "production",
- });
+      const token = {
+        key: process.env.VOIP_KEY_CONTENT.replace(/\\n/g, "\n"),
+        keyId: process.env.VOIP_KEY_ID,
+        teamId: process.env.VOIP_TEAM_ID,
+      };
+      voipProviders.production = new apn.Provider({ token, production: true });
+      voipProviders.sandbox = new apn.Provider({ token, production: false });
 
-
-      console.log("✅ VoIP push provider initialized");
+      console.log("✅ VoIP push providers initialized (production + sandbox)");
       console.log("   - Environment:", process.env.NODE_ENV);
       console.log("   - Key ID:", process.env.VOIP_KEY_ID);
       console.log("   - Team ID:", process.env.VOIP_TEAM_ID);
@@ -68,8 +70,6 @@ function initializeVoipPush() {
 
 // Call this on startup
 initializeVoipPush();
-
-dotenv.config();
 
 const AGORA_APP_ID = "28a507f76f1a400ba047aa629af4b81d";
 const AGORA_APP_CERTIFICATE = "3fc8e469e8b241d3866c6a77aaec81ec";
@@ -295,20 +295,32 @@ app.post("/user/voip-token", async (req, res) => {
       });
     }
 
-    // Update user's VoIP token in database
-    const user = await User.findOneAndUpdate(
-      { phone: userPhone },
-      {
+    // A device belongs to one logged-in user: remove this token from anyone
+    // else, otherwise their calls would keep ringing on this device.
+    await User.updateMany(
+      { voipToken, phone: { $ne: userPhone } },
+      { $unset: { voipToken: 1, voipTokenMetadata: 1 } },
+    );
+
+    // Update user's VoIP token in database. The learned APNs environment is
+    // kept unless the token itself changed.
+    const existing = await User.findOne({ phone: userPhone }, "voipToken");
+    const update = {
+      $set: {
         voipToken: voipToken, // Store VoIP token separately
-        voipTokenMetadata: {
-          deviceId,
-          platform,
-          registeredAt: new Date(),
-        },
+        "voipTokenMetadata.deviceId": deviceId,
+        "voipTokenMetadata.platform": platform,
+        "voipTokenMetadata.registeredAt": new Date(),
         lastOnline: new Date(),
       },
-      { new: true, upsert: true },
-    );
+    };
+    if (existing?.voipToken !== voipToken) {
+      update.$unset = { "voipTokenMetadata.environment": 1 };
+    }
+    const user = await User.findOneAndUpdate({ phone: userPhone }, update, {
+      new: true,
+      upsert: true,
+    });
 
     console.log(
       `✅ VoIP token registered for ${userPhone}: ${voipToken.substring(0, 20)}...`,
@@ -367,6 +379,7 @@ app.get("/api/push-health", async (req, res) => {
     res.json({
       success: true,
       activeTokens,
+      voipConfigured: !!voipProviders.production,
       sdkVersion: Expo.version,
       timestamp: new Date().toISOString(),
     });
@@ -386,6 +399,7 @@ async function sendVoipPushNotification(
   calleePhone,
   channel,
   callerName,
+  callId,
 ) {
   try {
     console.log(`📞 Attempting VoIP push: ${callerPhone} -> ${calleePhone}`);
@@ -397,8 +411,8 @@ async function sendVoipPushNotification(
       return false;
     }
 
-    // If VoIP provider is not configured, return false to fall back to regular push
-    if (!voipProvider) {
+    // If VoIP is not configured, return false to fall back to regular push
+    if (!voipProviders.production) {
       console.log(
         "⚠️ VoIP provider not configured, falling back to regular push",
       );
@@ -407,49 +421,70 @@ async function sendVoipPushNotification(
 
     const voipToken = calleeUser.voipToken;
 
-    // Create VoIP notification
-    const notification = new apn.Notification();
-
-    // VoIP notifications use a special topic: your bundle ID + .voip
-    notification.topic = "com.schly21.kontaktlisteapp.voip"; // YOUR_BUNDLE_ID.voip
-
-    // VoIP push type
-    notification.pushType = "voip";
-
-    // Payload for the app
-    notification.payload = {
-      callerPhone: callerPhone,
-      calleePhone: calleePhone,
-      channel: channel,
-      callerName: callerName || callerPhone,
-      hasVideo: true,
-      timestamp: Date.now(),
+    const buildNotification = () => {
+      const notification = new apn.Notification();
+      // VoIP notifications use a special topic: bundle ID + .voip
+      notification.topic = VOIP_TOPIC;
+      notification.pushType = "voip";
+      // The app reports this to CallKit natively (AppDelegate.swift); callId
+      // must match the socket event so both paths show the same call.
+      notification.payload = {
+        callId,
+        callerPhone,
+        calleePhone,
+        channel,
+        callerName: callerName || callerPhone,
+        hasVideo: true,
+        timestamp: Date.now(),
+      };
+      notification.priority = 10;
+      notification.expiry = Math.floor(Date.now() / 1000) + 30;
+      return notification;
     };
 
-    // No alert/badge/sound needed for VoIP - it wakes the app directly
-    notification.priority = 10; // High priority
-    notification.expiry = Math.floor(Date.now() / 1000) + 30; // Expire after 30 seconds
+    // Try the environment that worked last time first; a token from the other
+    // environment is rejected with BadDeviceToken.
+    const known = calleeUser.voipTokenMetadata?.environment;
+    const environments =
+      known === "sandbox" ? ["sandbox", "production"] : ["production", "sandbox"];
 
-    // Send the notification
-    const result = await voipProvider.send(notification, voipToken);
+    for (const environment of environments) {
+      const result = await voipProviders[environment].send(
+        buildNotification(),
+        voipToken,
+      );
 
-    // Check for errors
-    if (result.failed && result.failed.length > 0) {
-      console.error("❌ VoIP push failed:", result.failed[0].response);
+      if (result.sent && result.sent.length > 0) {
+        if (known !== environment) {
+          await User.updateOne(
+            { phone: calleePhone },
+            { "voipTokenMetadata.environment": environment },
+          );
+        }
+        console.log(`✅ VoIP push sent (${environment}) to: ${calleePhone}`);
+        return true;
+      }
 
-      // If token is invalid, remove it
-      if (result.failed[0].status === "410") {
-        await User.findOneAndUpdate(
+      const failure = result.failed && result.failed[0];
+      const reason = failure?.response?.reason;
+      console.error(`❌ VoIP push failed (${environment}):`, reason || failure?.error);
+
+      if (reason === "BadDeviceToken" || reason === "DeviceTokenNotForTopic") {
+        continue; // wrong environment, try the other one
+      }
+
+      // 410 Unregistered: the token is no longer valid
+      if (String(failure?.status) === "410" || reason === "Unregistered") {
+        await User.updateOne(
           { phone: calleePhone },
-          { $unset: { voipToken: 1 } },
+          { $unset: { voipToken: 1, voipTokenMetadata: 1 } },
         );
         console.log(`🧹 Removed invalid VoIP token for user: ${calleePhone}`);
       }
       return false;
     }
 
-    console.log(`✅ VoIP push sent successfully to: ${calleePhone}`);
-    return true;
+    return false;
   } catch (error) {
     console.error("❌ Error sending VoIP push:", error);
     return false;
@@ -464,6 +499,7 @@ async function sendEnhancedCallNotification(
   calleePhone,
   channel,
   callerName,
+  callId,
 ) {
   try {
     console.log(
@@ -493,6 +529,7 @@ async function sendEnhancedCallNotification(
       body: "Videoanruf", // Simplified, consistent with frontend
       data: {
         type: "incoming_call",
+        callId,
         callerPhone: callerPhone,
         calleePhone: calleePhone,
         channel: channel,
@@ -597,7 +634,9 @@ io.on("connection", (socket) => {
 
   socket.on("callRequest", async (data) => {
     const { from, to, channel } = data;
-    console.log(`📞 Call request: ${from} -> ${to} (${channel})`);
+    // One UUID per call, shared by socket event, VoIP push and CallKit
+    const callId = crypto.randomUUID();
+    console.log(`📞 Call request: ${from} -> ${to} (${channel}, ${callId})`);
 
     try {
       // Get caller's name for better UX
@@ -608,6 +647,7 @@ io.on("connection", (socket) => {
       const targetSocketId = userSockets.get(to);
       if (targetSocketId) {
         io.to(targetSocketId).emit("incomingCall", {
+          callId,
           from,
           channel,
           callerName,
@@ -623,6 +663,7 @@ io.on("connection", (socket) => {
         to,
         channel,
         callerName,
+        callId,
       );
 
       if (voipSent) {
@@ -638,6 +679,7 @@ io.on("connection", (socket) => {
           to,
           channel,
           callerName,
+          callId,
         );
         notificationSent = pushSent;
       }
