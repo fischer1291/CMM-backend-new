@@ -1,17 +1,21 @@
 const express = require("express");
 const router = express.Router();
+const mongoose = require("mongoose");
 const CallMoment = require("../models/CallMoment");
+const { actingPhone } = require("../lib/auth");
 
 // POST /moment/react - Add or remove a reaction
 router.post("/react", async (req, res) => {
   try {
-    const { momentId, userPhone, emoji } = req.body;
+    const userPhone = actingPhone(req, res, req.body?.userPhone);
+    if (!userPhone) return;
+    const { momentId, emoji } = req.body;
 
     // Validation
-    if (!momentId || !userPhone || !emoji) {
+    if (!mongoose.isValidObjectId(momentId) || !emoji) {
       return res.status(400).json({
         success: false,
-        message: "Missing required fields: momentId, userPhone, emoji",
+        message: "Missing required fields: momentId, emoji",
       });
     }
 
