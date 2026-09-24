@@ -45,5 +45,4 @@ still accepted (older app versions). Once all clients send tokens, set
 | `VOIP_TOPIC` | no | Defaults to `com.schly21.kontaktlisteapp.voip` |
 | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | yes | Avatar uploads |
 | `EXPO_ACCESS_TOKEN` | no | Expo push |
-| `ADMIN_API_KEY` | for cron | Required as `X-Admin-Key` for `POST /moment/push-broadcast` |
 | `PORT` | no | Set by Render |

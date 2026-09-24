@@ -29,7 +29,6 @@ const userSchema = new mongoose.Schema({
   lastOnline: { type: Date, default: null },
   momentActiveUntil: { type: Date, default: null },
   mood: { type: String, default: null },
-  lastMomentInvite: { type: Date },
 
   // SHA-256 of the E.164 phone number, for privacy-preserving contact matching
   phoneHash: { type: String, index: true },
@@ -50,6 +49,21 @@ const userSchema = new mongoose.Schema({
     },
   },
   lastScheduleSlotKey: { type: String, default: null },
+
+  // IANA time zone of the user's device, for quiet hours and local times
+  timezone: { type: String, default: null },
+
+  // Which pushes the user wants (lib/notify.js). Quiet hours in local minutes.
+  notificationPrefs: {
+    available: { type: Boolean, default: true },
+    nudges: { type: Boolean, default: true },
+    moments: { type: Boolean, default: true },
+    quietHours: {
+      enabled: { type: Boolean, default: true },
+      start: { type: Number, default: 22 * 60 },
+      end: { type: Number, default: 8 * 60 },
+    },
+  },
 
   // Who may see this user's talk-time stats. Private unless the user opts in.
   statsSharing: {

@@ -8,6 +8,7 @@ const { agoraCredentials } = require("./lib/agora");
 const { expireMoments } = require("./routes/moment");
 const { broadcastStatus } = require("./routes/status");
 const { applySchedules } = require("./lib/schedule");
+const { checkReceipts } = require("./lib/receipts");
 
 const PORT = process.env.PORT || 3000;
 
@@ -49,6 +50,15 @@ async function main() {
   setInterval(() => {
     tick().catch((err) => console.error("❌ availability tick:", err.message));
   }, 60 * 1000);
+
+  // Every 15 minutes: delivery receipts of sent pushes
+  setInterval(() => {
+    checkReceipts()
+      .then(({ errors, removedTokens }) => {
+        if (errors) console.log(`📬 Push receipts: ${errors} errors, ${removedTokens} tokens removed`);
+      })
+      .catch((err) => console.error("❌ checkReceipts:", err.message));
+  }, 15 * 60 * 1000);
 
   server.listen(PORT, () => console.log(`🚀 Server läuft mit WebSocket auf Port ${PORT}`));
 }

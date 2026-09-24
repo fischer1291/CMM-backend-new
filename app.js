@@ -14,6 +14,7 @@ const { agoraCredentials, buildRtcToken } = require("./lib/agora");
 const { Expo, voipProviders } = require("./lib/push");
 const { registerSocketHandlers } = require("./socket");
 const { createCallService, historyEntry } = require("./lib/calls");
+const { isValidTimezone } = require("./lib/localTime");
 
 function createApp({ ringTimeoutMs } = {}) {
   const app = express();
@@ -73,6 +74,7 @@ function createApp({ ringTimeoutMs } = {}) {
   app.use("/moment", require("./routes/moment")(io));
   app.use("/moment", require("./routes/reactions"));
   app.use(require("./routes/gamification")(io));
+  app.use(require("./routes/notifications"));
 
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -156,10 +158,11 @@ function createApp({ ringTimeoutMs } = {}) {
   app.post("/user/push-token", async (req, res) => {
     const phone = actingPhone(req, res, req.body?.userPhone);
     if (!phone) return;
-    const { token, deviceId, platform } = req.body;
+    const { token, deviceId, platform, timezone } = req.body;
     if (!Expo.isExpoPushToken(token)) {
       return res.status(400).json({ success: false, message: "Invalid Expo push token" });
     }
+    const zone = isValidTimezone(timezone) ? { timezone } : {};
 
     try {
       // One device = one user: remove this token from anyone else
@@ -170,6 +173,7 @@ function createApp({ ringTimeoutMs } = {}) {
           pushToken: token,
           pushTokenMetadata: { deviceId, platform, registeredAt: new Date(), lastValidated: new Date() },
           lastOnline: new Date(),
+          ...zone,
         },
         { new: true },
       );

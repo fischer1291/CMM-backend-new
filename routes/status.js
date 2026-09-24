@@ -2,14 +2,14 @@ const express = require("express");
 const User = require("../models/User");
 const { actingPhone } = require("../lib/auth");
 const { normalizePhone, regionOf } = require("../lib/phone");
-const { sendExpoPushes } = require("../lib/push");
+const { notifyMany } = require("../lib/notify");
 
 /**
  * Users who have `phone` in their contact list. Only they may learn about
  * this user's availability.
  */
 async function followersOf(phone) {
-  return User.find({ contacts: phone }, "phone pushToken");
+  return User.find({ contacts: phone }, "phone pushToken notificationPrefs timezone schedule.timezone");
 }
 
 /** Own availability as the app shows it. */
@@ -34,19 +34,9 @@ async function broadcastStatus(io, user) {
     });
   }
 
+  // Throttled per follower, respects their settings and quiet hours
   if (user.isAvailable) {
-    const displayName = user.name || "Ein Kontakt";
-    await sendExpoPushes(
-      followers
-        .filter((f) => f.pushToken)
-        .map((f) => ({
-          to: f.pushToken,
-          sound: "default",
-          title: `${displayName} ist erreichbar`,
-          body: "Jetzt ist ein guter Moment für einen Anruf.",
-          data: { type: "contact_available", phone: user.phone },
-        })),
-    );
+    await notifyMany(followers, "contact_available", { phone: user.phone, name: user.name });
   }
 }
 

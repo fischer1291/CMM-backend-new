@@ -8,8 +8,8 @@ const Nudge = require("../models/Nudge");
 const { normalizePhone, regionOf } = require("../lib/phone");
 const { parseSchedule, nextSlot } = require("../lib/schedule");
 const { statsFor, sharedView, canView } = require("../lib/stats");
-const { isValidTimezone, localParts } = require("../lib/localTime");
-const { sendExpoPushes } = require("../lib/push");
+const { isValidTimezone } = require("../lib/localTime");
+const { notify } = require("../lib/notify");
 
 const MAX_NUDGES_PER_DAY = 20;
 const MAX_SHARED_WITH = 200;
@@ -24,12 +24,6 @@ const scheduleOf = (user) => ({
   timezone: user.schedule?.timezone || null,
   slots: (user.schedule?.slots || []).map(({ day, start, end }) => ({ day, start, end })),
 });
-
-/** No pushes at night in the recipient's zone. */
-const isQuietTime = (timezone, now = new Date()) => {
-  const { minutes } = localParts(now, timezone);
-  return minutes < 8 * 60 || minutes >= 22 * 60;
-};
 
 module.exports = (io) => {
   const router = express.Router();
@@ -136,21 +130,9 @@ module.exports = (io) => {
       throw err;
     }
 
-    const name = sender.name || "Ein Kontakt";
-    io.to(`user:${to}`).emit("nudge", { from, name, at: new Date() });
-    const quiet = isQuietTime(target.schedule?.timezone);
-    if (target.pushToken && !quiet) {
-      await sendExpoPushes([
-        {
-          to: target.pushToken,
-          sound: "default",
-          title: `${name} würde gern mit dir sprechen 👋`,
-          body: "Schalte dich erreichbar, wenn es dir passt.",
-          data: { type: "nudge", phone: from },
-        },
-      ]);
-    }
-    res.json({ success: true, pushed: !!target.pushToken && !quiet });
+    io.to(`user:${to}`).emit("nudge", { from, name: sender.name || "", at: new Date() });
+    const result = await notify(target, "nudge", { phone: from, name: sender.name });
+    res.json({ success: true, pushed: !!result.sent });
   });
 
   // GET /nudges: who nudged me recently (and which contacts I nudged)
