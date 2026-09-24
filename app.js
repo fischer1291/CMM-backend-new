@@ -10,7 +10,7 @@ const cloudinary = require("cloudinary").v2;
 const User = require("./models/User");
 const Call = require("./models/Call");
 const { authenticate, actingPhone } = require("./lib/auth");
-const { buildRtcToken } = require("./lib/agora");
+const { agoraCredentials, buildRtcToken } = require("./lib/agora");
 const { Expo, voipProviders } = require("./lib/push");
 const { registerSocketHandlers } = require("./socket");
 
@@ -52,6 +52,8 @@ function createApp() {
         voipConfigured: !!voipProviders.production,
         authConfigured: !!process.env.JWT_SECRET,
         authRequired: process.env.AUTH_REQUIRED === "true",
+        // Only whether the certificate comes from the environment, never the value
+        agoraCertificateFromEnv: !agoraCredentials().usingLegacyCertificate,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
