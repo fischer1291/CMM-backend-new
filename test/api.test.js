@@ -500,3 +500,33 @@ test("calls: the caller can cancel over HTTP; the callee's device hears about it
     close();
   }
 });
+
+test("verify: App Store review login works only when configured, without SMS", async () => {
+  const REVIEW = "+4915999999999";
+  // Not configured: normal SMS flow
+  await request(ctx.app).post("/verify/start").send({ phone: REVIEW }).expect(200);
+  assert.deepEqual(fakes.sms, [REVIEW]);
+
+  process.env.REVIEW_PHONE = REVIEW;
+  process.env.REVIEW_CODE = "246810";
+  try {
+    fakes.sms.length = 0;
+    await request(ctx.app).post("/verify/start").send({ phone: "0159 99999999" }).expect(200);
+    assert.deepEqual(fakes.sms, [], "no SMS for the review number");
+    const wrong = await request(ctx.app).post("/verify/check").send({ phone: REVIEW, code: "123456" });
+    assert.equal(wrong.body.success, false, "the Twilio test code must not work here");
+    const ok = await request(ctx.app).post("/verify/check").send({ phone: REVIEW, code: "246810" }).expect(200);
+    assert.ok(ok.body.token);
+    // Other numbers are unaffected
+    const other = await request(ctx.app).post("/verify/check").send({ phone: ANNA, code: "246810" });
+    assert.equal(other.body.success, false);
+
+    // A too short code disables it
+    process.env.REVIEW_CODE = "12";
+    const short = await request(ctx.app).post("/verify/check").send({ phone: REVIEW, code: "12" });
+    assert.equal(short.status, 400);
+  } finally {
+    delete process.env.REVIEW_PHONE;
+    delete process.env.REVIEW_CODE;
+  }
+});
