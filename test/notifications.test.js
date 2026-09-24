@@ -270,10 +270,21 @@ test("availability: app open -> banner instead of push, throttle untouched; app 
   await settle();
   assert.equal(pushes().length, 1);
 
-  const recent = await request(ctx.app).get("/me/notifications/recent").set(auth(ben)).expect(200);
+  let recent = await request(ctx.app).get("/me/notifications/recent").set(auth(ben)).expect(200);
   assert.deepEqual(
-    recent.body.recent.map((r) => r.result),
-    ["throttled", "sent", "in_app"],
+    recent.body.recent.map((r) => [r.result, r.app]),
+    [
+      ["throttled", "closed"],
+      ["sent", "background"],
+      ["in_app", "foreground"],
+    ],
   );
   assert.equal(recent.body.recent[0].about, ANNA);
+
+  // Apple/Google confirmed delivery (receipt)
+  const [ticket] = await PushTicket.find({ type: "contact_available" });
+  fakes.receipts[ticket.ticketId] = { status: "ok" };
+  await checkReceipts(new Date(Date.now() + RECEIPT_DELAY_MS + 1000));
+  recent = await request(ctx.app).get("/me/notifications/recent").set(auth(ben)).expect(200);
+  assert.equal(recent.body.recent[1].delivery, "delivered");
 });

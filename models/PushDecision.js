@@ -7,6 +7,11 @@ const pushDecisionSchema = new mongoose.Schema({
   type: { type: String, required: true },
   about: { type: String },
   result: { type: String, required: true }, // "sent" or a skip reason
+  // State of the recipient's app when deciding: foreground | background | closed
+  app: { type: String },
+  // Filled from the Expo receipt: "delivered" or the error code
+  ticketId: { type: String, index: true, sparse: true },
+  delivery: { type: String },
   at: { type: Date, default: Date.now },
 });
 

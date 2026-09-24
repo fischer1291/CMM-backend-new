@@ -34,8 +34,8 @@ function registerSocketHandlers(io, calls) {
     // The app reports whether it is in the foreground (AppState). Pushes
     // the app would show as a live banner are skipped for such users.
     socket.data.foreground = false;
-    socket.on("presence", ({ foreground } = {}) => {
-      socket.data.foreground = foreground === true;
+    socket.on("presence", (data) => {
+      socket.data.foreground = data?.foreground === true;
     });
 
     socket.on("register", (phone) => {

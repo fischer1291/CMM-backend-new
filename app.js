@@ -273,9 +273,16 @@ function createApp({ ringTimeoutMs } = {}) {
 
   registerSocketHandlers(io, calls);
   setForegroundLookup(async (phones) => {
-    if (!phones.length) return new Set();
+    const states = new Map();
+    if (!phones.length) return states;
     const sockets = await io.in(phones.map((p) => `user:${p}`)).fetchSockets();
-    return new Set(sockets.filter((s) => s.data.foreground && s.data.phone).map((s) => s.data.phone));
+    for (const s of sockets) {
+      if (!s.data.phone) continue;
+      // Any device in the foreground counts
+      if (s.data.foreground) states.set(s.data.phone, "foreground");
+      else if (!states.has(s.data.phone)) states.set(s.data.phone, "background");
+    }
+    return states;
   });
 
   return { app, server, io, calls };
