@@ -10,6 +10,7 @@ const { parseSchedule, nextSlot } = require("../lib/schedule");
 const { statsFor, sharedView, canView } = require("../lib/stats");
 const { isValidTimezone } = require("../lib/localTime");
 const { notify } = require("../lib/notify");
+const { nextNudgeAllowed, VISIBLE_MS } = require("../lib/nudges");
 
 const MAX_NUDGES_PER_DAY = 20;
 const MAX_SHARED_WITH = 200;
@@ -122,33 +123,52 @@ module.exports = (io) => {
     if (today >= MAX_NUDGES_PER_DAY) {
       return res.status(429).json({ success: false, error: "too_many" });
     }
-
-    try {
-      await Nudge.create({ from, to });
-    } catch (err) {
-      if (err.code === 11000) return res.status(429).json({ success: false, error: "already_nudged" });
-      throw err;
+    // Same answer for "unanswered" and "dismissed": the sender isn't told
+    const next = await nextNudgeAllowed(from, to);
+    if (next.allowedAt) {
+      return res.status(429).json({ success: false, error: next.reason, nextAllowedAt: next.allowedAt });
     }
 
+    await Nudge.create({ from, to });
     io.to(`user:${to}`).emit("nudge", { from, name: sender.name || "", at: new Date() });
     const result = await notify(target, "nudge", { phone: from, name: sender.name });
-    res.json({ success: true, pushed: !!result.sent });
+    const after = await nextNudgeAllowed(from, to);
+    res.json({ success: true, pushed: !!result.sent, nextAllowedAt: after.allowedAt });
   });
 
-  // GET /nudges: who nudged me recently (and which contacts I nudged)
+  // GET /nudges: open nudges for me (recent ones only), and when I may nudge
+  // each person again
   router.get("/nudges", async (req, res) => {
     const phone = req.auth.phone;
-    const [received, sent] = await Promise.all([
-      Nudge.find({ to: phone }).sort({ createdAt: -1 }).lean(),
-      Nudge.find({ from: phone }, "to createdAt").lean(),
+    const now = new Date();
+    const [received, sentTo] = await Promise.all([
+      Nudge.find({ to: phone, status: "open", createdAt: { $gt: new Date(now - VISIBLE_MS) } })
+        .sort({ createdAt: -1 })
+        .lean(),
+      Nudge.distinct("to", { from: phone }),
     ]);
     const senders = await User.find({ phone: { $in: received.map((n) => n.from) } }, "phone name").lean();
     const nameOf = new Map(senders.map((u) => [u.phone, u.name || ""]));
+    const sent = [];
+    for (const to of sentTo) {
+      const { allowedAt } = await nextNudgeAllowed(phone, to, now);
+      if (allowedAt) sent.push({ to, nextAllowedAt: allowedAt });
+    }
     res.json({
       success: true,
       received: received.map((n) => ({ from: n.from, name: nameOf.get(n.from) || "", at: n.createdAt })),
-      sent: sent.map((n) => ({ to: n.to, at: n.createdAt })),
+      sent,
     });
+  });
+
+  // POST /nudges/dismiss { from? }: "Nicht jetzt" (all open nudges if no sender)
+  router.post("/nudges/dismiss", async (req, res) => {
+    const filter = { to: req.auth.phone, status: "open" };
+    if (req.body?.from) {
+      filter.from = normalizePhone(String(req.body.from), regionOf(req.auth.phone));
+    }
+    const result = await Nudge.updateMany(filter, { status: "dismissed", resolvedAt: new Date() });
+    res.json({ success: true, dismissed: result.modifiedCount });
   });
 
   return router;

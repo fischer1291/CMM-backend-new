@@ -19,6 +19,10 @@ async function migrate() {
     await User.updateOne({ _id: user._id }, { phoneHash: User.hashPhone(user.phone) });
   }
   if (missingHash.length) console.log(`🔧 Added phoneHash to ${missingHash.length} users`);
+
+  // Nudges: the unique (from, to) index and the 20 h TTL were replaced by a
+  // history with cooldowns; syncIndexes drops/recreates what changed
+  await require("./models/Nudge").syncIndexes();
 }
 
 async function main() {
