@@ -9,6 +9,8 @@ const { expireMoments } = require("./routes/moment");
 const { broadcastStatus } = require("./routes/status");
 const { applySchedules } = require("./lib/schedule");
 const { checkReceipts } = require("./lib/receipts");
+const { tickDailyMoments } = require("./lib/dailyMoment");
+const { expirePendingMoments } = require("./lib/moments");
 
 const PORT = process.env.PORT || 3000;
 
@@ -50,6 +52,8 @@ async function main() {
   const tick = async () => {
     await applySchedules((user) => broadcastStatus(io, user, { becameAvailable: true }));
     await expireMoments(io);
+    await tickDailyMoments(io);
+    await expirePendingMoments();
   };
   setInterval(() => {
     tick().catch((err) => console.error("❌ availability tick:", err.message));

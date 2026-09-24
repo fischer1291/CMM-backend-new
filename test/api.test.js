@@ -2,7 +2,7 @@ const { test, before, after, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const request = require("supertest");
 const { io: connect } = require("socket.io-client");
-const { setup, teardown, reset, fakes } = require("./helpers");
+const { setup, teardown, reset, fakes, talked } = require("./helpers");
 const User = require("../models/User");
 const Call = require("../models/Call");
 const CallMoment = require("../models/CallMoment");
@@ -137,7 +137,13 @@ test("moments: feed only shows own and contacts' moments", async () => {
   await CallMoment.create({ ...base, userPhone: BEN, userName: "Ben", targetPhone: CARL, targetName: "C" });
   await CallMoment.create({ ...base, userPhone: CARL, userName: "Carl", targetPhone: BEN, targetName: "B" });
 
-  const feed = await request(ctx.app).get("/moment/callmoments").set(auth(anna)).expect(200);
+  // Friends' moments show after your own first conversation today
+  let feed = await request(ctx.app).get("/moment/callmoments").set(auth(anna)).expect(200);
+  assert.equal(feed.body.locked, true);
+  assert.equal(feed.body.lockedCount, 1);
+  assert.deepEqual(feed.body.callMoments, []);
+  await talked(ANNA, CARL);
+  feed = await request(ctx.app).get("/moment/callmoments").set(auth(anna)).expect(200);
   assert.deepEqual(feed.body.callMoments.map((m) => m.userPhone), [BEN]);
 
   await request(ctx.app).get(`/moment/callmoments/${encodeURIComponent(CARL)}`).set(auth(anna)).expect(403);
@@ -146,6 +152,10 @@ test("moments: feed only shows own and contacts' moments", async () => {
 test("moments: posting validates input and uses the token's phone", async () => {
   const anna = await login(ANNA);
   const body = { targetPhone: BEN, screenshot: "data:image/jpeg;base64,AAAA", mood: "😊" };
+  // Only from a real call
+  const noCall = await request(ctx.app).post("/moment/callmoment").set(auth(anna)).send(body).expect(403);
+  assert.equal(noCall.body.error, "no_call");
+  await talked(BEN, ANNA);
   await request(ctx.app).post("/moment/callmoment").set(auth(anna)).send({ ...body, screenshot: "file:///x.jpg" }).expect(400);
   await request(ctx.app).post("/moment/callmoment").set(auth(anna)).send({ ...body, userPhone: BEN }).expect(403);
   const res = await request(ctx.app).post("/moment/callmoment").set(auth(anna)).send(body).expect(200);
@@ -262,6 +272,7 @@ test("legacy: the currently released app (no token) keeps working", async () => 
   await request(ctx.app).post("/user/voip-token").send({ userPhone: ANNA, voipToken: "ab".repeat(32) }).expect(200);
 
   // The call screen strips the "+" from the user's own number
+  await talked(ANNA, BEN);
   await request(ctx.app)
     .post("/moment/callmoment")
     .send({ userPhone: ANNA.slice(1), targetPhone: BEN, screenshot: "data:image/jpeg;base64,AAAA", mood: "😊" })

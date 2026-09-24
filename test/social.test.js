@@ -2,7 +2,7 @@ const { test, before, after, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const request = require("supertest");
 const { io: connect } = require("socket.io-client");
-const { setup, teardown, reset, fakes } = require("./helpers");
+const { setup, teardown, reset, fakes, talked, shareAll } = require("./helpers");
 const User = require("../models/User");
 const Call = require("../models/Call");
 const CallMoment = require("../models/CallMoment");
@@ -43,11 +43,13 @@ test("block: hides both from each other everywhere; unblock restores with the ne
   const ben = await login(BEN, "Ben");
   await befriend(ANNA, BEN);
   await User.updateOne({ phone: ANNA }, { circles: [{ id: "family01", name: "Familie", emoji: "🏡", members: [BEN] }] });
+  await talked(BEN, ANNA);
   await request(ctx.app)
     .post("/moment/callmoment")
     .set(auth(ben))
     .send({ targetPhone: ANNA, screenshot: IMAGE, mood: "😊", callDuration: "01:00" })
     .expect(200);
+  await shareAll();
 
   await request(ctx.app).post("/blocks").set(auth(anna)).send({ phone: ANNA }).expect(400);
   await request(ctx.app).post("/blocks").set(auth(anna)).send({ phone: BEN }).expect(200);
@@ -83,12 +85,14 @@ test("report: a moment reported by three people is hidden; reporting can block t
   const anna = await login(ANNA, "Anna");
   const reporters = [await login(BEN, "Ben"), await login(CARL, "Carl"), await login(DANA, "Dana")];
   await befriend(ANNA, BEN, CARL, DANA);
+  await talked(ANNA, BEN);
   const momentId = (
     await request(ctx.app)
       .post("/moment/callmoment")
       .set(auth(anna))
       .send({ targetPhone: BEN, screenshot: IMAGE, mood: "😊", callDuration: "01:00" })
   ).body.callMoment._id;
+  await shareAll();
 
   await request(ctx.app).post("/reports").set(auth(reporters[0])).send({ phone: ANNA, reason: "rude" }).expect(400);
   for (const token of reporters) {

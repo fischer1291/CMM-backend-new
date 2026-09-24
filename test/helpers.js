@@ -106,10 +106,32 @@ async function reset() {
   await require("../models/Block").syncIndexes();
   await require("../models/Report").syncIndexes();
   await require("../models/Invite").syncIndexes();
+  await require("../models/DailyMoment").syncIndexes();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
   fakes.voipPushes.length = 0;
   fakes.receipts = {};
 }
 
-module.exports = { setup, teardown, reset, fakes };
+/** a and b had an answered call just now (moments need a real call). */
+let callCounter = 0;
+async function talked(a, b) {
+  const now = new Date();
+  await require("../models/Call").create({
+    callId: `test-call-${++callCounter}`,
+    channel: `test_channel_${callCounter}`,
+    caller: a,
+    callee: b,
+    status: "ended",
+    createdAt: now,
+    acceptedAt: now,
+    endedAt: now,
+  });
+}
+
+/** The other person agreed to every pending moment. */
+async function shareAll() {
+  await require("../models/CallMoment").updateMany({ status: "pending" }, { status: "shared", sharedAt: new Date() });
+}
+
+module.exports = { setup, teardown, reset, fakes, talked, shareAll };
