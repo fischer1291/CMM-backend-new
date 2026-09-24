@@ -86,6 +86,8 @@ async function reset() {
   await mongoose.connection.db.dropDatabase();
   await User.syncIndexes();
   await require("../models/Call").syncIndexes();
+  await require("../models/Talk").syncIndexes();
+  await require("../models/Nudge").syncIndexes();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
   fakes.voipPushes.length = 0;

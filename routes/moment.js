@@ -6,7 +6,9 @@ const { normalizePhone, regionOf } = require("../lib/phone");
 const { sendExpoPushes } = require("../lib/push");
 const { broadcastStatus } = require("./status");
 
-const MOMENT_DURATION_MS = 15 * 60 * 1000;
+// Session lengths the app offers; 15 minutes for older app versions
+const SESSION_MINUTES = [15, 30, 60, 120];
+const DEFAULT_SESSION_MINUTES = 15;
 const MAX_SCREENSHOT_LENGTH = 1_000_000; // ~730 KB image as base64 data URI
 
 const formatReactionsForUser = (reactions, userPhone) => {
@@ -59,6 +61,7 @@ async function expireMoments(io) {
     user.isAvailable = false;
     user.mood = null;
     user.momentActiveUntil = null;
+    user.availableSource = null;
     user.lastOnline = new Date();
     await user.save();
     await broadcastStatus(io, user);
@@ -113,20 +116,25 @@ module.exports = (io) => {
     }
   });
 
-  // POST /moment/confirm { mood }
+  // POST /moment/confirm { mood, minutes? }: available for a limited session
   router.post("/confirm", async (req, res) => {
     const phone = actingPhone(req, res, req.body?.phone);
     if (!phone) return;
     const mood = typeof req.body.mood === "string" ? req.body.mood.slice(0, 20) : null;
+    const minutes = req.body.minutes === undefined ? DEFAULT_SESSION_MINUTES : Number(req.body.minutes);
+    if (!SESSION_MINUTES.includes(minutes)) {
+      return res.status(400).json({ success: false, error: `minutes: one of ${SESSION_MINUTES.join(", ")}` });
+    }
 
     try {
       const user = await User.findOneAndUpdate(
         { phone },
         {
           isAvailable: true,
+          availableSource: "session",
           mood,
           lastOnline: new Date(),
-          momentActiveUntil: new Date(Date.now() + MOMENT_DURATION_MS),
+          momentActiveUntil: new Date(Date.now() + minutes * 60 * 1000),
         },
         { new: true },
       );

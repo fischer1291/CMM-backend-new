@@ -12,6 +12,14 @@ async function followersOf(phone) {
   return User.find({ contacts: phone }, "phone pushToken");
 }
 
+/** Own availability as the app shows it. */
+const statusOf = (user) => ({
+  isAvailable: user.isAvailable,
+  lastOnline: user.lastOnline,
+  availableUntil: user.isAvailable ? user.momentActiveUntil || null : null,
+  availableSource: user.isAvailable ? user.availableSource || null : null,
+});
+
 /** Socket + push notification to the user's followers. */
 async function broadcastStatus(io, user) {
   const followers = await followersOf(user.phone);
@@ -22,6 +30,7 @@ async function broadcastStatus(io, user) {
       isAvailable: user.isAvailable,
       lastOnline: user.lastOnline,
       mood: user.mood || null,
+      availableUntil: user.isAvailable ? user.momentActiveUntil || null : null,
     });
   }
 
@@ -54,10 +63,10 @@ module.exports = (io) => {
     const { isAvailable } = req.body;
 
     try {
-      const update = { isAvailable };
+      // Manually available = open-ended, until switched off
+      const update = { isAvailable, availableSource: isAvailable ? "manual" : null, momentActiveUntil: null };
       if (!isAvailable) {
         update.lastOnline = new Date();
-        update.momentActiveUntil = null;
         update.mood = null;
       }
       const user = await User.findOneAndUpdate({ phone }, update, { new: true });
@@ -69,7 +78,7 @@ module.exports = (io) => {
         console.error("❌ Status broadcast failed:", err.message),
       );
 
-      res.json({ success: true, isAvailable: user.isAvailable, lastOnline: user.lastOnline });
+      res.json({ success: true, ...statusOf(user) });
     } catch (err) {
       console.error("❌ Fehler beim Status setzen:", err.message);
       res.status(500).json({ success: false, error: "Status konnte nicht gesetzt werden" });
@@ -90,7 +99,9 @@ module.exports = (io) => {
       if (!user) {
         return res.status(404).json({ success: false, error: "User nicht gefunden" });
       }
-      res.json({ success: true, isAvailable: user.isAvailable, lastOnline: user.lastOnline });
+      const { availableSource, ...status } = statusOf(user);
+      const own = phone === req.auth?.phone;
+      res.json({ success: true, ...status, ...(own ? { availableSource } : {}) });
     } catch (err) {
       res.status(500).json({ success: false, error: "Status konnte nicht geladen werden" });
     }

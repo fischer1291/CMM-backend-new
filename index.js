@@ -1,10 +1,13 @@
 require("dotenv").config();
 const mongoose = require("mongoose");
 const User = require("./models/User");
+const Call = require("./models/Call");
 const { createApp } = require("./app");
 const { initializeVoipPush } = require("./lib/push");
 const { agoraCredentials } = require("./lib/agora");
 const { expireMoments } = require("./routes/moment");
+const { broadcastStatus } = require("./routes/status");
+const { applySchedules } = require("./lib/schedule");
 
 const PORT = process.env.PORT || 3000;
 
@@ -34,10 +37,17 @@ async function main() {
   await migrate();
   const stale = await calls.sweepStaleCalls();
   if (stale) console.log(`🔧 Marked ${stale} stale ringing calls as missed`);
+  // Talk-time stats start with the calls still on record (idempotent)
+  const answered = await Call.find({ status: "ended", acceptedAt: { $ne: null }, endedAt: { $ne: null } });
+  for (const call of answered) await calls.recordTalk(call);
 
-  // End expired Call Me Moments every minute
+  // Every minute: start scheduled availability, end expired sessions
+  const tick = async () => {
+    await applySchedules((user) => broadcastStatus(io, user));
+    await expireMoments(io);
+  };
   setInterval(() => {
-    expireMoments(io).catch((err) => console.error("❌ expireMoments:", err.message));
+    tick().catch((err) => console.error("❌ availability tick:", err.message));
   }, 60 * 1000);
 
   server.listen(PORT, () => console.log(`🚀 Server läuft mit WebSocket auf Port ${PORT}`));
