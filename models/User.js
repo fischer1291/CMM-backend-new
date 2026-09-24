@@ -36,6 +36,26 @@ const userSchema = new mongoose.Schema({
   // Registered users found in this user's address book (E.164). Used to limit
   // status updates and the CallMoments feed to people who know each other.
   contacts: { type: [String], default: [], index: true },
+
+  // How the current availability started: manual | session | schedule
+  availableSource: { type: String, default: null },
+
+  // Weekly availability plan, applied in the user's time zone (lib/schedule.js)
+  schedule: {
+    enabled: { type: Boolean, default: false },
+    timezone: { type: String, default: null },
+    slots: {
+      type: [{ _id: false, day: Number, start: Number, end: Number }],
+      default: [],
+    },
+  },
+  lastScheduleSlotKey: { type: String, default: null },
+
+  // Who may see this user's talk-time stats. Private unless the user opts in.
+  statsSharing: {
+    visibility: { type: String, enum: ["private", "contacts", "selected"], default: "private" },
+    sharedWith: { type: [String], default: [] },
+  },
 });
 
 userSchema.statics.hashPhone = (phone) =>

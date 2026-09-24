@@ -72,6 +72,7 @@ function createApp({ ringTimeoutMs } = {}) {
   app.use("/me", require("./routes/me"));
   app.use("/moment", require("./routes/moment")(io));
   app.use("/moment", require("./routes/reactions"));
+  app.use(require("./routes/gamification")(io));
 
   const upload = multer({
     storage: multer.memoryStorage(),
