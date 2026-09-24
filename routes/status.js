@@ -3,6 +3,7 @@ const User = require("../models/User");
 const { actingPhone } = require("../lib/auth");
 const { normalizePhone, regionOf } = require("../lib/phone");
 const { notifyMany } = require("../lib/notify");
+const { answerNudges } = require("../lib/nudges");
 
 /**
  * Users who have `phone` in their contact list. Only they may learn about
@@ -40,6 +41,8 @@ async function broadcastStatus(io, user, { becameAvailable = false } = {}) {
 
   // Throttled per follower, respects their settings and quiet hours
   if (user.isAvailable && becameAvailable) {
+    // Whoever nudged them got what they asked for
+    await answerNudges({ to: user.phone });
     await notifyMany(followers, "contact_available", { phone: user.phone, name: user.name });
   }
 }
