@@ -13,11 +13,13 @@ const { authenticate, actingPhone } = require("./lib/auth");
 const { agoraCredentials, buildRtcToken } = require("./lib/agora");
 const { Expo, voipProviders } = require("./lib/push");
 const { registerSocketHandlers } = require("./socket");
+const { createCallService, historyEntry } = require("./lib/calls");
 
-function createApp() {
+function createApp({ ringTimeoutMs } = {}) {
   const app = express();
   const server = http.createServer(app);
   const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
+  const calls = createCallService(io, { ringTimeoutMs });
 
   cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -133,6 +135,15 @@ function createApp() {
       }
     }
 
+    // The callee only fetches a token after answering. Treat that as the
+    // answer too, so a lost acceptCall socket event can't let the ring
+    // timeout end a call that is already connected.
+    const requester = req.auth?.phone || `+${String(uid).replace(/^\+/, "")}`;
+    const ringing = await Call.findOne({ channel: channelName, callee: requester, status: "ringing" });
+    if (ringing) {
+      await calls.acceptCall({ callee: ringing.callee, caller: ringing.caller, channel: channelName });
+    }
+
     try {
       res.json({ token: buildRtcToken(channelName, uid, role) });
     } catch (err) {
@@ -212,9 +223,26 @@ function createApp() {
     }
   });
 
-  registerSocketHandlers(io);
+  // Call history of the authenticated user
+  app.get("/calls", async (req, res) => {
+    if (!req.auth) {
+      return res.status(401).json({ success: false, error: "Authentication required" });
+    }
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const phone = req.auth.phone;
+    try {
+      const list = await Call.find({ $or: [{ caller: phone }, { callee: phone }] })
+        .sort({ createdAt: -1 })
+        .limit(limit);
+      res.json({ success: true, calls: list.map((c) => historyEntry(c, phone)) });
+    } catch (error) {
+      res.status(500).json({ success: false, error: "Anrufe konnten nicht geladen werden" });
+    }
+  });
 
-  return { app, server, io };
+  registerSocketHandlers(io, calls);
+
+  return { app, server, io, calls };
 }
 
 module.exports = { createApp };

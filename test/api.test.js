@@ -183,7 +183,14 @@ function socketFor(token) {
     socket.on("connect_error", reject);
   });
 }
-const once = (socket, event) => new Promise((resolve) => socket.once(event, resolve));
+const once = (socket, event, ms = 5000) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timeout waiting for ${event}`)), ms);
+    socket.once(event, (data) => {
+      clearTimeout(timer);
+      resolve(data);
+    });
+  });
 
 test("socket: calls use the token's phone, create a Call and reach the callee", async () => {
   const anna = await login(ANNA, "Anna");
@@ -203,16 +210,18 @@ test("socket: calls use the token's phone, create a Call and reach the callee", 
     assert.equal(call.caller, ANNA);
     assert.equal(call.callee, BEN);
 
-    // Same channel again is rejected
+    // Ben is ringing, so a second call to him is busy
     const failed = once(caller, "callFailed");
-    caller.emit("callRequest", { to: BEN, channel: "call_abc" });
-    assert.equal((await failed).reason, "Channel already in use");
+    caller.emit("callRequest", { to: BEN, channel: "call_def" });
+    assert.equal((await failed).reason, "busy");
 
-    // Hang-up reaches the other party
+    // Caller hangs up while ringing: cancelled, callee stops ringing
     const ended = once(callee, "callEnded");
     caller.emit("callEnded", { to: BEN, channel: "call_abc" });
-    assert.equal((await ended).from, ANNA);
-    assert.equal((await Call.findOne({ channel: "call_abc" })).status, "ended");
+    const endedEvent = await ended;
+    assert.equal(endedEvent.from, ANNA);
+    assert.equal(endedEvent.reason, "cancelled");
+    assert.equal((await Call.findOne({ channel: "call_abc" })).status, "cancelled");
   } finally {
     caller.close();
     callee.close();
@@ -227,7 +236,7 @@ test("socket: invalid tokens are refused; invalid channels fail", async () => {
   try {
     const failed = once(caller, "callFailed");
     caller.emit("callRequest", { to: BEN, channel: "bad channel!" });
-    assert.equal((await failed).reason, "Invalid call request");
+    assert.equal((await failed).reason, "invalid");
   } finally {
     caller.close();
   }
@@ -272,11 +281,170 @@ test("legacy: the currently released app (no token) keeps working", async () => 
     const token = await request(ctx.app).post("/rtcToken").send({ channelName: "call_2aq", uid: ANNA.slice(1) }).expect(200);
     assert.ok(token.body.token);
 
-    const ended = once(caller, "callEnded");
+    // Released apps only listen for callEnded; a decline arrives that way
+    const declined = once(caller, "callEnded");
     callee.emit("callEnded", { from: BEN, to: ANNA, channel: "call_2aq" });
-    assert.equal((await ended).from, BEN);
+    const event = await declined;
+    assert.equal(event.from, BEN);
+    assert.equal(event.reason, "declined");
   } finally {
     caller.close();
     callee.close();
+  }
+});
+
+/** Two logged-in, connected users (Anna calls Ben). */
+async function twoUsers() {
+  const anna = await login(ANNA, "Anna");
+  const ben = await login(BEN, "Ben");
+  const caller = await socketFor(anna);
+  const callee = await socketFor(ben);
+  return { anna, ben, caller, callee, close: () => (caller.close(), callee.close()) };
+}
+
+async function ring(caller, callee, channel) {
+  const incoming = once(callee, "incomingCall");
+  caller.emit("callRequest", { to: BEN, channel });
+  return incoming;
+}
+
+test("calls: callee declines while ringing -> caller gets callEnded(declined)", async () => {
+  const { caller, callee, close } = await twoUsers();
+  try {
+    await ring(caller, callee, "call_decline");
+    const declined = once(caller, "callEnded");
+    callee.emit("callEnded", { to: ANNA, channel: "call_decline" });
+    const event = await declined;
+    assert.equal(event.from, BEN);
+    assert.equal(event.reason, "declined");
+    assert.equal((await Call.findOne({ channel: "call_decline" })).status, "declined");
+  } finally {
+    close();
+  }
+});
+
+test("calls: accept, then hang up -> ended with duration, history per side", async () => {
+  const { anna, ben, caller, callee, close } = await twoUsers();
+  try {
+    await ring(caller, callee, "call_talk");
+    const accepted = once(caller, "callAccepted");
+    callee.emit("acceptCall", { from: ANNA, channel: "call_talk" });
+    assert.equal((await accepted).from, BEN);
+
+    const ended = once(callee, "callEnded");
+    caller.emit("callEnded", { to: BEN, channel: "call_talk" });
+    assert.equal((await ended).reason, "hangup");
+
+    const call = await Call.findOne({ channel: "call_talk" });
+    assert.equal(call.status, "ended");
+    assert.ok(call.acceptedAt && call.endedAt);
+
+    const annaHistory = await request(ctx.app).get("/calls").set(auth(anna)).expect(200);
+    assert.equal(annaHistory.body.calls[0].direction, "outgoing");
+    assert.equal(annaHistory.body.calls[0].otherPhone, BEN);
+    const benHistory = await request(ctx.app).get("/calls").set(auth(ben)).expect(200);
+    assert.equal(benHistory.body.calls[0].direction, "incoming");
+    await request(ctx.app).get("/calls").expect(401);
+  } finally {
+    close();
+  }
+});
+
+test("calls: no answer -> missed for both sides plus a missed-call push", async () => {
+  const { caller, callee, close } = await twoUsers();
+  await User.updateOne({ phone: BEN }, { pushToken: "ExponentPushToken[ben]" });
+  try {
+    await ring(caller, callee, "call_nobody");
+    const missed = once(caller, "callEnded", 4000);
+    const calleeEnded = once(callee, "callEnded", 4000);
+    const missedEvent = await missed;
+    assert.equal(missedEvent.channel, "call_nobody");
+    assert.equal(missedEvent.reason, "missed");
+    assert.equal((await calleeEnded).reason, "missed");
+    assert.equal((await Call.findOne({ channel: "call_nobody" })).status, "missed");
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(fakes.expoPushes.some((p) => p.title === "Verpasster Anruf" && p.body.startsWith("Anna")));
+  } finally {
+    close();
+  }
+});
+
+test("calls: accepting after the caller cancelled makes the callee hang up", async () => {
+  const { caller, callee, close } = await twoUsers();
+  try {
+    await ring(caller, callee, "call_late");
+    const cancelled = once(callee, "callEnded");
+    caller.emit("callEnded", { to: BEN, channel: "call_late" });
+    await cancelled;
+
+    const late = once(callee, "callEnded");
+    callee.emit("acceptCall", { from: ANNA, channel: "call_late" });
+    assert.equal((await late).reason, "unavailable");
+    assert.equal((await Call.findOne({ channel: "call_late" })).status, "cancelled");
+  } finally {
+    close();
+  }
+});
+
+test("calls: a cancelled call is replayed to a device that connects right after", async () => {
+  const anna = await login(ANNA, "Anna");
+  const ben = await login(BEN);
+  // Ben is offline but reachable by push (e.g. woken by VoIP)
+  await User.updateOne({ phone: BEN }, { pushToken: "ExponentPushToken[ben]" });
+  const caller = await socketFor(anna);
+  try {
+    caller.emit("callRequest", { to: BEN, channel: "call_replay" });
+    await new Promise((r) => setTimeout(r, 100));
+    caller.emit("callEnded", { to: BEN, channel: "call_replay" });
+    await new Promise((r) => setTimeout(r, 100));
+
+    const callee = await socketFor(ben);
+    try {
+      const replay = once(callee, "callEnded");
+      callee.emit("register", BEN);
+      const event = await replay;
+      assert.equal(event.channel, "call_replay");
+      assert.equal(event.reason, "cancelled");
+    } finally {
+      callee.close();
+    }
+  } finally {
+    caller.close();
+  }
+});
+
+test("calls: unreachable callee (offline, no push token) fails immediately", async () => {
+  const anna = await login(ANNA);
+  await login(BEN);
+  await User.updateOne({ phone: BEN }, { $unset: { pushToken: 1, voipToken: 1 } });
+  const caller = await socketFor(anna);
+  try {
+    const failed = once(caller, "callFailed");
+    caller.emit("callRequest", { to: BEN, channel: "call_void" });
+    assert.equal((await failed).reason, "unreachable");
+    assert.equal((await Call.findOne({ channel: "call_void" })).status, "missed");
+  } finally {
+    caller.close();
+  }
+});
+
+test("calls: the callee fetching an RTC token counts as accepting", async () => {
+  const { ben, caller, callee, close } = await twoUsers();
+  try {
+    await ring(caller, callee, "call_token");
+    const accepted = once(caller, "callAccepted");
+    await request(ctx.app)
+      .post("/rtcToken")
+      .set(auth(ben))
+      .send({ channelName: "call_token", uid: BEN.slice(1), role: "publisher" })
+      .expect(200);
+    assert.equal((await accepted).from, BEN);
+    assert.equal((await Call.findOne({ channel: "call_token" })).status, "accepted");
+
+    // ...so the ring timeout no longer ends it
+    await new Promise((r) => setTimeout(r, 1700));
+    assert.equal((await Call.findOne({ channel: "call_token" })).status, "accepted");
+  } finally {
+    close();
   }
 });
