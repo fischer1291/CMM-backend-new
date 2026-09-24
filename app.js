@@ -14,6 +14,7 @@ const { agoraCredentials, buildRtcToken } = require("./lib/agora");
 const { Expo, voipProviders } = require("./lib/push");
 const { registerSocketHandlers } = require("./socket");
 const { createCallService, historyEntry } = require("./lib/calls");
+const { setForegroundLookup } = require("./lib/notify");
 const { isValidTimezone } = require("./lib/localTime");
 const { normalizePhone, regionOf } = require("./lib/phone");
 
@@ -58,6 +59,8 @@ function createApp({ ringTimeoutMs } = {}) {
         authRequired: process.env.AUTH_REQUIRED === "true",
         // Only whether the certificate comes from the environment, never the value
         agoraCertificateFromEnv: !agoraCredentials().usingLegacyCertificate,
+        // Which commit is deployed (set by Render)
+        version: (process.env.RENDER_GIT_COMMIT || "dev").slice(0, 7),
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
@@ -269,6 +272,11 @@ function createApp({ ringTimeoutMs } = {}) {
   });
 
   registerSocketHandlers(io, calls);
+  setForegroundLookup(async (phones) => {
+    if (!phones.length) return new Set();
+    const sockets = await io.in(phones.map((p) => `user:${p}`)).fetchSockets();
+    return new Set(sockets.filter((s) => s.data.foreground && s.data.phone).map((s) => s.data.phone));
+  });
 
   return { app, server, io, calls };
 }

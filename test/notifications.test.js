@@ -229,3 +229,51 @@ test("availability: a push only on the switch from offline to available, throttl
   await settle();
   assert.equal(available().length, 2);
 });
+
+test("availability: app open -> banner instead of push, throttle untouched; app closed -> push", async () => {
+  const { io: connect } = require("socket.io-client");
+  const anna = await login(ANNA, "Anna");
+  const ben = await login(BEN, "Ben");
+  await User.updateOne({ phone: BEN }, { contacts: [ANNA] });
+  await User.updateMany({}, { "notificationPrefs.quietHours.enabled": false });
+  const set = (isAvailable) =>
+    request(ctx.app).post("/status/set").set(auth(anna)).send({ isAvailable }).expect(200);
+  const pushes = () => fakes.expoPushes.filter((p) => p.data?.type === "contact_available");
+  const settle = () => new Promise((r) => setTimeout(r, 150));
+
+  const benApp = connect(ctx.url, { auth: { token: ben }, transports: ["websocket"], forceNew: true });
+  await new Promise((resolve) => benApp.on("connect", resolve));
+  try {
+    // Ben has the app open: live update, no push
+    benApp.emit("presence", { foreground: true });
+    const live = new Promise((resolve) => benApp.once("statusUpdate", resolve));
+    await settle();
+    await set(true);
+    assert.equal((await live).isAvailable, true);
+    await settle();
+    assert.equal(pushes().length, 0);
+
+    // Ben closes the app (background): the next switch pushes right away
+    benApp.emit("presence", { foreground: false });
+    await settle();
+    await set(false);
+    await set(true);
+    await settle();
+    assert.equal(pushes().length, 1);
+  } finally {
+    benApp.close();
+  }
+
+  // Socket gone entirely (app killed): still no double push within the throttle
+  await set(false);
+  await set(true);
+  await settle();
+  assert.equal(pushes().length, 1);
+
+  const recent = await request(ctx.app).get("/me/notifications/recent").set(auth(ben)).expect(200);
+  assert.deepEqual(
+    recent.body.recent.map((r) => r.result),
+    ["throttled", "sent", "in_app"],
+  );
+  assert.equal(recent.body.recent[0].about, ANNA);
+});

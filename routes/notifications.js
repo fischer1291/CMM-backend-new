@@ -3,6 +3,7 @@
  */
 const express = require("express");
 const User = require("../models/User");
+const PushDecision = require("../models/PushDecision");
 
 const router = express.Router();
 
@@ -52,6 +53,15 @@ router.put("/me/notifications", requireAuth, async (req, res) => {
   const user = await User.findOneAndUpdate({ phone: req.auth.phone }, { $set: update }, { new: true });
   if (!user) return res.status(404).json({ success: false, error: "User not found" });
   res.json({ success: true, prefs: prefsOf(user) });
+});
+
+// GET /me/notifications/recent: the last pushes meant for me, sent or skipped (and why)
+router.get("/me/notifications/recent", requireAuth, async (req, res) => {
+  const recent = await PushDecision.find({ to: req.auth.phone }).sort({ at: -1 }).limit(20).lean();
+  res.json({
+    success: true,
+    recent: recent.map(({ type, about, result, at }) => ({ type, about: about || null, result, at })),
+  });
 });
 
 // POST /auth/logout: this device stops receiving pushes and calls for the account
