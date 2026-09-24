@@ -68,6 +68,8 @@ const callMomentSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  // Hidden after several reports (routes/social.js)
+  hidden: { type: Boolean, default: false },
 });
 
 // Calculate total reactions before saving

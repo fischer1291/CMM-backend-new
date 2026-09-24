@@ -2,6 +2,8 @@ const express = require("express");
 const User = require("../models/User");
 const { actingPhone } = require("../lib/auth");
 const { normalizePhone, regionOf } = require("../lib/phone");
+const { isBlocked } = require("../lib/relations");
+const { announceJoined } = require("../lib/invites");
 
 const router = express.Router();
 
@@ -28,7 +30,8 @@ router.get("/", async (req, res) => {
 
   try {
     const user = await User.findOne({ phone });
-    if (!user) {
+    const viewer = req.auth?.phone;
+    if (!user || (viewer && phone !== viewer && (await isBlocked(viewer, phone)))) {
       return res.status(404).json({ success: false, error: "User not found" });
     }
     res.json({ success: true, user: profileOf(user) });
@@ -66,6 +69,9 @@ router.post("/update", async (req, res) => {
       return res.status(404).json({ success: false, error: "User not found" });
     }
     res.json({ success: true, user: profileOf(user) });
+    if (update.name) {
+      announceJoined(user, req.app.get("io")).catch((err) => console.error("❌ announceJoined:", err.message));
+    }
   } catch (err) {
     res.status(500).json({ success: false, error: "Profil konnte nicht gespeichert werden" });
   }

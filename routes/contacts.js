@@ -1,6 +1,7 @@
 const express = require("express");
 const User = require("../models/User");
 const { normalizePhone, regionOf } = require("../lib/phone");
+const { blockedWith, inAudience } = require("../lib/relations");
 
 const router = express.Router();
 
@@ -36,7 +37,8 @@ router.post("/match", async (req, res) => {
   try {
     const matched = await User.find(query);
     const own = req.auth?.phone;
-    const others = matched.filter((u) => u.phone !== own);
+    const blocked = own ? await blockedWith(own) : new Set();
+    const others = matched.filter((u) => u.phone !== own && !blocked.has(u.phone));
 
     if (own) {
       await User.updateOne({ phone: own }, { contacts: others.map((u) => u.phone) });
@@ -47,7 +49,8 @@ router.post("/match", async (req, res) => {
       matched: others.map((user) => ({
         phone: user.phone,
         phoneHash: user.phoneHash,
-        isAvailable: user.isAvailable,
+        // Only if the user shares their availability with you
+        isAvailable: user.isAvailable && (!own || inAudience(user, own)),
         lastOnline: user.lastOnline,
         name: user.name || "",
         avatarUrl: user.avatarUrl || "",

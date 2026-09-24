@@ -23,6 +23,8 @@ function createApp({ ringTimeoutMs } = {}) {
   const server = http.createServer(app);
   const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
   const calls = createCallService(io, { ringTimeoutMs });
+  // Routes that aren't built with io (e.g. verify) reach it here
+  app.set("io", io);
 
   cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -80,6 +82,7 @@ function createApp({ ringTimeoutMs } = {}) {
   app.use(require("./routes/gamification")(io));
   app.use(require("./routes/notifications"));
   app.use(require("./routes/account")(io));
+  app.use(require("./routes/social")(io));
 
   const upload = multer({
     storage: multer.memoryStorage(),

@@ -65,6 +65,28 @@ const userSchema = new mongoose.Schema({
     },
   },
 
+  // Inviters to tell "X ist jetzt dabei" once this new user set a name
+  pendingJoinAnnouncement: { type: [String], default: [] },
+
+  // Personal groups ("Familie", "Enge Freunde"): members are contacts
+  circles: {
+    type: [
+      {
+        _id: false,
+        id: String,
+        name: String,
+        emoji: String,
+        members: [String],
+      },
+    ],
+    default: [],
+  },
+  // Who sees when this user is available: all contacts or some circles
+  availabilityAudience: {
+    mode: { type: String, enum: ["all", "circles"], default: "all" },
+    circles: { type: [String], default: [] },
+  },
+
   // Who may see this user's talk-time stats. Private unless the user opts in.
   statsSharing: {
     visibility: { type: String, enum: ["private", "contacts", "selected"], default: "private" },

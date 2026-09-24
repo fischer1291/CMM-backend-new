@@ -4,6 +4,7 @@ const { actingPhone } = require("../lib/auth");
 const { normalizePhone, regionOf } = require("../lib/phone");
 const { notifyMany } = require("../lib/notify");
 const { answerNudges } = require("../lib/nudges");
+const { inAudience, isBlocked } = require("../lib/relations");
 
 /**
  * Users who have `phone` in their contact list. Only they may learn about
@@ -27,7 +28,19 @@ const statusOf = (user) => ({
  * would only use up the throttle).
  */
 async function broadcastStatus(io, user, { becameAvailable = false } = {}) {
-  const followers = await followersOf(user.phone);
+  // Contacts outside the chosen audience see the user as not available
+  const all = await followersOf(user.phone);
+  const followers = all.filter((f) => inAudience(user, f.phone));
+  const hidden = all.filter((f) => !inAudience(user, f.phone));
+  if (hidden.length) {
+    io.to(hidden.map((f) => `user:${f.phone}`)).emit("statusUpdate", {
+      phone: user.phone,
+      isAvailable: false,
+      lastOnline: user.lastOnline,
+      mood: null,
+      availableUntil: null,
+    });
+  }
   const rooms = followers.map((f) => `user:${f.phone}`);
   if (rooms.length > 0) {
     io.to(rooms).emit("statusUpdate", {
@@ -97,8 +110,16 @@ module.exports = (io) => {
       if (!user) {
         return res.status(404).json({ success: false, error: "User nicht gefunden" });
       }
-      const { availableSource, ...status } = statusOf(user);
       const own = phone === req.auth?.phone;
+      const viewer = req.auth?.phone;
+      if (!own && viewer && (await isBlocked(viewer, phone))) {
+        return res.status(404).json({ success: false, error: "User nicht gefunden" });
+      }
+      const { availableSource, ...status } = statusOf(user);
+      if (!own && viewer && !inAudience(user, viewer)) {
+        status.isAvailable = false;
+        status.availableUntil = null;
+      }
       res.json({ success: true, ...status, ...(own ? { availableSource } : {}) });
     } catch (err) {
       res.status(500).json({ success: false, error: "Status konnte nicht geladen werden" });

@@ -54,7 +54,7 @@ function registerSocketHandlers(io, calls) {
       }
 
       try {
-        const result = await calls.startCall({ from, to, channel });
+        const result = await calls.startCall({ from, to, channel, video: data.video !== false });
         if (!result.ok) {
           socket.emit("callFailed", { reason: result.reason, target: to, channel });
         }

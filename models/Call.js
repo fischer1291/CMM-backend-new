@@ -15,6 +15,8 @@ const callSchema = new mongoose.Schema({
     enum: ["ringing", "accepted", "ended", "declined", "cancelled", "missed", "busy"],
     default: "ringing",
   },
+  // false: audio only
+  video: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
   acceptedAt: { type: Date },
   endedAt: { type: Date },
