@@ -4,6 +4,9 @@ const Module = require("module");
 process.env.NODE_ENV = "test";
 process.env.JWT_SECRET = "test-secret";
 process.env.ADMIN_API_KEY = "admin-key";
+// Test-only value; real certificates only come from the deployment environment
+process.env.AGORA_APP_CERTIFICATE = "0123456789abcdef0123456789abcdef";
+process.env.CLOUDINARY_CLOUD_NAME = "testcloud";
 
 const fakes = {
   approvedCode: "123456",
