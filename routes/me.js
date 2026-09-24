@@ -1,83 +1,73 @@
 const express = require("express");
-const router = express.Router();
 const User = require("../models/User");
+const { actingPhone } = require("../lib/auth");
+const { normalizePhone, regionOf } = require("../lib/phone");
 
-function normalizePhone(phone) {
-  return phone
-    .trim()
-    .replace(/\s+/g, "")
-    .replace(/^00/, "+")
-    .replace(/^(\s*)/, "")
-    .replace(/^(?!\+)/, "+");
-}
+const router = express.Router();
 
-// ✅ GET /me?phone=...
+const profileOf = (user) => ({
+  phone: user.phone,
+  name: user.name || "",
+  avatarUrl: user.avatarUrl || "",
+  lastOnline: user.lastOnline || null,
+  momentActiveUntil: user.momentActiveUntil || null,
+});
+
+// GET /me            -> own profile (authenticated)
+// GET /me?phone=...  -> profile of that user (name, avatar, last online)
 router.get("/", async (req, res) => {
-  let { phone } = req.query;
-  if (!phone) {
-    return res
-      .status(400)
-      .json({ success: false, error: "Phone number required" });
+  let phone;
+  if (req.query.phone) {
+    phone = normalizePhone(String(req.query.phone), regionOf(req.auth?.phone));
+  } else {
+    phone = req.auth?.phone;
   }
-
-  phone = normalizePhone(phone);
-  console.log("📞 Normalized phone:", phone);
+  if (!phone) {
+    return res.status(400).json({ success: false, error: "Phone number required" });
+  }
 
   try {
     const user = await User.findOne({ phone });
     if (!user) {
       return res.status(404).json({ success: false, error: "User not found" });
     }
-
-    res.json({
-      success: true,
-      user: {
-        phone: user.phone,
-        name: user.name || "",
-        avatarUrl: user.avatarUrl || "",
-        lastOnline: user.lastOnline || null,
-        momentActiveUntil: user.momentActiveUntil || null, // ✅ optional
-      },
-    });
+    res.json({ success: true, user: profileOf(user) });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: "Profil konnte nicht geladen werden" });
   }
 });
 
-// ✅ POST /me/update
+const MAX_NAME_LENGTH = 50;
+
+// POST /me/update { name?, avatarUrl? }
 router.post("/update", async (req, res) => {
-  let { phone, name, avatarUrl } = req.body;
-  if (!phone) {
-    return res
-      .status(400)
-      .json({ success: false, error: "Phone number is required" });
+  const phone = actingPhone(req, res, req.body?.phone);
+  if (!phone) return;
+
+  const update = {};
+  if (req.body.name !== undefined) {
+    const name = String(req.body.name).trim();
+    if (!name || name.length > MAX_NAME_LENGTH) {
+      return res.status(400).json({ success: false, error: `Name: 1–${MAX_NAME_LENGTH} Zeichen` });
+    }
+    update.name = name;
+  }
+  if (req.body.avatarUrl !== undefined) {
+    const url = String(req.body.avatarUrl);
+    if (url && !/^https:\/\//.test(url)) {
+      return res.status(400).json({ success: false, error: "avatarUrl must be https" });
+    }
+    update.avatarUrl = url;
   }
 
-  phone = normalizePhone(phone);
-
   try {
-    const user = await User.findOneAndUpdate(
-      { phone },
-      { name, avatarUrl },
-      { new: true, upsert: false },
-    );
-
+    const user = await User.findOneAndUpdate({ phone }, update, { new: true });
     if (!user) {
       return res.status(404).json({ success: false, error: "User not found" });
     }
-
-    res.json({
-      success: true,
-      user: {
-        phone: user.phone,
-        name: user.name || "",
-        avatarUrl: user.avatarUrl || "",
-        lastOnline: user.lastOnline || null,
-        momentActiveUntil: user.momentActiveUntil || null,
-      },
-    });
+    res.json({ success: true, user: profileOf(user) });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: "Profil konnte nicht gespeichert werden" });
   }
 });
 

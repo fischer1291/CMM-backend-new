@@ -1,116 +1,102 @@
 const express = require("express");
 const User = require("../models/User");
-const fetch = (...args) =>
-  import("node-fetch").then(({ default: fetch }) => fetch(...args));
+const { actingPhone } = require("../lib/auth");
+const { normalizePhone, regionOf } = require("../lib/phone");
+const { sendExpoPushes } = require("../lib/push");
 
-function normalizePhone(phone) {
-  return phone
-    .trim()
-    .replace(/\s+/g, "")
-    .replace(/^00/, "+")
-    .replace(/^(\s*)/, "")
-    .replace(/^(?!\+)/, "+");
+/**
+ * Users who have `phone` in their contact list. Only they may learn about
+ * this user's availability.
+ */
+async function followersOf(phone) {
+  return User.find({ contacts: phone }, "phone pushToken");
+}
+
+/** Socket + push notification to the user's followers. */
+async function broadcastStatus(io, user) {
+  const followers = await followersOf(user.phone);
+  const rooms = followers.map((f) => `user:${f.phone}`);
+  if (rooms.length > 0) {
+    io.to(rooms).emit("statusUpdate", {
+      phone: user.phone,
+      isAvailable: user.isAvailable,
+      lastOnline: user.lastOnline,
+      mood: user.mood || null,
+    });
+  }
+
+  if (user.isAvailable) {
+    const displayName = user.name || "Ein Kontakt";
+    await sendExpoPushes(
+      followers
+        .filter((f) => f.pushToken)
+        .map((f) => ({
+          to: f.pushToken,
+          sound: "default",
+          title: `${displayName} ist erreichbar`,
+          body: "Jetzt ist ein guter Moment für einen Anruf.",
+          data: { type: "contact_available", phone: user.phone },
+        })),
+    );
+  }
 }
 
 module.exports = (io) => {
   const router = express.Router();
 
-  // ✅ Status setzen
+  // POST /status/set { isAvailable }
   router.post("/set", async (req, res) => {
-    let { phone, isAvailable } = req.body;
-    if (!phone) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Phone number required" });
+    const phone = actingPhone(req, res, req.body?.phone);
+    if (!phone) return;
+    if (typeof req.body.isAvailable !== "boolean") {
+      return res.status(400).json({ success: false, error: "isAvailable must be a boolean" });
     }
-
-    phone = normalizePhone(phone);
+    const { isAvailable } = req.body;
 
     try {
-      const updateFields = { isAvailable };
+      const update = { isAvailable };
       if (!isAvailable) {
-        updateFields.lastOnline = new Date(); // ⬅️ Zeit speichern
+        update.lastOnline = new Date();
+        update.momentActiveUntil = null;
+        update.mood = null;
       }
-
-      const user = await User.findOneAndUpdate({ phone }, updateFields, {
-        new: true,
-      });
-
+      const user = await User.findOneAndUpdate({ phone }, update, { new: true });
       if (!user) {
-        return res
-          .status(404)
-          .json({ success: false, error: "User nicht gefunden" });
+        return res.status(404).json({ success: false, error: "User nicht gefunden" });
       }
 
-      // 🔔 WebSocket senden
-      io.emit("statusUpdate", {
-        phone: user.phone,
-        isAvailable: user.isAvailable,
-        lastOnline: user.lastOnline,
-      });
+      broadcastStatus(io, user).catch((err) =>
+        console.error("❌ Status broadcast failed:", err.message),
+      );
 
-      // ✅ Push senden nur bei Aktivierung
-      if (isAvailable) {
-        const contacts = await User.find({
-          pushToken: { $ne: null },
-          phone: { $ne: user.phone },
-        });
-
-        if (contacts.length > 0) {
-          const messages = contacts.map((c) => ({
-            to: c.pushToken,
-            sound: "default",
-            title: "📞 Call Me Maybe",
-            body: `${user.phone} ist jetzt erreichbar!`,
-            data: { phone: user.phone },
-          }));
-
-          const response = await fetch("https://exp.host/--/api/v2/push/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(messages),
-          });
-
-          const result = await response.json();
-          console.log("✅ Push Result:", JSON.stringify(result, null, 2));
-        }
-      }
-
-      res.json({ success: true, user });
+      res.json({ success: true, isAvailable: user.isAvailable, lastOnline: user.lastOnline });
     } catch (err) {
-      console.error("❌ Fehler beim Status setzen:", err);
-      res.status(500).json({ success: false, error: err.message });
+      console.error("❌ Fehler beim Status setzen:", err.message);
+      res.status(500).json({ success: false, error: "Status konnte nicht gesetzt werden" });
     }
   });
 
-  // ✅ Status abfragen
+  // GET /status/get[?phone=...]
   router.get("/get", async (req, res) => {
-    let { phone } = req.query;
+    const phone = req.query.phone
+      ? normalizePhone(String(req.query.phone), regionOf(req.auth?.phone))
+      : req.auth?.phone;
     if (!phone) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Phone number required" });
+      return res.status(400).json({ success: false, error: "Phone number required" });
     }
-
-    phone = normalizePhone(phone);
 
     try {
       const user = await User.findOne({ phone });
       if (!user) {
-        return res
-          .status(404)
-          .json({ success: false, error: "User nicht gefunden" });
+        return res.status(404).json({ success: false, error: "User nicht gefunden" });
       }
-      res.json({
-        success: true,
-        isAvailable: user.isAvailable,
-        lastOnline: user.lastOnline,
-      });
+      res.json({ success: true, isAvailable: user.isAvailable, lastOnline: user.lastOnline });
     } catch (err) {
-      console.error("❌ Fehler bei Statusabfrage:", err);
-      res.status(500).json({ success: false, error: err.message });
+      res.status(500).json({ success: false, error: "Status konnte nicht geladen werden" });
     }
   });
 
   return router;
 };
+
+module.exports.broadcastStatus = broadcastStatus;

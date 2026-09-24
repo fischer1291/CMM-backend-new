@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema({
@@ -29,6 +30,15 @@ const userSchema = new mongoose.Schema({
   momentActiveUntil: { type: Date, default: null },
   mood: { type: String, default: null },
   lastMomentInvite: { type: Date },
+
+  // SHA-256 of the E.164 phone number, for privacy-preserving contact matching
+  phoneHash: { type: String, index: true },
+  // Registered users found in this user's address book (E.164). Used to limit
+  // status updates and the CallMoments feed to people who know each other.
+  contacts: { type: [String], default: [], index: true },
 });
+
+userSchema.statics.hashPhone = (phone) =>
+  crypto.createHash("sha256").update(phone).digest("hex");
 
 module.exports = mongoose.model("User", userSchema);
