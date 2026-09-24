@@ -27,11 +27,13 @@ async function main() {
     console.warn("⚠️ AGORA_APP_CERTIFICATE not set: using the leaked legacy certificate");
   }
 
-  const { server, io } = createApp();
+  const { server, io, calls } = createApp();
 
   await mongoose.connect(process.env.MONGODB_URI);
   console.log("✅ MongoDB verbunden");
   await migrate();
+  const stale = await calls.sweepStaleCalls();
+  if (stale) console.log(`🔧 Marked ${stale} stale ringing calls as missed`);
 
   // End expired Call Me Moments every minute
   setInterval(() => {

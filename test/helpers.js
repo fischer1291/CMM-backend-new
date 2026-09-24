@@ -68,7 +68,8 @@ let ctx;
 async function setup() {
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
-  ctx = createApp();
+  // Short ring timeout so the missed-call path is testable
+  ctx = createApp({ ringTimeoutMs: 1500 });
   await new Promise((resolve) => ctx.server.listen(0, resolve));
   ctx.url = `http://127.0.0.1:${ctx.server.address().port}`;
   return ctx;
