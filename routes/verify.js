@@ -5,6 +5,7 @@ const twilio = require("twilio");
 const User = require("../models/User");
 const { normalizePhone } = require("../lib/phone");
 const { signToken } = require("../lib/auth");
+const { connectInviters } = require("../lib/invites");
 
 const router = express.Router();
 
@@ -95,11 +96,17 @@ router.post("/check", perPhone(10), async (req, res) => {
       return res.json({ success: false, error: "Code nicht korrekt" });
     }
 
+    const isNew = !(await User.exists({ phone }));
     const user = await User.findOneAndUpdate(
       { phone },
       { $setOnInsert: { phone, phoneHash: User.hashPhone(phone) } },
       { new: true, upsert: true },
     );
+
+    if (isNew) {
+      // Invited by friends: connect them right away
+      connectInviters(user).catch((err) => console.error("❌ connectInviters:", err.message));
+    }
 
     res.json({
       success: true,

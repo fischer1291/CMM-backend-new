@@ -103,6 +103,9 @@ async function reset() {
   await require("../models/PushLog").syncIndexes();
   await require("../models/PushTicket").syncIndexes();
   await require("../models/PushDecision").syncIndexes();
+  await require("../models/Block").syncIndexes();
+  await require("../models/Report").syncIndexes();
+  await require("../models/Invite").syncIndexes();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
   fakes.voipPushes.length = 0;

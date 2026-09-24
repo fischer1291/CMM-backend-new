@@ -4,6 +4,7 @@ const CallMoment = require("../models/CallMoment");
 const { actingPhone } = require("../lib/auth");
 const { normalizePhone, regionOf } = require("../lib/phone");
 const { notify } = require("../lib/notify");
+const { blockedWith } = require("../lib/relations");
 const { broadcastStatus } = require("./status");
 
 // Session lengths the app offers; 15 minutes for older app versions
@@ -168,8 +169,11 @@ module.exports = (io) => {
 
     try {
       const visible = await visiblePhonesFor(phone);
+      const blocked = [...(await blockedWith(phone))];
       const callMoments = await CallMoment.find({
         $or: [{ userPhone: { $in: visible } }, { targetPhone: { $in: withLegacyVariants([phone]) } }],
+        userPhone: { $nin: withLegacyVariants(blocked) },
+        hidden: { $ne: true },
       })
         .sort({ timestamp: -1 })
         .limit(50);
