@@ -60,7 +60,14 @@ router.get("/me/notifications/recent", requireAuth, async (req, res) => {
   const recent = await PushDecision.find({ to: req.auth.phone }).sort({ at: -1 }).limit(20).lean();
   res.json({
     success: true,
-    recent: recent.map(({ type, about, result, at }) => ({ type, about: about || null, result, at })),
+    recent: recent.map(({ type, about, result, app, delivery, at }) => ({
+      type,
+      about: about || null,
+      result,
+      app: app || null,
+      delivery: delivery || null,
+      at,
+    })),
   });
 });
 
