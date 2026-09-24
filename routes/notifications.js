@@ -16,6 +16,7 @@ const prefsOf = (user) => {
     available: p.available !== false,
     nudges: p.nudges !== false,
     moments: p.moments !== false,
+    dailyMoment: p.dailyMoment !== false,
     quietHours: {
       enabled: p.quietHours?.enabled !== false,
       start: p.quietHours?.start ?? 22 * 60,
@@ -37,7 +38,7 @@ router.get("/me/notifications", requireAuth, async (req, res) => {
 router.put("/me/notifications", requireAuth, async (req, res) => {
   const body = req.body || {};
   const update = {};
-  for (const key of ["available", "nudges", "moments"]) {
+  for (const key of ["available", "nudges", "moments", "dailyMoment"]) {
     if (body[key] === undefined) continue;
     if (typeof body[key] !== "boolean") return res.status(400).json({ success: false, error: `${key} must be a boolean` });
     update[`notificationPrefs.${key}`] = body[key];

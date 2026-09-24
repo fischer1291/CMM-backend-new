@@ -70,6 +70,9 @@ const callMomentSchema = new mongoose.Schema({
   },
   // Hidden after several reports (routes/social.js)
   hidden: { type: Boolean, default: false },
+  // Shared only once the other person agreed; older moments count as shared
+  status: { type: String, enum: ["pending", "shared"], default: "shared" },
+  sharedAt: { type: Date, default: null },
 });
 
 // Calculate total reactions before saving

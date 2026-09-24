@@ -5,6 +5,8 @@ const { actingPhone } = require("../lib/auth");
 const { normalizePhone, regionOf } = require("../lib/phone");
 const { notify } = require("../lib/notify");
 const { blockedWith } = require("../lib/relations");
+const mongoose = require("mongoose");
+const { talkedWith, talkedToday, deleteMoment, VISIBLE_MS, DAY_MS } = require("../lib/moments");
 const { broadcastStatus } = require("./status");
 
 // Session lengths the app offers; 15 minutes for older app versions
@@ -112,7 +114,8 @@ module.exports = (io) => {
     }
   });
 
-  // POST /moment/callmoment: share a CallMoment
+  // POST /moment/callmoment: a picture from a call. Pending until the other
+  // person agrees (POST /moment/:id/consent).
   router.post("/callmoment", async (req, res) => {
     const userPhone = actingPhone(req, res, req.body?.userPhone);
     if (!userPhone) return;
@@ -121,12 +124,12 @@ module.exports = (io) => {
     const targetPhone = normalizePhone(String(req.body.targetPhone || ""), regionOf(userPhone));
     const str = (v, max) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
-    if (
-      !targetPhone ||
-      !isAllowedScreenshot(screenshot) ||
-      !str(mood, 20)
-    ) {
+    if (!targetPhone || targetPhone === userPhone || !isAllowedScreenshot(screenshot) || !str(mood, 20)) {
       return res.status(400).json({ success: false, message: "Required fields missing or invalid" });
+    }
+    // Only from a real, recent call between the two
+    if (!(await talkedWith(userPhone, targetPhone, new Date(Date.now() - DAY_MS)))) {
+      return res.status(403).json({ success: false, error: "no_call" });
     }
 
     try {
@@ -139,26 +142,55 @@ module.exports = (io) => {
         note: str(note, 280),
         mood: str(mood, 20),
         callDuration: str(callDuration, 10) || "00:00",
+        status: "pending",
       });
       res.json({ success: true, callMoment });
 
-      // Tell the other person, if they know the author (no pushes to strangers)
-      const [author, target] = await Promise.all([
-        User.findOne({ phone: userPhone }, "name"),
-        User.findOne({ phone: targetPhone, contacts: userPhone }),
-      ]);
-      if (target && targetPhone !== userPhone) {
-        notify(target, "moment_shared", { phone: userPhone, name: author?.name }).catch((err) =>
-          console.error("❌ moment push:", err.message),
-        );
-      }
+      const author = await User.findOne({ phone: userPhone }, "name");
+      io.to(`user:${targetPhone}`).emit("momentConsent", { id: callMoment._id, from: userPhone });
+      notify(targetPhone, "moment_consent", { phone: userPhone, name: author?.name }).catch((err) =>
+        console.error("❌ moment push:", err.message),
+      );
     } catch (error) {
       console.error("CallMoment error:", error.message);
       res.status(500).json({ success: false, message: "Server error" });
     }
   });
 
-  // GET /moment/callmoments: feed of own and contacts' moments
+  // POST /moment/:id/consent { approve }: the other person decides
+  router.post("/:id/consent", async (req, res) => {
+    const phone = req.auth?.phone;
+    if (!phone) return res.status(401).json({ success: false, error: "Authentication required" });
+    if (!mongoose.isValidObjectId(req.params.id) || typeof req.body?.approve !== "boolean") {
+      return res.status(400).json({ success: false, error: "invalid" });
+    }
+    const moment = await CallMoment.findOne({ _id: req.params.id, targetPhone: phone, status: "pending" });
+    if (!moment) return res.status(404).json({ success: false, error: "not_found" });
+
+    if (!req.body.approve) {
+      await deleteMoment(moment);
+      return res.json({ success: true, status: "deleted" });
+    }
+    moment.status = "shared";
+    moment.sharedAt = new Date();
+    await moment.save();
+    res.json({ success: true, status: "shared" });
+
+    const me = await User.findOne({ phone }, "name");
+    io.to(`user:${moment.userPhone}`).emit("momentShared", { id: moment._id });
+    notify(moment.userPhone, "moment_approved", { phone, name: me?.name }).catch(() => {});
+  });
+
+  const present = (moment, phone) => ({
+    ...moment.toObject(),
+    reactions: formatReactionsForUser(moment.reactions, phone),
+    totalReactions: moment.totalReactions,
+  });
+
+  // GET /moment/callmoments: shared moments of the last 24 h from you and
+  // your contacts. Other people's only after your first real conversation
+  // today (without it: just how many there are, no pictures). Also: moments
+  // waiting for your consent, and yours waiting for theirs.
   router.get("/callmoments", async (req, res) => {
     const phone =
       req.auth?.phone ||
@@ -168,28 +200,56 @@ module.exports = (io) => {
     }
 
     try {
+      const me = await User.findOne({ phone });
       const visible = await visiblePhonesFor(phone);
       const blocked = [...(await blockedWith(phone))];
-      const callMoments = await CallMoment.find({
-        $or: [{ userPhone: { $in: visible } }, { targetPhone: { $in: withLegacyVariants([phone]) } }],
-        userPhone: { $nin: withLegacyVariants(blocked) },
-        hidden: { $ne: true },
-      })
-        .sort({ timestamp: -1 })
-        .limit(50);
+      const mine = withLegacyVariants([phone]);
+      const since = new Date(Date.now() - VISIBLE_MS);
 
+      const [recent, pending, waiting, unlocked] = await Promise.all([
+        CallMoment.find({
+          $or: [{ userPhone: { $in: visible } }, { targetPhone: { $in: mine } }],
+          userPhone: { $nin: withLegacyVariants(blocked) },
+          hidden: { $ne: true },
+          status: { $ne: "pending" },
+          $and: [{ $or: [{ sharedAt: { $gt: since } }, { sharedAt: null, timestamp: { $gt: since } }] }],
+        })
+          .sort({ timestamp: -1 })
+          .limit(50),
+        CallMoment.find({ targetPhone: phone, status: "pending" }).sort({ timestamp: -1 }),
+        CallMoment.find({ userPhone: phone, status: "pending" }).sort({ timestamp: -1 }),
+        me ? talkedToday(me) : false,
+      ]);
+
+      const involvesMe = (m) => mine.includes(m.userPhone) || mine.includes(m.targetPhone);
+      const feed = unlocked ? recent : recent.filter(involvesMe);
       res.json({
         success: true,
-        callMoments: callMoments.map((moment) => ({
-          ...moment.toObject(),
-          reactions: formatReactionsForUser(moment.reactions, phone),
-          totalReactions: moment.totalReactions,
-        })),
+        callMoments: feed.map((m) => present(m, phone)),
+        locked: !unlocked,
+        lockedCount: recent.length - feed.length,
+        pending: pending.map((m) => present(m, phone)),
+        waiting: waiting.map((m) => present(m, phone)),
       });
     } catch (error) {
       console.error("Fetch call moments error:", error.message);
       res.status(500).json({ success: false, message: "Server error" });
     }
+  });
+
+  // GET /moment/memories: all shared moments you're part of, any age
+  router.get("/memories", async (req, res) => {
+    const phone = req.auth?.phone;
+    if (!phone) return res.status(401).json({ success: false, error: "Authentication required" });
+    const mine = withLegacyVariants([phone]);
+    const moments = await CallMoment.find({
+      $or: [{ userPhone: { $in: mine } }, { targetPhone: { $in: mine } }],
+      status: { $ne: "pending" },
+      hidden: { $ne: true },
+    })
+      .sort({ timestamp: -1 })
+      .limit(200);
+    res.json({ success: true, memories: moments.map((m) => present(m, phone)) });
   });
 
   // GET /moment/callmoments/:phone: moments of one user (self or a contact)
@@ -209,6 +269,9 @@ module.exports = (io) => {
       const variants = withLegacyVariants([target]);
       const callMoments = await CallMoment.find({
         $or: [{ userPhone: { $in: variants } }, { targetPhone: { $in: variants } }],
+        status: { $ne: "pending" },
+        hidden: { $ne: true },
+        timestamp: { $gt: new Date(Date.now() - VISIBLE_MS) },
       })
         .sort({ timestamp: -1 })
         .limit(20);

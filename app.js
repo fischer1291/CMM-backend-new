@@ -83,6 +83,7 @@ function createApp({ ringTimeoutMs } = {}) {
   app.use(require("./routes/notifications"));
   app.use(require("./routes/account")(io));
   app.use(require("./routes/social")(io));
+  app.use(require("./routes/daily")(io));
 
   const upload = multer({
     storage: multer.memoryStorage(),

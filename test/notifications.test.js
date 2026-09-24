@@ -1,7 +1,7 @@
 const { test, before, after, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const request = require("supertest");
-const { setup, teardown, reset, fakes } = require("./helpers");
+const { setup, teardown, reset, fakes, talked } = require("./helpers");
 const User = require("../models/User");
 const PushTicket = require("../models/PushTicket");
 const { notify, notifyMany, DAILY_SOCIAL_CAP } = require("../lib/notify");
@@ -86,6 +86,7 @@ test("prefs: defaults, validation and personal quiet hours", async () => {
     available: true,
     nudges: true,
     moments: true,
+    dailyMoment: true,
     quietHours: { enabled: true, start: 1320, end: 480 },
   });
 
@@ -174,26 +175,26 @@ test("receipts: DeviceNotRegistered removes the token; checked tickets are clear
   assert.equal(await PushTicket.countDocuments(), 0);
 });
 
-test("moments: the other person hears about a shared moment only if they know the author", async () => {
+test("moments: the other person is asked to agree; the author hears when they did", async () => {
   const anna = await login(ANNA, "Anna");
-  await login(BEN, "Ben");
-  await login(CARL, "Carl");
+  const ben = await login(BEN, "Ben");
   await User.updateMany({}, { "notificationPrefs.quietHours.enabled": false });
-  await User.updateOne({ phone: BEN }, { contacts: [ANNA] });
+  await talked(ANNA, BEN);
 
-  const post = (targetPhone) =>
-    request(ctx.app)
-      .post("/moment/callmoment")
-      .set(auth(anna))
-      .send({ targetPhone, screenshot: "data:image/jpeg;base64,AAAA", mood: "😊", callDuration: "05:00" })
-      .expect(200);
-  await post(BEN);
-  await post(CARL);
+  const posted = await request(ctx.app)
+    .post("/moment/callmoment")
+    .set(auth(anna))
+    .send({ targetPhone: BEN, screenshot: "data:image/jpeg;base64,AAAA", mood: "😊", callDuration: "05:00" })
+    .expect(200);
   await new Promise((r) => setTimeout(r, 100));
+  const ask = fakes.expoPushes.find((p) => p.data?.type === "moment_consent");
+  assert.equal(ask.to, TOKEN("2"));
+  assert.equal(ask.title, "Anna möchte einen Moment teilen ✨");
 
-  const moments = fakes.expoPushes.filter((p) => p.data?.type === "moment_shared");
-  assert.deepEqual(moments.map((p) => p.to), [TOKEN("2")]);
-  assert.equal(moments[0].data.url, "/callmoments");
+  await request(ctx.app).post(`/moment/${posted.body.callMoment._id}/consent`).set(auth(ben)).send({ approve: true }).expect(200);
+  await new Promise((r) => setTimeout(r, 100));
+  const done = fakes.expoPushes.find((p) => p.data?.type === "moment_approved");
+  assert.equal(done.to, TOKEN("1"));
 });
 
 test("availability: a push only on the switch from offline to available, throttled 30 min", async () => {

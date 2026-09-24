@@ -58,6 +58,7 @@ const userSchema = new mongoose.Schema({
     available: { type: Boolean, default: true },
     nudges: { type: Boolean, default: true },
     moments: { type: Boolean, default: true },
+    dailyMoment: { type: Boolean, default: true },
     quietHours: {
       enabled: { type: Boolean, default: true },
       start: { type: Number, default: 22 * 60 },

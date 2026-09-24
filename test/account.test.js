@@ -1,7 +1,7 @@
 const { test, before, after, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const request = require("supertest");
-const { setup, teardown, reset, fakes } = require("./helpers");
+const { setup, teardown, reset, fakes, talked, shareAll } = require("./helpers");
 const User = require("../models/User");
 const Talk = require("../models/Talk");
 const Nudge = require("../models/Nudge");
@@ -38,9 +38,12 @@ test("delete account: removes the user, their moments, talks, nudges and every t
   await User.updateOne({ phone: BEN }, { contacts: [ANNA, CARL], statsSharing: { visibility: "selected", sharedWith: [ANNA] } });
   await User.updateOne({ phone: CARL }, { contacts: [BEN] });
 
+  await talked(ANNA, BEN);
+  await talked(BEN, CARL);
   await postMoment(anna, BEN).expect(200);
   await postMoment(ben, ANNA).expect(200); // Ben's moment, but it shows Anna
   const bensOther = (await postMoment(ben, CARL).expect(200)).body.callMoment._id;
+  await shareAll();
   await request(ctx.app).post("/moment/react").set(auth(anna)).send({ momentId: bensOther, emoji: "❤️" });
   await Talk.create({ callId: "t1", participants: [ANNA, BEN], startedAt: new Date(), seconds: 600 });
   await Talk.create({ callId: "t2", participants: [BEN, CARL], startedAt: new Date(), seconds: 300 });
@@ -70,6 +73,7 @@ test("export: everything stored about the user, as JSON", async () => {
   const anna = await login(ANNA, "Anna");
   await login(BEN, "Ben");
   await User.updateOne({ phone: ANNA }, { contacts: [BEN], pushToken: "ExponentPushToken[a]" });
+  await talked(ANNA, BEN);
   await postMoment(anna, BEN).expect(200);
   await Talk.create({ callId: "t1", participants: [ANNA, BEN], startedAt: new Date(), seconds: 600 });
 
@@ -89,6 +93,7 @@ test("export: everything stored about the user, as JSON", async () => {
 test("moments: pictures only as our Cloudinary uploads or inline images, no foreign URLs", async () => {
   const anna = await login(ANNA, "Anna");
   await login(BEN, "Ben");
+  await talked(ANNA, BEN);
   await postMoment(anna, BEN, "https://tracker.example.com/pixel.jpg").expect(400);
   await postMoment(anna, BEN, "https://res.cloudinary.com/othercloud/image/upload/x.jpg").expect(400);
   await postMoment(anna, BEN, "https://res.cloudinary.com/testcloud/image/upload/v1/moments/moment_1.jpg").expect(200);
@@ -101,7 +106,11 @@ test("reactions: only on moments the user may see", async () => {
   const ben = await login(BEN, "Ben");
   const carl = await login(CARL, "Carl");
   await User.updateOne({ phone: BEN }, { contacts: [ANNA] });
+  await talked(ANNA, BEN);
   const momentId = (await postMoment(anna, BEN).expect(200)).body.callMoment._id;
+  // Waiting for Ben's consent: nobody can react yet
+  await request(ctx.app).post("/moment/react").set(auth(ben)).send({ momentId, emoji: "❤️" }).expect(404);
+  await shareAll();
 
   // Carl knows neither of them
   await request(ctx.app).post("/moment/react").set(auth(carl)).send({ momentId, emoji: "❤️" }).expect(404);

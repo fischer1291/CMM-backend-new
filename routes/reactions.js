@@ -34,7 +34,11 @@ router.post("/react", async (req, res) => {
     // Same rule as the feed: own moments, moments with you, and your contacts'
     const me = callMoment && (await User.findOne({ phone: userPhone }, "contacts"));
     const known = new Set([userPhone, ...((me && me.contacts) || [])].flatMap((p) => [p, p.replace(/^\+/, "")]));
-    const visible = callMoment && (known.has(callMoment.userPhone) || known.has(callMoment.targetPhone));
+    const visible =
+      callMoment &&
+      callMoment.status !== "pending" &&
+      !callMoment.hidden &&
+      (known.has(callMoment.userPhone) || known.has(callMoment.targetPhone));
     if (!callMoment || !visible) {
       return res.status(404).json({
         success: false,
