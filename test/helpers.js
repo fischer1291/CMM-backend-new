@@ -10,6 +10,9 @@ const fakes = {
   sms: [],
   expoPushes: [],
   voipPushes: [],
+  // ticket id -> receipt, filled by tests
+  receipts: {},
+  ticketCounter: 0,
 };
 
 const originalLoad = Module._load;
@@ -40,7 +43,13 @@ Module._load = function (request, parent, isMain) {
       }
       async sendPushNotificationsAsync(chunk) {
         fakes.expoPushes.push(...chunk);
-        return chunk.map(() => ({ status: "ok" }));
+        return chunk.map(() => ({ status: "ok", id: `ticket-${++fakes.ticketCounter}` }));
+      }
+      chunkPushNotificationReceiptIds(ids) {
+        return [ids];
+      }
+      async getPushNotificationReceiptsAsync(ids) {
+        return Object.fromEntries(ids.filter((id) => fakes.receipts[id]).map((id) => [id, fakes.receipts[id]]));
       }
     }
     return { Expo };
@@ -88,9 +97,12 @@ async function reset() {
   await require("../models/Call").syncIndexes();
   await require("../models/Talk").syncIndexes();
   await require("../models/Nudge").syncIndexes();
+  await require("../models/PushLog").syncIndexes();
+  await require("../models/PushTicket").syncIndexes();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
   fakes.voipPushes.length = 0;
+  fakes.receipts = {};
 }
 
 module.exports = { setup, teardown, reset, fakes };

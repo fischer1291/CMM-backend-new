@@ -110,6 +110,8 @@ test("status: availability push only reaches followers and shows the name", asyn
   await User.updateMany({}, { pushToken: undefined });
   await User.updateOne({ phone: BEN }, { pushToken: "ExponentPushToken[ben]" });
   await User.updateOne({ phone: CARL }, { pushToken: "ExponentPushToken[carl]" });
+  // Independent of the time the tests run
+  await User.updateMany({}, { "notificationPrefs.quietHours.enabled": false });
 
   // Ben has Anna in his contacts, Carl does not
   await request(ctx.app).post("/contacts/match").set(auth(ben)).send({ hashes: [User.hashPhone(ANNA)] });
@@ -150,8 +152,8 @@ test("moments: posting validates input and uses the token's phone", async () => 
   assert.equal(res.body.callMoment.userPhone, ANNA);
 });
 
-test("moments: push broadcast needs the admin key; expired moments end", async () => {
-  await request(ctx.app).post("/moment/push-broadcast").expect(403);
+test("moments: the random push broadcast is gone; expired moments end", async () => {
+  await request(ctx.app).post("/moment/push-broadcast").set("X-Admin-Key", "admin-key").expect(404);
 
   await login(ANNA);
   await User.updateOne(

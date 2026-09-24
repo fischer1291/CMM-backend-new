@@ -1,9 +1,9 @@
 const express = require("express");
 const User = require("../models/User");
 const CallMoment = require("../models/CallMoment");
-const { actingPhone, requireAdminKey } = require("../lib/auth");
+const { actingPhone } = require("../lib/auth");
 const { normalizePhone, regionOf } = require("../lib/phone");
-const { sendExpoPushes } = require("../lib/push");
+const { notify } = require("../lib/notify");
 const { broadcastStatus } = require("./status");
 
 // Session lengths the app offers; 15 minutes for older app versions
@@ -18,26 +18,6 @@ const formatReactionsForUser = (reactions, userPhone) => {
     userReacted: reaction.users.some((u) => u.phone === userPhone),
   }));
 };
-
-function isOutsideQuietHours() {
-  const now = new Date();
-  const hour = now.getHours();
-  return hour >= 8 && hour < 22; // 08:00 – 21:59 Uhr
-}
-
-function wasInvitedToday(date) {
-  if (!date) return false;
-  const now = new Date();
-  return (
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate()
-  );
-}
-
-function shuffleArray(array) {
-  return array.sort(() => 0.5 - Math.random());
-}
 
 // Moments stored before phone normalization may lack the leading "+"
 const withLegacyVariants = (phones) => [...phones, ...phones.map((p) => p.replace(/^\+/, ""))];
@@ -72,49 +52,6 @@ async function expireMoments(io) {
 
 module.exports = (io) => {
   const router = express.Router();
-
-  // POST /moment/push-broadcast (cron/admin only, X-Admin-Key header)
-  router.post("/push-broadcast", requireAdminKey, async (req, res) => {
-    if (!isOutsideQuietHours()) {
-      return res.status(403).json({ success: false, error: "Quiet hours active" });
-    }
-
-    try {
-      let users = await User.find({
-        pushToken: { $ne: null },
-        isAvailable: false, // Nur Nutzer, die NICHT erreichbar sind
-      });
-
-      users = users.filter((u) => !wasInvitedToday(u.lastMomentInvite));
-
-      const selected = shuffleArray(users).slice(0, 10);
-      if (selected.length === 0) {
-        return res.json({
-          success: true,
-          message: "No users selected (already invited or none available)",
-        });
-      }
-
-      await Promise.all(
-        selected.map((u) => User.findByIdAndUpdate(u._id, { lastMomentInvite: new Date() })),
-      );
-
-      await sendExpoPushes(
-        selected.map((user) => ({
-          to: user.pushToken,
-          sound: "default",
-          title: "Call Me Moment",
-          body: "Bereit für ein ehrliches Gespräch? Bestätige jetzt für 15 Minuten.",
-          data: { type: "callMeMoment" },
-        })),
-      );
-
-      res.json({ success: true, sent: selected.length });
-    } catch (err) {
-      console.error("❌ Fehler beim Senden:", err.message);
-      res.status(500).json({ success: false, error: "Broadcast fehlgeschlagen" });
-    }
-  });
 
   // POST /moment/confirm { mood, minutes? }: available for a limited session
   router.post("/confirm", async (req, res) => {
@@ -193,6 +130,17 @@ module.exports = (io) => {
         callDuration: str(callDuration, 10) || "00:00",
       });
       res.json({ success: true, callMoment });
+
+      // Tell the other person, if they know the author (no pushes to strangers)
+      const [author, target] = await Promise.all([
+        User.findOne({ phone: userPhone }, "name"),
+        User.findOne({ phone: targetPhone, contacts: userPhone }),
+      ]);
+      if (target && targetPhone !== userPhone) {
+        notify(target, "moment_shared", { phone: userPhone, name: author?.name }).catch((err) =>
+          console.error("❌ moment push:", err.message),
+        );
+      }
     } catch (error) {
       console.error("CallMoment error:", error.message);
       res.status(500).json({ success: false, message: "Server error" });
