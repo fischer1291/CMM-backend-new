@@ -450,3 +450,53 @@ test("calls: the callee fetching an RTC token counts as accepting", async () => 
     close();
   }
 });
+
+test("calls: declining over HTTP works without a socket (lock screen, app just woken)", async () => {
+  const anna = await login(ANNA, "Anna");
+  const ben = await login(BEN, "Ben");
+  const carl = await login(CARL, "Carl");
+  // Ben is only reachable by push: no socket connected
+  await User.updateOne({ phone: BEN }, { pushToken: "ExponentPushToken[ben]" });
+  const caller = await socketFor(anna);
+  try {
+    caller.emit("callRequest", { to: BEN, channel: "call_http" });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal((await Call.findOne({ channel: "call_http" })).status, "ringing");
+
+    await request(ctx.app).post("/calls/end").send({ channel: "call_http", other: ANNA }).expect(401);
+    await request(ctx.app).post("/calls/end").set(auth(ben)).send({ channel: "call_http" }).expect(400);
+
+    // Someone else can't end it
+    const foreign = await request(ctx.app).post("/calls/end").set(auth(carl)).send({ channel: "call_http", other: ANNA }).expect(200);
+    assert.equal(foreign.body.status, null);
+
+    const declined = once(caller, "callEnded");
+    const res = await request(ctx.app).post("/calls/end").set(auth(ben)).send({ channel: "call_http", other: ANNA }).expect(200);
+    assert.equal(res.body.status, "declined");
+    assert.equal((await declined).reason, "declined");
+
+    // The socket event arriving later changes nothing
+    const again = await request(ctx.app).post("/calls/end").set(auth(ben)).send({ channel: "call_http", other: ANNA }).expect(200);
+    assert.equal(again.body.status, null);
+    assert.equal((await Call.findOne({ channel: "call_http" })).status, "declined");
+  } finally {
+    caller.close();
+  }
+});
+
+test("calls: the caller can cancel over HTTP; the callee's device hears about it", async () => {
+  const { anna, caller, callee, close } = await twoUsers();
+  try {
+    await ring(caller, callee, "call_cancel_http");
+    const cancelled = once(callee, "callEnded");
+    const res = await request(ctx.app)
+      .post("/calls/end")
+      .set(auth(anna))
+      .send({ channel: "call_cancel_http", other: BEN })
+      .expect(200);
+    assert.equal(res.body.status, "cancelled");
+    assert.equal((await cancelled).reason, "cancelled");
+  } finally {
+    close();
+  }
+});

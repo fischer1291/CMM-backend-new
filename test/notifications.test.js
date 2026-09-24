@@ -195,3 +195,37 @@ test("moments: the other person hears about a shared moment only if they know th
   assert.deepEqual(moments.map((p) => p.to), [TOKEN("2")]);
   assert.equal(moments[0].data.url, "/callmoments");
 });
+
+test("availability: a push only on the switch from offline to available, throttled 30 min", async () => {
+  const anna = await login(ANNA, "Anna");
+  await login(BEN, "Ben");
+  await User.updateOne({ phone: BEN }, { contacts: [ANNA] });
+  await User.updateMany({}, { "notificationPrefs.quietHours.enabled": false });
+  const set = (isAvailable) =>
+    request(ctx.app).post("/status/set").set(auth(anna)).send({ isAvailable }).expect(200);
+  const available = () => fakes.expoPushes.filter((p) => p.data?.type === "contact_available");
+  const settle = () => new Promise((r) => setTimeout(r, 100));
+
+  await set(true);
+  await settle();
+  assert.equal(available().length, 1);
+  assert.equal(available()[0].priority, "high");
+
+  // Already available: no new push, the throttle stays unused
+  await set(true);
+  await settle();
+  assert.equal(available().length, 1);
+
+  // Off and on again within 30 minutes: throttled
+  await set(false);
+  await set(true);
+  await settle();
+  assert.equal(available().length, 1);
+
+  // A session after the throttle ran out
+  await require("../models/PushLog").deleteMany({});
+  await set(false);
+  await request(ctx.app).post("/moment/confirm").set(auth(anna)).send({ mood: "😊", minutes: 30 }).expect(200);
+  await settle();
+  assert.equal(available().length, 2);
+});

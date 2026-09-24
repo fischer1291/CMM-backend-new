@@ -15,6 +15,7 @@ const { Expo, voipProviders } = require("./lib/push");
 const { registerSocketHandlers } = require("./socket");
 const { createCallService, historyEntry } = require("./lib/calls");
 const { isValidTimezone } = require("./lib/localTime");
+const { normalizePhone, regionOf } = require("./lib/phone");
 
 function createApp({ ringTimeoutMs } = {}) {
   const app = express();
@@ -242,6 +243,28 @@ function createApp({ ringTimeoutMs } = {}) {
       res.json({ success: true, calls: list.map((c) => historyEntry(c, phone)) });
     } catch (error) {
       res.status(500).json({ success: false, error: "Anrufe konnten nicht geladen werden" });
+    }
+  });
+
+  // POST /calls/end { channel, other }: decline, cancel or hang up over HTTP.
+  // Same as the socket event, but works when the app was just woken in the
+  // background (e.g. declined on the lock screen) and has no socket yet.
+  app.post("/calls/end", async (req, res) => {
+    if (!req.auth) {
+      return res.status(401).json({ success: false, error: "Authentication required" });
+    }
+    const { channel } = req.body || {};
+    const other = normalizePhone(String(req.body?.other || ""), regionOf(req.auth.phone));
+    if (typeof channel !== "string" || !channel || !other) {
+      return res.status(400).json({ success: false, error: "channel and other required" });
+    }
+    try {
+      const call = await calls.endCall({ me: req.auth.phone, other, channel });
+      // Already over (e.g. ended by the socket event first) is fine too
+      res.json({ success: true, status: call?.status ?? null });
+    } catch (error) {
+      console.error("❌ /calls/end:", error.message);
+      res.status(500).json({ success: false, error: "Call could not be ended" });
     }
   });
 

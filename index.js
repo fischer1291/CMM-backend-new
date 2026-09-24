@@ -44,7 +44,7 @@ async function main() {
 
   // Every minute: start scheduled availability, end expired sessions
   const tick = async () => {
-    await applySchedules((user) => broadcastStatus(io, user));
+    await applySchedules((user) => broadcastStatus(io, user, { becameAvailable: true }));
     await expireMoments(io);
   };
   setInterval(() => {

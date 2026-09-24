@@ -20,8 +20,12 @@ const statusOf = (user) => ({
   availableSource: user.isAvailable ? user.availableSource || null : null,
 });
 
-/** Socket + push notification to the user's followers. */
-async function broadcastStatus(io, user) {
+/**
+ * Socket update to the user's followers, plus a push when the user just
+ * went from offline to available (not on repeated "available" calls, which
+ * would only use up the throttle).
+ */
+async function broadcastStatus(io, user, { becameAvailable = false } = {}) {
   const followers = await followersOf(user.phone);
   const rooms = followers.map((f) => `user:${f.phone}`);
   if (rooms.length > 0) {
@@ -35,7 +39,7 @@ async function broadcastStatus(io, user) {
   }
 
   // Throttled per follower, respects their settings and quiet hours
-  if (user.isAvailable) {
+  if (user.isAvailable && becameAvailable) {
     await notifyMany(followers, "contact_available", { phone: user.phone, name: user.name });
   }
 }
@@ -59,12 +63,13 @@ module.exports = (io) => {
         update.lastOnline = new Date();
         update.mood = null;
       }
-      const user = await User.findOneAndUpdate({ phone }, update, { new: true });
-      if (!user) {
+      const before = await User.findOneAndUpdate({ phone }, update);
+      if (!before) {
         return res.status(404).json({ success: false, error: "User nicht gefunden" });
       }
+      const user = await User.findOne({ phone });
 
-      broadcastStatus(io, user).catch((err) =>
+      broadcastStatus(io, user, { becameAvailable: isAvailable && !before.isAvailable }).catch((err) =>
         console.error("❌ Status broadcast failed:", err.message),
       );
 
