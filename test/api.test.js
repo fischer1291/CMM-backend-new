@@ -72,7 +72,7 @@ test("auth: invalid tokens are rejected; AUTH_REQUIRED blocks token-less request
   process.env.AUTH_REQUIRED = "true";
   await request(ctx.app).post("/me/update").send({ phone: ANNA, name: "x" }).expect(401);
   const health = await request(ctx.app).get("/api/push-health").expect(200); // public
-  assert.equal(health.body.agoraCertificateFromEnv, false);
+  assert.equal(health.body.agoraCertificateFromEnv, true);
 });
 
 test("me: validates name and avatar URL", async () => {

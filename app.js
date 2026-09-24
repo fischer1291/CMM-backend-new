@@ -79,6 +79,7 @@ function createApp({ ringTimeoutMs } = {}) {
   app.use("/moment", require("./routes/reactions"));
   app.use(require("./routes/gamification")(io));
   app.use(require("./routes/notifications"));
+  app.use(require("./routes/account")(io));
 
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -117,6 +118,35 @@ function createApp({ ringTimeoutMs } = {}) {
     } catch (error) {
       console.error("Avatar upload error:", error.message);
       res.status(500).json({ success: false, message: "Upload failed" });
+    }
+  });
+
+  // A moment's picture: stored on Cloudinary, the moment keeps only the URL
+  app.post("/upload/moment", upload.single("image"), async (req, res) => {
+    if (!req.auth) {
+      return res.status(401).json({ success: false, error: "Authentication required" });
+    }
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: "Image required" });
+    }
+    try {
+      const result = await new Promise((resolve, reject) => {
+        cloudinary.uploader
+          .upload_stream(
+            {
+              resource_type: "image",
+              folder: "moments",
+              public_id: `moment_${req.auth.phone.replace("+", "")}_${Date.now()}`,
+              transformation: [{ width: 1080, crop: "limit" }, { quality: "auto", format: "jpg" }],
+            },
+            (error, uploaded) => (error ? reject(error) : resolve(uploaded)),
+          )
+          .end(req.file.buffer);
+      });
+      res.json({ success: true, url: result.secure_url });
+    } catch (error) {
+      console.error("Moment upload error:", error.message);
+      res.status(500).json({ success: false, error: "Upload failed" });
     }
   });
 

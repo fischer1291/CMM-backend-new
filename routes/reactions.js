@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const mongoose = require("mongoose");
 const CallMoment = require("../models/CallMoment");
+const User = require("../models/User");
 const { actingPhone } = require("../lib/auth");
 
 // POST /moment/react - Add or remove a reaction
@@ -30,7 +31,11 @@ router.post("/react", async (req, res) => {
 
     // Find the call moment
     const callMoment = await CallMoment.findById(momentId);
-    if (!callMoment) {
+    // Same rule as the feed: own moments, moments with you, and your contacts'
+    const me = callMoment && (await User.findOne({ phone: userPhone }, "contacts"));
+    const known = new Set([userPhone, ...((me && me.contacts) || [])].flatMap((p) => [p, p.replace(/^\+/, "")]));
+    const visible = callMoment && (known.has(callMoment.userPhone) || known.has(callMoment.targetPhone));
+    if (!callMoment || !visible) {
       return res.status(404).json({
         success: false,
         message: "Call moment not found",

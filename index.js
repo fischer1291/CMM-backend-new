@@ -28,7 +28,7 @@ async function main() {
     console.warn("⚠️ JWT_SECRET not set: no auth tokens are issued (legacy mode)");
   }
   if (agoraCredentials().usingLegacyCertificate) {
-    console.warn("⚠️ AGORA_APP_CERTIFICATE not set: using the leaked legacy certificate");
+    console.error("❌ AGORA_APP_CERTIFICATE not set: calls will fail (no RTC tokens)");
   }
 
   const { server, io, calls } = createApp();

@@ -11,6 +11,18 @@ const SESSION_MINUTES = [15, 30, 60, 120];
 const DEFAULT_SESSION_MINUTES = 15;
 const MAX_SCREENSHOT_LENGTH = 1_000_000; // ~730 KB image as base64 data URI
 
+/**
+ * A moment's picture: our own Cloudinary upload (/upload/moment) or, from
+ * older app versions, an inline JPEG/PNG. No other URLs: an arbitrary
+ * https:// image would let anyone track who looks at the feed.
+ */
+function isAllowedScreenshot(value) {
+  if (typeof value !== "string" || value.length > MAX_SCREENSHOT_LENGTH) return false;
+  if (/^data:image\/(jpeg|png);base64,/.test(value)) return true;
+  const cloud = process.env.CLOUDINARY_CLOUD_NAME;
+  return !!cloud && value.startsWith(`https://res.cloudinary.com/${cloud}/image/upload/`);
+}
+
 const formatReactionsForUser = (reactions, userPhone) => {
   return reactions.map((reaction) => ({
     emoji: reaction.emoji,
@@ -110,9 +122,7 @@ module.exports = (io) => {
 
     if (
       !targetPhone ||
-      typeof screenshot !== "string" ||
-      !/^(data:image\/(jpeg|png);base64,|https:\/\/)/.test(screenshot) ||
-      screenshot.length > MAX_SCREENSHOT_LENGTH ||
+      !isAllowedScreenshot(screenshot) ||
       !str(mood, 20)
     ) {
       return res.status(400).json({ success: false, message: "Required fields missing or invalid" });
