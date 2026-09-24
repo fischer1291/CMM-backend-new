@@ -64,7 +64,7 @@ module.exports = (io) => {
     }
 
     try {
-      const user = await User.findOneAndUpdate(
+      const before = await User.findOneAndUpdate(
         { phone },
         {
           isAvailable: true,
@@ -73,14 +73,14 @@ module.exports = (io) => {
           lastOnline: new Date(),
           momentActiveUntil: new Date(Date.now() + minutes * 60 * 1000),
         },
-        { new: true },
       );
 
-      if (!user) {
+      if (!before) {
         return res.status(404).json({ success: false, error: "User not found" });
       }
+      const user = await User.findOne({ phone });
 
-      broadcastStatus(io, user).catch((err) =>
+      broadcastStatus(io, user, { becameAvailable: !before.isAvailable }).catch((err) =>
         console.error("❌ Status broadcast failed:", err.message),
       );
 
