@@ -99,6 +99,7 @@ async function reset() {
   await require("../models/Nudge").syncIndexes();
   await require("../models/PushLog").syncIndexes();
   await require("../models/PushTicket").syncIndexes();
+  await require("../models/PushDecision").syncIndexes();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
   fakes.voipPushes.length = 0;
