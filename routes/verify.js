@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const express = require("express");
 const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
 const twilio = require("twilio");
@@ -16,6 +17,19 @@ function twilioClient() {
 }
 
 const skip = () => process.env.NODE_ENV === "test";
+
+/**
+ * Demo login for App Store review: REVIEW_PHONE gets no SMS and signs in
+ * with REVIEW_CODE. Off unless both are set (code at least 6 digits).
+ */
+function reviewCodeFor(phone) {
+  const reviewPhone = normalizePhone(process.env.REVIEW_PHONE || "");
+  const code = process.env.REVIEW_CODE || "";
+  return reviewPhone && phone === reviewPhone && /^\d{6,10}$/.test(code) ? code : null;
+}
+
+const sameCode = (a, b) =>
+  a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
 // SMS cost the project money: limit per target number and per client IP
 const perPhone = (limit) =>
@@ -44,6 +58,10 @@ router.post("/start", perIp, perPhone(5), async (req, res) => {
     return res.status(400).json({ success: false, error: "Ungültige Telefonnummer" });
   }
 
+  if (reviewCodeFor(phone)) {
+    return res.json({ success: true, phone });
+  }
+
   try {
     await twilioClient()
       .verify.v2.services(process.env.TWILIO_VERIFY_SID)
@@ -64,11 +82,16 @@ router.post("/check", perPhone(10), async (req, res) => {
   }
 
   try {
-    const check = await twilioClient()
-      .verify.v2.services(process.env.TWILIO_VERIFY_SID)
-      .verificationChecks.create({ to: phone, code });
+    const reviewCode = reviewCodeFor(phone);
+    const approved = reviewCode
+      ? sameCode(code, reviewCode)
+      : (
+          await twilioClient()
+            .verify.v2.services(process.env.TWILIO_VERIFY_SID)
+            .verificationChecks.create({ to: phone, code })
+        ).status === "approved";
 
-    if (check.status !== "approved") {
+    if (!approved) {
       return res.json({ success: false, error: "Code nicht korrekt" });
     }
 
