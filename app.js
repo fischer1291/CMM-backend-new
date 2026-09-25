@@ -72,8 +72,13 @@ function createApp({ ringTimeoutMs } = {}) {
     }
   });
 
-  // Everything below knows the requesting user (req.auth) or is legacy
-  app.use(authenticate);
+  // Everything below knows the requesting user (req.auth) or is legacy.
+  // Exception: the invite link preview (/circles/code/:code) is public.
+  app.use((req, res, next) =>
+    req.method === "GET" && req.path.startsWith("/circles/code/") && !req.headers.authorization
+      ? ((req.auth = null), next())
+      : authenticate(req, res, next)
+  );
 
   app.use("/auth", require("./routes/auth"));
   app.use("/contacts", require("./routes/contacts"));
