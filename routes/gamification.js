@@ -10,6 +10,9 @@ const { parseSchedule, nextSlot } = require("../lib/schedule");
 const { statsFor, sharedView, canView } = require("../lib/stats");
 const { isValidTimezone } = require("../lib/localTime");
 const { notify } = require("../lib/notify");
+const { badgesOf, CATEGORIES, newlyEarned, seenState, nextUp, friendshipOf } = require("../lib/badges");
+const { isBlocked } = require("../lib/relations");
+const { coMembersOf } = require("../lib/circles");
 const { nextNudgeAllowed, VISIBLE_MS } = require("../lib/nudges");
 
 const MAX_NUDGES_PER_DAY = 20;
@@ -28,7 +31,7 @@ const scheduleOf = (user) => ({
 
 module.exports = (io) => {
   const router = express.Router();
-  router.use(["/me/schedule", "/me/stats", "/stats", "/nudge", "/nudges"], requireAuth);
+  router.use(["/me/schedule", "/me/stats", "/me/badges", "/me/showcase", "/stats", "/friends", "/nudge", "/nudges"], requireAuth);
 
   const me = (req) => User.findOne({ phone: req.auth.phone });
 
@@ -71,6 +74,69 @@ module.exports = (io) => {
     }
   });
 
+  // --- Badge album ------------------------------------------------------
+
+  // GET /me/badges: the album, what's new since last time, what's next
+  router.get("/me/badges", async (req, res) => {
+    const user = await me(req);
+    if (!user) return res.status(404).json({ success: false, error: "User not found" });
+    const badges = await badgesOf(user);
+    // First visit: everything already earned counts as seen (no flood of celebrations)
+    if (!user.badgeSeen) {
+      await User.updateOne({ phone: user.phone }, { badgeSeen: seenState(badges) });
+    }
+    res.json({
+      success: true,
+      categories: CATEGORIES,
+      badges,
+      new: newlyEarned(badges, user.badgeSeen),
+      nextUp: nextUp(badges),
+      showcase: user.showcase || [],
+    });
+  });
+
+  // POST /me/badges/seen: the new ones were celebrated
+  router.post("/me/badges/seen", async (req, res) => {
+    const user = await me(req);
+    if (!user) return res.status(404).json({ success: false });
+    await User.updateOne({ phone: user.phone }, { badgeSeen: seenState(await badgesOf(user)) });
+    res.json({ success: true });
+  });
+
+  // PUT /me/showcase { ids }: up to three earned badges on show
+  router.put("/me/showcase", async (req, res) => {
+    const ids = Array.isArray(req.body?.ids) ? [...new Set(req.body.ids.map(String))] : null;
+    if (!ids || ids.length > 3) return res.status(400).json({ success: false, error: "up to 3 ids" });
+    const user = await me(req);
+    const earned = new Set((await badgesOf(user)).filter((b) => b.earned).map((b) => b.id));
+    if (!ids.every((id) => earned.has(id))) return res.status(400).json({ success: false, error: "not_earned" });
+    await User.updateOne({ phone: user.phone }, { showcase: ids });
+    res.json({ success: true, showcase: ids });
+  });
+
+  // GET /friends/:phone: what the two of you built together, and their showcase
+  router.get("/friends/:phone", async (req, res) => {
+    const viewer = req.auth.phone;
+    const other = normalizePhone(req.params.phone, regionOf(viewer));
+    const [meUser, them] = await Promise.all([me(req), other ? User.findOne({ phone: other }) : null]);
+    if (!them || other === viewer || (await isBlocked(viewer, other))) {
+      return res.status(404).json({ success: false, error: "not_found" });
+    }
+    const knows = meUser.contacts.includes(other) || (await coMembersOf(viewer)).has(other);
+    if (!knows) return res.status(404).json({ success: false, error: "not_found" });
+
+    const friendship = await friendshipOf(viewer, other, meUser.timezone || meUser.schedule?.timezone);
+    let showcase = [];
+    if (canView(them, viewer) && them.showcase?.length) {
+      const theirs = await badgesOf(them);
+      showcase = them.showcase
+        .map((id) => theirs.find((b) => b.id === id && b.earned))
+        .filter(Boolean)
+        .map(({ id, title, icon, tierName }) => ({ id, title, icon, tierName }));
+    }
+    res.json({ success: true, ...friendship, showcase });
+  });
+
   router.put("/me/stats/sharing", async (req, res) => {
     const { visibility, sharedWith = [] } = req.body || {};
     if (!["private", "contacts", "selected"].includes(visibility)) {
@@ -100,6 +166,10 @@ module.exports = (io) => {
       return res.status(403).json({ success: false, shared: false });
     }
     const stats = await statsFor(owner);
+    stats.showcase = (owner.showcase || [])
+      .map((id) => stats.badges.find((b) => b.id === id && b.earned))
+      .filter(Boolean)
+      .map(({ id, title, icon, tierName }) => ({ id, title, icon, tierName }));
     res.json({ success: true, shared: true, name: owner.name || "", stats: sharedView(stats) });
   });
 

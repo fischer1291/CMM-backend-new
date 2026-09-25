@@ -2,7 +2,6 @@
  * The social graph: blocking, reporting, invites, circles and who sees
  * one's availability. Everything needs a token; /admin/* the admin key.
  */
-const crypto = require("crypto");
 const express = require("express");
 const mongoose = require("mongoose");
 const User = require("../models/User");
@@ -10,11 +9,10 @@ const Block = require("../models/Block");
 const Report = require("../models/Report");
 const Invite = require("../models/Invite");
 const CallMoment = require("../models/CallMoment");
+const Circle = require("../models/Circle");
 const { normalizePhone, regionOf } = require("../lib/phone");
 const { requireAdminKey } = require("../lib/auth");
 
-const MAX_CIRCLES = 12;
-const MAX_CIRCLE_MEMBERS = 200;
 const MAX_INVITES_PER_REQUEST = 50;
 /** A moment with this many reports from different people is hidden */
 const HIDE_AFTER_REPORTS = 3;
@@ -29,7 +27,13 @@ const str = (v, max) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
 module.exports = (io) => {
   const router = express.Router();
-  router.use(["/blocks", "/reports", "/invites", "/me/circles", "/me/audience"], requireAuth);
+  router.use(["/blocks", "/reports", "/invites", "/me/audience"], requireAuth);
+
+  // GET /me/audience: who sees that I'm available
+  router.get("/me/audience", async (req, res) => {
+    const user = await User.findOne({ phone: req.auth.phone }, "availabilityAudience").lean();
+    res.json({ success: true, audience: user?.availabilityAudience || { mode: "all", circles: [] } });
+  });
 
   const target = (req, phone) => normalizePhone(String(phone || ""), regionOf(req.auth.phone));
 
@@ -68,8 +72,9 @@ module.exports = (io) => {
   /** Block: out of each other's contacts, circles, sharing lists; status hidden. */
   async function block(me, other) {
     await Block.updateOne({ blocker: me, blocked: other }, { $setOnInsert: { createdAt: new Date() } }, { upsert: true });
-    const pull = { contacts: other, "statsSharing.sharedWith": other, "circles.$[].members": other };
-    const pullMe = { contacts: me, "statsSharing.sharedWith": me, "circles.$[].members": me };
+    // Shared circles stay; members who blocked each other just don't see each other there
+    const pull = { contacts: other, "statsSharing.sharedWith": other };
+    const pullMe = { contacts: me, "statsSharing.sharedWith": me };
     await Promise.all([User.updateOne({ phone: me }, { $pull: pull }), User.updateOne({ phone: other }, { $pull: pullMe })]);
     // Both apps drop the other one from the contact list right away
     io.to(`user:${me}`).emit("contactRemoved", { phone: other });
@@ -137,56 +142,27 @@ module.exports = (io) => {
     res.json({ success: true, invited: valid.length });
   });
 
-  // --- Circles ----------------------------------------------------------
-
-  const circlesOf = (user) =>
-    (user.circles || []).map(({ id, name, emoji, members }) => ({ id, name, emoji, members }));
-
-  router.get("/me/circles", async (req, res) => {
-    const user = await User.findOne({ phone: req.auth.phone }, "circles availabilityAudience").lean();
-    if (!user) return res.status(404).json({ success: false });
+  // Older app versions (TestFlight build 20) read circles here: the shared
+  // circles in the old shape. Editing needs the new app.
+  router.get("/me/circles", requireAuth, async (req, res) => {
+    const [circles, user] = await Promise.all([
+      Circle.find({ "members.phone": req.auth.phone }).lean(),
+      User.findOne({ phone: req.auth.phone }, "availabilityAudience").lean(),
+    ]);
     res.json({
       success: true,
-      circles: circlesOf(user),
-      audience: user.availabilityAudience || { mode: "all", circles: [] },
+      circles: circles.map((c) => ({
+        id: String(c._id),
+        name: c.name,
+        emoji: c.emoji,
+        members: [...c.members.map((m) => m.phone), ...c.invites.map((i) => i.phone).filter(Boolean)].filter((p) => p !== req.auth.phone),
+      })),
+      audience: user?.availabilityAudience || { mode: "all", circles: [] },
     });
   });
-
-  // PUT /me/circles { circles: [{ id?, name, emoji, members }] }: replaces all
-  router.put("/me/circles", async (req, res) => {
-    const input = req.body?.circles;
-    if (!Array.isArray(input) || input.length > MAX_CIRCLES) {
-      return res.status(400).json({ success: false, error: `circles: at most ${MAX_CIRCLES}` });
-    }
-    const user = await User.findOne({ phone: req.auth.phone }, "contacts availabilityAudience");
-    if (!user) return res.status(404).json({ success: false });
-    const contacts = new Set(user.contacts);
-
-    const circles = [];
-    for (const c of input) {
-      const name = str(c?.name, 30);
-      if (!name || !Array.isArray(c.members) || c.members.length > MAX_CIRCLE_MEMBERS) {
-        return res.status(400).json({ success: false, error: "Invalid circle" });
-      }
-      circles.push({
-        id: /^[a-z0-9]{6,16}$/.test(c.id || "") ? c.id : crypto.randomBytes(5).toString("hex"),
-        name,
-        emoji: str(c.emoji, 8) || "💛",
-        // Only people who are actually contacts
-        members: [...new Set(c.members.map((p) => target(req, p)).filter((p) => p && contacts.has(p)))],
-      });
-    }
-
-    // Chosen audience circles that no longer exist fall away
-    const ids = new Set(circles.map((c) => c.id));
-    const audience = user.availabilityAudience || { mode: "all", circles: [] };
-    const keep = (audience.circles || []).filter((id) => ids.has(id));
-    await User.updateOne(
-      { phone: req.auth.phone },
-      { circles, availabilityAudience: { mode: keep.length ? audience.mode : "all", circles: keep } },
-    );
-    res.json({ success: true, circles, audience: { mode: keep.length ? audience.mode : "all", circles: keep } });
-  });
+  router.put("/me/circles", requireAuth, (req, res) =>
+    res.status(410).json({ success: false, error: "update_app" }),
+  );
 
   // PUT /me/audience { mode: "all" | "circles", circles: [ids] }
   router.put("/me/audience", async (req, res) => {
@@ -194,10 +170,9 @@ module.exports = (io) => {
     if (!["all", "circles"].includes(mode) || !Array.isArray(circles)) {
       return res.status(400).json({ success: false, error: "invalid" });
     }
-    const user = await User.findOne({ phone: req.auth.phone }, "circles");
-    if (!user) return res.status(404).json({ success: false });
-    const ids = new Set(user.circles.map((c) => c.id));
-    const chosen = circles.filter((id) => ids.has(id));
+    // Only shared circles the user is a member of
+    const mine = await Circle.find({ _id: { $in: circles.filter((id) => mongoose.isValidObjectId(id)) }, "members.phone": req.auth.phone }, "_id").lean();
+    const chosen = mine.map((c) => String(c._id));
     if (mode === "circles" && !chosen.length) {
       return res.status(400).json({ success: false, error: "Choose at least one circle" });
     }

@@ -9,6 +9,8 @@ const dailyMomentSchema = new mongoose.Schema({
   endsAt: { type: Date, required: true },
   sentAt: { type: Date, default: null },
   joined: { type: [String], default: [] },
+  // Joined within the first minute ("Blitzstart" badge)
+  fast: { type: [String], default: [] },
 });
 
 dailyMomentSchema.index({ day: 1, zone: 1 }, { unique: true });

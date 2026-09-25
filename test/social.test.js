@@ -42,7 +42,6 @@ test("block: hides both from each other everywhere; unblock restores with the ne
   const anna = await login(ANNA, "Anna");
   const ben = await login(BEN, "Ben");
   await befriend(ANNA, BEN);
-  await User.updateOne({ phone: ANNA }, { circles: [{ id: "family01", name: "Familie", emoji: "🏡", members: [BEN] }] });
   await talked(BEN, ANNA);
   await request(ctx.app)
     .post("/moment/callmoment")
@@ -57,7 +56,6 @@ test("block: hides both from each other everywhere; unblock restores with the ne
   const [a, b] = await Promise.all([User.findOne({ phone: ANNA }), User.findOne({ phone: BEN })]);
   assert.deepEqual(a.contacts, []);
   assert.deepEqual(b.contacts, []);
-  assert.deepEqual(a.circles[0].members, []);
 
   // Address book sync doesn't bring them back, in either direction
   const hashes = { hashes: [User.hashPhone(ANNA), User.hashPhone(BEN)] };
@@ -147,47 +145,6 @@ test("invites: the invited person is connected on sign-up; inviters hear it once
   } finally {
     annaApp.close();
   }
-});
-
-test("circles: members must be contacts; availability only for the chosen circles", async () => {
-  const anna = await login(ANNA, "Anna");
-  const ben = await login(BEN, "Ben");
-  const carl = await login(CARL, "Carl");
-  await befriend(ANNA, BEN, CARL);
-  await User.updateMany({}, { "notificationPrefs.quietHours.enabled": false });
-
-  const saved = await request(ctx.app)
-    .put("/me/circles")
-    .set(auth(anna))
-    .send({ circles: [{ name: "Familie", emoji: "🏡", members: [BEN, DANA] }] })
-    .expect(200);
-  const family = saved.body.circles[0];
-  assert.deepEqual(family.members, [BEN], "Dana isn't a contact");
-
-  await request(ctx.app).put("/me/audience").set(auth(anna)).send({ mode: "circles", circles: [] }).expect(400);
-  await request(ctx.app).put("/me/audience").set(auth(anna)).send({ mode: "circles", circles: [family.id] }).expect(200);
-
-  const carlApp = await socketFor(carl);
-  try {
-    const carlSees = new Promise((resolve) => carlApp.once("statusUpdate", resolve));
-    await request(ctx.app).post("/status/set").set(auth(anna)).send({ isAvailable: true }).expect(200);
-    assert.equal((await carlSees).isAvailable, false);
-  } finally {
-    carlApp.close();
-  }
-  await settle();
-  const pushedTo = fakes.expoPushes.filter((p) => p.data?.type === "contact_available").map((p) => p.to);
-  assert.deepEqual(pushedTo, ["ExponentPushToken[Ben]"]);
-
-  const hashes = { hashes: [User.hashPhone(ANNA)] };
-  assert.equal((await request(ctx.app).post("/contacts/match").set(auth(carl)).send(hashes)).body.matched[0].isAvailable, false);
-  assert.equal((await request(ctx.app).post("/contacts/match").set(auth(ben)).send(hashes)).body.matched[0].isAvailable, true);
-  const status = await request(ctx.app).get(`/status/get?phone=${encodeURIComponent(ANNA)}`).set(auth(carl)).expect(200);
-  assert.equal(status.body.isAvailable, false);
-
-  // Deleting the circle falls back to "all contacts"
-  const emptied = await request(ctx.app).put("/me/circles").set(auth(anna)).send({ circles: [] }).expect(200);
-  assert.deepEqual(emptied.body.audience, { mode: "all", circles: [] });
 });
 
 test("audio calls: the call, socket event and call push say it's audio only", async () => {

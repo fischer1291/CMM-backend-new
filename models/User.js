@@ -66,6 +66,12 @@ const userSchema = new mongoose.Schema({
     },
   },
 
+  // Badges: people who joined via this user's invites ("Brückenbauer"),
+  // the badge tiers already celebrated, and up to 3 badges on show
+  invitesJoined: { type: Number, default: 0 },
+  badgeSeen: { type: mongoose.Schema.Types.Mixed, default: null },
+  showcase: { type: [String], default: [] },
+
   // Inviters to tell "X ist jetzt dabei" once this new user set a name
   pendingJoinAnnouncement: { type: [String], default: [] },
 

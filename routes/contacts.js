@@ -1,7 +1,7 @@
 const express = require("express");
 const User = require("../models/User");
 const { normalizePhone, regionOf } = require("../lib/phone");
-const { blockedWith, inAudience } = require("../lib/relations");
+const { blockedWith, audienceOf } = require("../lib/relations");
 
 const router = express.Router();
 
@@ -44,13 +44,15 @@ router.post("/match", async (req, res) => {
       await User.updateOne({ phone: own }, { contacts: others.map((u) => u.phone) });
     }
 
+    // Only if the user shares their availability with you
+    const visible = new Map();
+    for (const user of others) visible.set(user.phone, !own || (await audienceOf(user))(own));
     res.json({
       success: true,
       matched: others.map((user) => ({
         phone: user.phone,
         phoneHash: user.phoneHash,
-        // Only if the user shares their availability with you
-        isAvailable: user.isAvailable && (!own || inAudience(user, own)),
+        isAvailable: user.isAvailable && visible.get(user.phone),
         lastOnline: user.lastOnline,
         name: user.name || "",
         avatarUrl: user.avatarUrl || "",
