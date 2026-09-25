@@ -77,6 +77,15 @@ const userSchema = new mongoose.Schema({
   suspendedUntil: { type: Date, default: null },
   suspendReason: { type: String, default: null },
   tokensValidAfter: { type: Date, default: null },
+
+  // App version last seen (request headers), for support and min versions
+  app: {
+    version: { type: String, default: null },
+    build: { type: String, default: null },
+    platform: { type: String, default: null },
+    os: { type: String, default: null },
+    seenAt: { type: Date, default: null },
+  },
   badgeSeen: { type: mongoose.Schema.Types.Mixed, default: null },
   showcase: { type: [String], default: [] },
 

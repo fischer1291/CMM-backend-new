@@ -19,7 +19,10 @@ const Block = require("../models/Block");
 const CallMoment = require("../models/CallMoment");
 const PushDecision = require("../models/PushDecision");
 const ActiveDay = require("../models/ActiveDay");
-const { deleteAccount } = require("../lib/account");
+const { deleteAccount, exportAccount } = require("../lib/account");
+const SupportTicket = require("../models/SupportTicket");
+const appConfig = require("../lib/appConfig");
+const { notify } = require("../lib/notify");
 const moderation = require("../lib/moderation");
 const { maskPhone } = moderation;
 const { shiftDateKey } = require("../lib/localTime");
@@ -271,6 +274,7 @@ module.exports = (io) => {
       user: {
         ...listItem(user),
         timezone: user.timezone || null,
+        app: user.app?.version ? user.app : null,
         mood: user.mood || null,
         suspendReason: user.suspendReason || null,
         tokensValidAfter: user.tokensValidAfter || null,
@@ -427,6 +431,108 @@ module.exports = (io) => {
     await audit(req, "report_resolved", { target: String(report._id), meta: { action, days: days || null, note: String(note || "").slice(0, 300) } });
     const settled = await moderation.resolveReport(report, { action, days, note }, req.admin, io);
     res.json({ success: true, settled });
+  });
+
+  // DSGVO: everything about a person as JSON (e.g. a request by e-mail)
+  router.get("/admin/users/:id/export", requireAdmin("owner"), async (req, res) => {
+    const user = await findUser(req, res);
+    if (!user) return;
+    await audit(req, "user_exported", { target: String(user._id) });
+    res.set("Content-Disposition", `attachment; filename="call-me-maybe-export-${user._id}.json"`);
+    res.json(await exportAccount(user.phone));
+  });
+
+  // --- Support tickets ---------------------------------------------------------
+
+  const ticketView = async (t, full = false) => {
+    const u = await User.findOne({ phone: t.phone }, { name: 1, avatarUrl: 1, app: 1 }).lean();
+    const last = t.messages[t.messages.length - 1];
+    return {
+      id: String(t._id),
+      category: t.category,
+      status: t.status,
+      user: u ? { id: String(u._id), name: u.name || "", avatarUrl: u.avatarUrl || null, phone: maskPhone(t.phone) } : { id: null, name: "Gelöscht", phone: maskPhone(t.phone) },
+      app: t.app || null,
+      preview: last ? last.text.slice(0, 140) : "",
+      lastFrom: last?.from || null,
+      count: t.messages.length,
+      messages: full ? t.messages : undefined,
+      currentApp: full ? u?.app || null : undefined,
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+    };
+  };
+
+  router.get("/admin/tickets", requireAdmin("support"), async (req, res) => {
+    const status = ["open", "answered", "closed"].includes(req.query.status) ? req.query.status : "open";
+    const tickets = await SupportTicket.find({ status }).sort({ updatedAt: status === "open" ? 1 : -1 }).limit(100).lean();
+    const counts = await SupportTicket.aggregate([{ $group: { _id: "$status", n: { $sum: 1 } } }]);
+    res.json({
+      success: true,
+      tickets: await Promise.all(tickets.map((t) => ticketView(t))),
+      counts: Object.fromEntries(counts.map((c) => [c._id, c.n])),
+    });
+  });
+
+  async function findTicket(req, res) {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      res.status(400).json({ success: false, error: "invalid_id" });
+      return null;
+    }
+    const ticket = await SupportTicket.findById(req.params.id);
+    if (!ticket) res.status(404).json({ success: false, error: "not_found" });
+    return ticket;
+  }
+
+  router.get("/admin/tickets/:id", requireAdmin("support"), async (req, res) => {
+    const ticket = await findTicket(req, res);
+    if (!ticket) return;
+    await audit(req, "ticket_view", { target: String(ticket._id) });
+    res.json({ success: true, ticket: await ticketView(ticket.toObject(), true) });
+  });
+
+  router.post("/admin/tickets/:id/reply", requireAdmin("support"), async (req, res) => {
+    const text = typeof req.body?.text === "string" ? req.body.text.trim().slice(0, 4000) : "";
+    if (!text) return res.status(400).json({ success: false, error: "text_required" });
+    const ticket = await findTicket(req, res);
+    if (!ticket) return;
+    ticket.messages.push({ from: "support", text, by: req.admin.email });
+    ticket.status = req.body?.close ? "closed" : "answered";
+    ticket.unreadByUser = true;
+    ticket.updatedAt = new Date();
+    await ticket.save();
+    await audit(req, "ticket_reply", { target: String(ticket._id), meta: { close: !!req.body?.close } });
+    io?.to(`user:${ticket.phone}`).emit("supportReply", { id: String(ticket._id) });
+    await notify(ticket.phone, "support_reply", {}).catch(() => {});
+    res.json({ success: true, ticket: await ticketView(ticket.toObject(), true) });
+  });
+
+  router.post("/admin/tickets/:id/status", requireAdmin("support"), async (req, res) => {
+    const status = ["open", "closed"].includes(req.body?.status) ? req.body.status : null;
+    if (!status) return res.status(400).json({ success: false, error: "invalid_status" });
+    const ticket = await findTicket(req, res);
+    if (!ticket) return;
+    ticket.status = status;
+    ticket.updatedAt = new Date();
+    await ticket.save();
+    await audit(req, `ticket_${status}`, { target: String(ticket._id) });
+    res.json({ success: true });
+  });
+
+  // --- App configuration ----------------------------------------------------------
+
+  router.get("/admin/config", requireAdmin("viewer"), async (req, res) => {
+    const [config, spread] = await Promise.all([appConfig.getConfig(), appConfig.versionSpread()]);
+    const flags = config.flags instanceof Map ? Object.fromEntries(config.flags) : config.flags || {};
+    res.json({ success: true, config: { ...config, flags, _id: undefined, __v: undefined }, ...spread });
+  });
+
+  router.put("/admin/config", requireAdmin("owner"), async (req, res) => {
+    const result = await appConfig.saveConfig(req.body || {}, req.admin.email);
+    if (result.error) return res.status(400).json({ success: false, error: result.error });
+    await audit(req, "config_changed", { meta: req.body });
+    io?.emit("appConfig", result.config);
+    res.json({ success: true, config: result.config });
   });
 
   return router;
