@@ -104,3 +104,13 @@ table.rows tr.click:hover td { background: var(--surface); }
 .report { display: flex; gap: 16px; align-items: flex-start; }
 .report .shot { width: 110px; height: 160px; object-fit: cover; border-radius: 12px; flex: 0 0 auto; }
 .quote { margin: 0 0 6px; padding: 8px 12px; border-left: 3px solid var(--pink); background: var(--surface); border-radius: 0 8px 8px 0; }
+
+td.preview { max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+.thread { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.msg { max-width: 72%; padding: 12px 14px; border-radius: 16px; background: var(--surface); border: 1px solid var(--border); white-space: pre-wrap; }
+.msg.support { align-self: flex-end; background: rgba(139, 92, 255, 0.16); border-color: rgba(139, 92, 255, 0.35); }
+.msg .note { margin-top: 6px; font-size: 12px; }
+.reply textarea { width: 100%; padding: 12px 14px; border-radius: 12px; background: var(--bg-elevated); border: 1px solid var(--border-strong); outline: none; resize: vertical; margin-bottom: 10px; }
+.reply textarea:focus { border-color: var(--cyan); }
+.check { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px; }
+a.btn { text-decoration: none; text-align: center; }

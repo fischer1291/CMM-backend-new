@@ -404,6 +404,7 @@ function UserDetail({ id, role, onBack, onChanged }) {
         <${Row} label="Dabei seit">${date(user.createdAt)}<//>
         <${Row} label="Zuletzt online">${dateTime(user.lastOnline)}<//>
         <${Row} label="Zeitzone">${user.timezone || '–'}<//>
+        <${Row} label="App">${user.app ? `${user.app.version} (Build ${user.app.build || '?'})${user.app.os ? ` · ${PLATFORM[user.app.platform] || ''} ${user.app.os}` : ''}` : '–'}<//>
         <${Row} label="Über Einladung">${user.joinedViaInvite ? 'ja' : 'nein'}<//>
         <${Row} label="Kontakte in der App">${num(user.contacts)}<//>
         <${Row} label="Hat eingeladen">${num(user.invitesJoined)}<//>
@@ -453,6 +454,7 @@ function UserDetail({ id, role, onBack, onChanged }) {
               <input placeholder="Grund (intern)" value=${reason} onInput=${(e) => setReason(e.target.value)} />
               <button class="btn small danger" disabled=${busy} onClick=${() => confirm(`${user.name || 'Konto'} für ${days} Tage sperren? Die Person wird abgemeldet.`) && act('suspend', '/suspend', { days: Number(days), reason }, (r) => `Gesperrt bis ${date(r.suspendedUntil)}.`)}>Sperren</button>
             </div>`}
+        ${role === 'owner' ? html`<a class="btn small ghost" href=${`/admin/users/${id}/export`} download>Daten exportieren (DSGVO)</a>` : null}
         ${role === 'owner' ? html`
           <button class="btn small danger" disabled=${busy} onClick=${() => { const c = prompt('Konto endgültig löschen (z. B. auf Wunsch per E-Mail). Zum Bestätigen LÖSCHEN eingeben:'); if (c) act('delete', '/delete', { confirm: c }, () => 'Konto gelöscht.'); }}>Konto löschen</button>
           <button class="btn small danger" disabled=${busy} onClick=${() => { const c = prompt('Konto löschen UND Nummer dauerhaft sperren. Zum Bestätigen SPERREN eingeben:'); if (c) act('ban', '/ban', { confirm: c, reason }, () => 'Gebannt.'); }}>Bannen</button>` : null}
@@ -523,6 +525,190 @@ function Reports({ role, onOpenUser, onCount }) {
     </div>`}`;
 }
 
+
+// --- Support tickets ---------------------------------------------------------------
+
+const CATEGORIES = { bug: 'Fehler', idea: 'Idee', account: 'Konto', other: 'Sonstiges' };
+const TICKET_STATUS = { open: 'Offen', answered: 'Beantwortet', closed: 'Geschlossen' };
+
+function Tickets({ onOpenUser, onCount }) {
+  const [status, setStatus] = useState('open');
+  const [data, setData] = useState(null);
+  const [openId, setOpenId] = useState(null);
+  const load = useCallback(() => {
+    api(`/tickets?status=${status}`).then((d) => {
+      setData(d);
+      onCount(d.counts.open || 0);
+    }).catch(() => setData({ tickets: [], counts: {} }));
+  }, [status]);
+  useEffect(() => {
+    setData(null);
+    load();
+  }, [load]);
+
+  if (openId) return html`<${Ticket} id=${openId} onBack=${() => { setOpenId(null); load(); }} onOpenUser=${onOpenUser} />`;
+  return html`
+    <div class="now"><div class="tabs">${Object.entries(TICKET_STATUS).map(([k, label]) => html`<button class=${status === k ? 'on' : ''} onClick=${() => setStatus(k)}>${label}${data?.counts?.[k] ? html` <span class="muted">${data.counts[k]}</span>` : null}</button>`)}</div></div>
+    ${!data ? html`<p class="note">Lade …</p>` : data.tickets.length === 0 ? html`<div class="card"><p class="note" style="margin:0">${status === 'open' ? 'Keine offenen Anfragen. 🎉' : 'Nichts hier.'}</p></div>` : html`<div class="card" style="padding:6px 8px"><table class="rows">
+      <thead><tr><th></th><th>Von</th><th>Art</th><th>Letzte Nachricht</th><th>App</th><th>Aktualisiert</th></tr></thead>
+      <tbody>${data.tickets.map((t) => html`<tr class="click" onClick=${() => setOpenId(t.id)}>
+        <td style="width:44px"><${Avatar} name=${t.user.name} url=${t.user.avatarUrl} /></td>
+        <td><strong>${t.user.name || t.user.phone}</strong></td>
+        <td><span class="pill">${CATEGORIES[t.category]}</span></td>
+        <td class="preview">${t.lastFrom === 'support' ? html`<span class="muted">Du: </span>` : null}${t.preview}</td>
+        <td class="muted">${t.app?.version ? `${t.app.version} (${t.app.build || '?'})` : '–'}</td>
+        <td>${dateTime(t.updatedAt)}</td>
+      </tr>`)}</tbody></table></div>`}`;
+}
+
+function Ticket({ id, onBack, onOpenUser }) {
+  const [ticket, setTicket] = useState(null);
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => api(`/tickets/${id}`).then((d) => setTicket(d.ticket)).catch(() => setTicket(false)), [id]);
+  useEffect(() => { load(); }, [load]);
+
+  const reply = async (close) => {
+    setBusy(true);
+    try {
+      const d = await api(`/tickets/${id}/reply`, { method: 'POST', body: { text, close } });
+      setTicket(d.ticket);
+      setText('');
+    } catch (err) {
+      alert(`Fehler: ${err.code || err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const setStatus = async (status) => {
+    await api(`/tickets/${id}/status`, { method: 'POST', body: { status } }).catch(() => {});
+    load();
+  };
+
+  if (ticket === false) return html`<button class="btn small ghost" onClick=${onBack}>← Zurück</button><p class="card">Nicht gefunden.</p>`;
+  if (!ticket) return html`<p class="note">Lade …</p>`;
+  const app = ticket.app || {};
+  return html`
+    <button class="btn small ghost" onClick=${onBack}>← Alle Anfragen</button>
+    <div class="profile">
+      <${Avatar} name=${ticket.user.name} url=${ticket.user.avatarUrl} size=${56} />
+      <div style="flex:1">
+        <h2>${ticket.user.name || ticket.user.phone} <span class="pill">${CATEGORIES[ticket.category]}</span> <span class="pill ${ticket.status === 'open' ? 'warn' : ''}">${TICKET_STATUS[ticket.status]}</span></h2>
+        <div class="muted">
+          App ${app.version || '?'} (Build ${app.build || '?'}) · ${PLATFORM[app.platform] || app.platform || '?'} ${app.os || ''}
+          ${ticket.currentApp?.version && ticket.currentApp.build !== app.build ? ` · jetzt ${ticket.currentApp.version} (${ticket.currentApp.build})` : ''}
+          ${ticket.user.id ? html` · <a href="#" onClick=${(e) => { e.preventDefault(); onOpenUser(ticket.user.id); }}>Nutzerseite</a>` : null}
+        </div>
+      </div>
+      ${ticket.status === 'closed' ? html`<button class="btn small ghost" onClick=${() => setStatus('open')}>Wieder öffnen</button>` : html`<button class="btn small ghost" onClick=${() => setStatus('closed')}>Schließen</button>`}
+    </div>
+    <div class="thread">
+      ${ticket.messages.map((m) => html`<div class="msg ${m.from}">
+        <div>${m.text}</div>
+        <div class="note">${m.from === 'support' ? m.by || 'Support' : ticket.user.name || 'Nutzer'} · ${dateTime(m.at)}</div>
+      </div>`)}
+    </div>
+    <div class="card reply">
+      <textarea rows="4" placeholder="Antwort schreiben … (die Person bekommt eine Push-Benachrichtigung)" value=${text} onInput=${(e) => setText(e.target.value)}></textarea>
+      <div class="inline" style="justify-content:flex-end">
+        <button class="btn small ghost" disabled=${busy || !text.trim()} onClick=${() => reply(true)}>Antworten & schließen</button>
+        <button class="btn small" disabled=${busy || !text.trim()} onClick=${() => reply(false)}>Antworten</button>
+      </div>
+    </div>`;
+}
+
+// --- App settings --------------------------------------------------------------------
+
+function AppSettings({ role }) {
+  const [data, setData] = useState(null);
+  const [form, setForm] = useState(null);
+  const [flash, setFlash] = useState(null);
+  const [newFlag, setNewFlag] = useState('');
+  const load = useCallback(() => {
+    api('/config').then((d) => {
+      setData(d);
+      const c = d.config;
+      setForm({
+        minVersion: c.minVersion || '',
+        minBuild: c.minBuild ? String(c.minBuild) : '',
+        updateUrl: c.updateUrl || '',
+        banner: { enabled: !!c.banner?.enabled, text: c.banner?.text || '', level: c.banner?.level || 'info', until: c.banner?.until ? c.banner.until.slice(0, 16) : '' },
+        flags: { ...(c.flags || {}) },
+      });
+    }).catch(() => setData(false));
+  }, []);
+  useEffect(load, [load]);
+
+  if (data === false) return html`<div class="card">Konnte nicht geladen werden.</div>`;
+  if (!form) return html`<p class="note">Lade …</p>`;
+  const owner = role === 'owner';
+  const set = (patch) => setForm({ ...form, ...patch });
+  const save = async () => {
+    setFlash(null);
+    try {
+      await api('/config', {
+        method: 'PUT',
+        body: {
+          minVersion: form.minVersion.trim() || null,
+          minBuild: form.minBuild.trim() ? Number(form.minBuild) : null,
+          updateUrl: form.updateUrl.trim() || null,
+          banner: { ...form.banner, until: form.banner.until ? new Date(form.banner.until).toISOString() : null },
+          flags: form.flags,
+        },
+      });
+      setFlash('Gespeichert. Offene Apps bekommen es sofort, alle anderen beim nächsten Start.');
+      load();
+    } catch (err) {
+      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich' };
+      setFlash(`Fehler: ${msg[err.code] || err.code || err.message}`);
+    }
+  };
+  const blocked = form.minBuild ? data.versions.filter((v) => v.build && Number(v.build) < Number(form.minBuild)).reduce((a, v) => a + v.users, 0) : 0;
+
+  return html`
+    ${flash ? html`<div class="flash">${flash}</div>` : null}
+    <div class="grid3">
+      <div class="card">
+        <div class="label">Mindestversion</div>
+        <p class="note" style="margin-top:0">Ältere Builds sehen einen „Bitte aktualisieren“-Bildschirm und kommen nicht weiter.</p>
+        <label class="field"><span>Mindest-Build (z. B. 21)</span><input value=${form.minBuild} onInput=${(e) => set({ minBuild: e.target.value.replace(/\D/g, '') })} disabled=${!owner} inputmode="numeric" /></label>
+        <label class="field"><span>Oder Mindestversion (z. B. 1.1.0)</span><input value=${form.minVersion} onInput=${(e) => set({ minVersion: e.target.value })} disabled=${!owner} /></label>
+        <label class="field"><span>Link zum Aktualisieren (App Store / TestFlight)</span><input value=${form.updateUrl} onInput=${(e) => set({ updateUrl: e.target.value })} disabled=${!owner} placeholder="https://" /></label>
+        ${blocked ? html`<p class="bad" style="margin:0">Betrifft ${blocked} aktive ${blocked === 1 ? 'Person' : 'Personen'} mit älterem Build.</p>` : null}
+      </div>
+      <div class="card">
+        <div class="label">Hinweis-Banner</div>
+        <p class="note" style="margin-top:0">Erscheint oben in der App, z. B. bei Wartung oder Störungen.</p>
+        <label class="check"><input type="checkbox" checked=${form.banner.enabled} onChange=${(e) => set({ banner: { ...form.banner, enabled: e.target.checked } })} disabled=${!owner} /> Banner anzeigen</label>
+        <label class="field"><span>Text (max. 200 Zeichen)</span><input value=${form.banner.text} maxlength="200" onInput=${(e) => set({ banner: { ...form.banner, text: e.target.value } })} disabled=${!owner} /></label>
+        <div class="inline">
+          <select value=${form.banner.level} onChange=${(e) => set({ banner: { ...form.banner, level: e.target.value } })} disabled=${!owner}><option value="info">Info</option><option value="warning">Warnung</option></select>
+          <input type="datetime-local" value=${form.banner.until} onInput=${(e) => set({ banner: { ...form.banner, until: e.target.value } })} disabled=${!owner} title="Automatisch ausblenden ab" />
+        </div>
+      </div>
+      <div class="card">
+        <div class="label">Feature-Flags</div>
+        <p class="note" style="margin-top:0">Funktionen ohne neuen Build ein- und ausschalten.</p>
+        ${Object.keys(form.flags).length === 0 ? html`<p class="note">Noch keine Flags.</p>` : Object.entries(form.flags).map(([k, v]) => html`<div class="kv">
+          <span>${k}</span>
+          <span class="inline"><label class="check"><input type="checkbox" checked=${v} onChange=${(e) => set({ flags: { ...form.flags, [k]: e.target.checked } })} disabled=${!owner} /> an</label>
+          ${owner ? html`<a href="#" onClick=${(e) => { e.preventDefault(); const f = { ...form.flags }; delete f[k]; set({ flags: f }); }}>entfernen</a>` : null}</span>
+        </div>`)}
+        ${owner ? html`<div class="inline" style="margin-top:10px"><input placeholder="neues_flag" value=${newFlag} onInput=${(e) => setNewFlag(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))} />
+          <button class="btn small ghost" disabled=${!newFlag} onClick=${() => { set({ flags: { ...form.flags, [newFlag]: false } }); setNewFlag(''); }}>Hinzufügen</button></div>` : null}
+      </div>
+    </div>
+    ${owner ? html`<div class="inline" style="justify-content:flex-end"><button class="btn" onClick=${save}>Speichern</button></div>` : html`<p class="note">Nur Owner können Einstellungen ändern.</p>`}
+
+    <div class="section">App-Versionen <span class="note">(aktiv in den letzten 30 Tagen)</span></div>
+    <div class="card">${data.versions.length ? html`<table>
+      <thead><tr><th>Version</th><th>Build</th><th>Plattform</th><th>Personen</th></tr></thead>
+      <tbody>${data.versions.map((v) => html`<tr><td>${v.version}</td><td>${v.build || '–'}</td><td>${PLATFORM[v.platform] || '–'}</td><td>${num(v.users)}</td></tr>`)}</tbody>
+    </table>` : html`<p class="note" style="margin:0">Noch keine Daten. Die App meldet ihre Version ab dem nächsten Build.</p>`}
+    ${data.unknown ? html`<p class="note">${num(data.unknown)} aktive ${data.unknown === 1 ? 'Person' : 'Personen'} mit älterem Build, der die Version noch nicht meldet.</p>` : null}
+    </div>`;
+}
+
 // --- App -------------------------------------------------------------------------
 
 function App() {
@@ -530,6 +716,7 @@ function App() {
   const [tab, setTab] = useState('dashboard');
   const [userId, setUserId] = useState(null);
   const [openReports, setOpenReports] = useState(0);
+  const [openTickets, setOpenTickets] = useState(0);
 
   useEffect(() => {
     (async () => {
@@ -546,6 +733,7 @@ function App() {
   useEffect(() => {
     if (!state.admin || state.admin.role === 'viewer') return;
     api('/reports').then((d) => setOpenReports(d.reports.length)).catch(() => {});
+    api('/tickets').then((d) => setOpenTickets(d.counts.open || 0)).catch(() => {});
   }, [state.admin]);
 
   const logout = async () => {
@@ -577,6 +765,10 @@ function App() {
       : html`<${Users} onOpen=${setUserId} />`;
   } else if (tab === 'reports') {
     body = html`<${Reports} role=${role} onOpenUser=${openUser} onCount=${setOpenReports} />`;
+  } else if (tab === 'support') {
+    body = html`<${Tickets} onOpenUser=${openUser} onCount=${setOpenTickets} />`;
+  } else if (tab === 'app') {
+    body = html`<${AppSettings} role=${role} />`;
   } else if (tab === 'audit') {
     body = html`<${Audit} />`;
   } else {
@@ -589,7 +781,9 @@ function App() {
       <div class="tabs">
         <button class=${tab === 'dashboard' ? 'on' : ''} onClick=${() => go('dashboard')}>Übersicht</button>
         ${role !== 'viewer' ? html`<button class=${tab === 'users' ? 'on' : ''} onClick=${() => go('users')}>Nutzer</button>
-        <button class=${tab === 'reports' ? 'on' : ''} onClick=${() => go('reports')}>Meldungen${openReports ? html` <span class="count">${openReports}</span>` : null}</button>` : null}
+        <button class=${tab === 'reports' ? 'on' : ''} onClick=${() => go('reports')}>Meldungen${openReports ? html` <span class="count">${openReports}</span>` : null}</button>
+        <button class=${tab === 'support' ? 'on' : ''} onClick=${() => go('support')}>Support${openTickets ? html` <span class="count">${openTickets}</span>` : null}</button>` : null}
+        <button class=${tab === 'app' ? 'on' : ''} onClick=${() => go('app')}>App</button>
         ${role === 'owner' ? html`<button class=${tab === 'audit' ? 'on' : ''} onClick=${() => go('audit')}>Protokoll</button>` : null}
       </div>
       <span class="spacer"></span>

@@ -305,3 +305,104 @@ test("reports: queue with context; hide the moment settles all its reports; susp
   assert.deepEqual(resolved.body.reports.map((r) => r.resolution).sort(), ["hide_moment", "hide_moment", "suspend"]);
   assert.equal((await request(ctx.app).get("/admin/reports").set("Cookie", cookie)).body.reports.length, 0);
 });
+
+// --- Phase 10c: support tickets, app config, export ------------------------------
+
+const SupportTicket = require("../models/SupportTicket");
+
+test("support: the app opens a ticket, support answers with a push, the user replies", async () => {
+  const { cookie } = await setUpAdmin();
+  const anna = await named(ANNA, "Anna");
+  await User.updateOne({ phone: ANNA }, { pushToken: "ExponentPushToken[anna]" });
+  const app = (req) => req.set("Authorization", `Bearer ${anna.token}`);
+
+  await app(request(ctx.app).post("/support")).send({ category: "nope", message: "Hallo" }).expect(400);
+  const opened = await app(request(ctx.app).post("/support"))
+    .send({ category: "bug", message: "Anrufe klingeln nicht", app: { version: "1.0.0", build: "21", platform: "ios", os: "18.6" } })
+    .expect(200);
+  const id = opened.body.ticket.id;
+
+  const queue = await request(ctx.app).get("/admin/tickets").set("Cookie", cookie).expect(200);
+  assert.equal(queue.body.tickets.length, 1);
+  assert.equal(queue.body.tickets[0].user.name, "Anna");
+  assert.equal(queue.body.tickets[0].app.build, "21");
+  assert.equal(queue.body.counts.open, 1);
+
+  await request(ctx.app).post(`/admin/tickets/${id}/reply`).set(admin(cookie)).send({ text: "" }).expect(400);
+  await request(ctx.app).post(`/admin/tickets/${id}/reply`).set(admin(cookie)).send({ text: "Schau mal in die Mitteilungen-Einstellungen." }).expect(200);
+  assert.equal(fakes.expoPushes.at(-1).title, "Antwort vom Support");
+
+  let mine = await app(request(ctx.app).get("/support")).expect(200);
+  assert.equal(mine.body.tickets[0].status, "answered");
+  assert.equal(mine.body.tickets[0].unread, true);
+  assert.deepEqual(mine.body.tickets[0].messages.map((m) => m.from), ["user", "support"]);
+  assert.ok(!("by" in mine.body.tickets[0].messages[1]), "no admin e-mail in the app");
+
+  await app(request(ctx.app).post(`/support/${id}/reply`)).send({ message: "Danke, klappt!" }).expect(200);
+  mine = await app(request(ctx.app).get("/support")).expect(200);
+  assert.equal(mine.body.tickets[0].status, "open");
+  assert.equal(mine.body.tickets[0].unread, false);
+
+  // Someone else can't read or answer it
+  const ben = await named(BEN, "Ben");
+  await request(ctx.app).post(`/support/${id}/reply`).set("Authorization", `Bearer ${ben.token}`).send({ message: "x" }).expect(404);
+  assert.equal((await request(ctx.app).get("/support").set("Authorization", `Bearer ${ben.token}`)).body.tickets.length, 0);
+
+  await request(ctx.app).post(`/admin/tickets/${id}/status`).set(admin(cookie)).send({ status: "closed" }).expect(200);
+  assert.equal((await SupportTicket.findById(id)).status, "closed");
+});
+
+test("app config: public min version, banner and flags; only the owner changes them", async () => {
+  const { cookie } = await setUpAdmin();
+  let pub = await request(ctx.app).get("/app-config").expect(200);
+  assert.deepEqual({ minVersion: pub.body.minVersion, banner: pub.body.banner, flags: pub.body.flags }, { minVersion: null, banner: null, flags: {} });
+
+  await request(ctx.app).put("/admin/config").set(admin(cookie)).send({ minVersion: "one" }).expect(400);
+  await request(ctx.app).put("/admin/config").set(admin(cookie)).send({ banner: { enabled: true, text: "" } }).expect(400);
+  await request(ctx.app).put("/admin/config").set(admin(cookie)).send({ flags: { "Bad Key": true } }).expect(400);
+  await request(ctx.app)
+    .put("/admin/config")
+    .set(admin(cookie))
+    .send({ minVersion: "1.0.0", minBuild: 21, updateUrl: "https://testflight.apple.com/join/abc", banner: { enabled: true, text: "Heute Abend kurz Wartung", level: "warning" }, flags: { group_calls: true } })
+    .expect(200);
+  pub = await request(ctx.app).get("/app-config").expect(200);
+  assert.equal(pub.body.minBuild, 21);
+  assert.equal(pub.body.banner.text, "Heute Abend kurz Wartung");
+  assert.deepEqual(pub.body.flags, { group_calls: true });
+
+  // An expired banner disappears
+  await request(ctx.app).put("/admin/config").set(admin(cookie)).send({ banner: { enabled: true, text: "Vorbei", until: "2020-01-01" } }).expect(200);
+  assert.equal((await request(ctx.app).get("/app-config")).body.banner, null);
+
+  await Admin.updateOne({ email: EMAIL }, { role: "support" });
+  await request(ctx.app).put("/admin/config").set(admin(cookie)).send({ minBuild: 22 }).expect(403);
+  await request(ctx.app).get("/admin/config").set("Cookie", cookie).expect(200);
+});
+
+test("app versions: remembered from request headers, shown per version", async () => {
+  const { cookie } = await setUpAdmin();
+  const anna = await named(ANNA, "Anna");
+  await request(ctx.app)
+    .get("/status/get")
+    .set({ Authorization: `Bearer ${anna.token}`, "X-App-Version": "1.0.0", "X-App-Build": "21", "X-Platform": "ios", "X-OS-Version": "18.6" })
+    .expect(200);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal((await User.findOne({ phone: ANNA })).app.build, "21");
+  const config = await request(ctx.app).get("/admin/config").set("Cookie", cookie).expect(200);
+  assert.deepEqual(config.body.versions, [{ version: "1.0.0", build: "21", platform: "ios", users: 1 }]);
+  const detail = await request(ctx.app).get(`/admin/users/${anna.id}`).set("Cookie", cookie).expect(200);
+  assert.equal(detail.body.user.app.version, "1.0.0");
+});
+
+test("export: the owner downloads everything about a person; it's audited", async () => {
+  const { cookie } = await setUpAdmin();
+  const anna = await named(ANNA, "Anna");
+  await SupportTicket.create({ phone: ANNA, category: "idea", messages: [{ from: "user", text: "Dark mode für Android" }] });
+  const res = await request(ctx.app).get(`/admin/users/${anna.id}/export`).set("Cookie", cookie).expect(200);
+  assert.match(res.headers["content-disposition"], /attachment/);
+  assert.equal(res.body.profile.name, "Anna");
+  assert.equal(res.body.support[0].messages[0].text, "Dark mode für Android");
+  assert.equal(await AdminAudit.countDocuments({ action: "user_exported", target: anna.id }), 1);
+  await Admin.updateOne({ email: EMAIL }, { role: "support" });
+  await request(ctx.app).get(`/admin/users/${anna.id}/export`).set("Cookie", cookie).expect(403);
+});

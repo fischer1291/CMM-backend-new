@@ -73,6 +73,16 @@ function createApp({ ringTimeoutMs } = {}) {
     }
   });
 
+  // Min version, banner and feature flags: read before sign-in, too
+  app.get("/app-config", async (req, res) => {
+    try {
+      res.set("Cache-Control", "no-store");
+      res.json({ success: true, ...(await require("./lib/appConfig").publicConfig()) });
+    } catch {
+      res.status(500).json({ success: false });
+    }
+  });
+
   // Admin console: its own sign-in (cookie + TOTP), static files at /console
   app.use(require("./routes/admin")(io));
   app.use(
@@ -104,6 +114,7 @@ function createApp({ ringTimeoutMs } = {}) {
   app.use(require("./routes/social")(io));
   app.use(require("./routes/daily")(io));
   app.use(require("./routes/circles")(io));
+  app.use(require("./routes/support")());
 
   const upload = multer({
     storage: multer.memoryStorage(),
