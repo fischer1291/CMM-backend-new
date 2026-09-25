@@ -65,7 +65,7 @@ test("daily moment: starts for everyone in the zone (not for those who turned it
 
   const pushes = fakes.expoPushes.filter((p) => p.data?.type === "daily_moment");
   assert.deepEqual(pushes.map((p) => p.to).sort(), ["ExponentPushToken[Anna]", "ExponentPushToken[Ben]"]);
-  assert.equal(pushes[0].title, "⚡ Call Me Moment!");
+  assert.equal(pushes[0].title, "⚡ Yap Moment!");
   assert.equal(pushes[0].categoryId, "daily_moment");
   assert.equal(pushes[0].ttl, 600);
 });

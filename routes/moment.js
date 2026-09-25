@@ -44,7 +44,7 @@ async function visiblePhonesFor(phone) {
 }
 
 /**
- * Ends expired Call Me Moments. Runs periodically (see index.js), so expiry
+ * Ends expired Yap Moments. Runs periodically (see index.js), so expiry
  * survives server restarts, unlike the previous per-request setTimeout.
  */
 async function expireMoments(io) {

@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-// Today's Call Me Moment for one time zone: a random time between 10:00 and
+// Today's Yap Moment for one time zone: a random time between 10:00 and
 // 21:00 local, the same for everyone in that zone (lib/dailyMoment.js).
 const dailyMomentSchema = new mongoose.Schema({
   day: { type: String, required: true }, // local "YYYY-MM-DD"

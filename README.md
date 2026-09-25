@@ -1,6 +1,6 @@
-# Call Me Maybe – Backend
+# Wanna yap? – Backend
 
-Express + Socket.IO + MongoDB backend for the Call Me Maybe app. Deployed on
+Express + Socket.IO + MongoDB backend for the Wanna yap? app. Deployed on
 Render from `main`.
 
 ```bash
