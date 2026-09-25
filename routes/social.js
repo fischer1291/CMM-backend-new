@@ -11,7 +11,6 @@ const Invite = require("../models/Invite");
 const CallMoment = require("../models/CallMoment");
 const Circle = require("../models/Circle");
 const { normalizePhone, regionOf } = require("../lib/phone");
-const { requireAdminKey } = require("../lib/auth");
 
 const MAX_INVITES_PER_REQUEST = 50;
 /** A moment with this many reports from different people is hidden */
@@ -107,22 +106,6 @@ module.exports = (io) => {
       }
     }
     if (req.body.block === true) await block(me, reported);
-    res.json({ success: true });
-  });
-
-  // --- Admin: review reports (X-Admin-Key) --------------------------------
-
-  router.get("/admin/reports", requireAdminKey, async (req, res) => {
-    const reports = await Report.find({ status: "open" }).sort({ createdAt: -1 }).limit(100).lean();
-    res.json({ success: true, reports });
-  });
-
-  // POST /admin/reports/:id/resolve { removeMoment? }
-  router.post("/admin/reports/:id/resolve", requireAdminKey, async (req, res) => {
-    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ success: false });
-    const report = await Report.findByIdAndUpdate(req.params.id, { status: "resolved" }, { new: true });
-    if (!report) return res.status(404).json({ success: false });
-    if (req.body?.removeMoment && report.momentId) await CallMoment.deleteOne({ _id: report.momentId });
     res.json({ success: true });
   });
 

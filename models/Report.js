@@ -9,6 +9,10 @@ const reportSchema = new mongoose.Schema({
   reason: { type: String, enum: ["spam", "harassment", "inappropriate", "other"], required: true },
   note: { type: String, default: "" },
   status: { type: String, enum: ["open", "resolved"], default: "open" },
+  // Set by the admin console
+  resolution: { type: String, default: null }, // dismiss | hide_moment | delete_moment | suspend | ban
+  resolvedBy: { type: String, default: null },
+  resolvedAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now },
 });
 

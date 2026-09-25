@@ -6,6 +6,7 @@ const User = require("../models/User");
 const { normalizePhone } = require("../lib/phone");
 const { signToken } = require("../lib/auth");
 const { connectInviters } = require("../lib/invites");
+const { signInBlock } = require("../lib/accessGate");
 
 const router = express.Router();
 
@@ -59,6 +60,10 @@ router.post("/start", perIp, perPhone(5), async (req, res) => {
     return res.status(400).json({ success: false, error: "Ungültige Telefonnummer" });
   }
 
+  // Banned or suspended: no SMS
+  const blocked = await signInBlock(phone);
+  if (blocked) return res.status(403).json({ success: false, error: blocked });
+
   if (reviewCodeFor(phone)) {
     return res.json({ success: true, phone });
   }
@@ -81,6 +86,9 @@ router.post("/check", perPhone(10), async (req, res) => {
   if (!phone || !/^\d{4,10}$/.test(code)) {
     return res.status(400).json({ success: false, error: "Nummer und Code erforderlich" });
   }
+
+  const blocked = await signInBlock(phone);
+  if (blocked) return res.status(403).json({ success: false, error: blocked });
 
   try {
     const reviewCode = reviewCodeFor(phone);

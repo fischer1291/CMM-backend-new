@@ -4,6 +4,7 @@ const request = require("supertest");
 const { io: connect } = require("socket.io-client");
 const { setup, teardown, reset, fakes, talked, shareAll } = require("./helpers");
 const User = require("../models/User");
+const Report = require("../models/Report");
 const Call = require("../models/Call");
 const CallMoment = require("../models/CallMoment");
 const Invite = require("../models/Invite");
@@ -103,17 +104,8 @@ test("report: a moment reported by three people is hidden; reporting can block t
   await request(ctx.app).post("/reports").set(auth(reporters[0])).send({ phone: ANNA, reason: "harassment", block: true }).expect(200);
   assert.ok(!(await User.findOne({ phone: BEN })).contacts.includes(ANNA));
 
-  // Moderation needs the admin key
-  await request(ctx.app).get("/admin/reports").expect(403);
-  const open = await request(ctx.app).get("/admin/reports").set("X-Admin-Key", "admin-key").expect(200);
-  assert.equal(open.body.reports.length, 4);
-  const withMoment = open.body.reports.find((r) => r.momentId);
-  await request(ctx.app)
-    .post(`/admin/reports/${withMoment._id}/resolve`)
-    .set("X-Admin-Key", "admin-key")
-    .send({ removeMoment: true })
-    .expect(200);
-  assert.equal(await CallMoment.countDocuments({ _id: momentId }), 0);
+  // Moderation happens in the admin console (test/admin.test.js)
+  assert.equal(await Report.countDocuments({ status: "open" }), 4);
 });
 
 test("invites: the invited person is connected on sign-up; inviters hear it once they have a name", async () => {

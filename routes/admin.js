@@ -11,6 +11,18 @@ const AdminAudit = require("../models/AdminAudit");
 const User = require("../models/User");
 const Room = require("../models/Room");
 const Report = require("../models/Report");
+const mongoose = require("mongoose");
+const Talk = require("../models/Talk");
+const Call = require("../models/Call");
+const Circle = require("../models/Circle");
+const Block = require("../models/Block");
+const CallMoment = require("../models/CallMoment");
+const PushDecision = require("../models/PushDecision");
+const ActiveDay = require("../models/ActiveDay");
+const { deleteAccount } = require("../lib/account");
+const moderation = require("../lib/moderation");
+const { maskPhone } = moderation;
+const { shiftDateKey } = require("../lib/localTime");
 const {
   hashPassword,
   checkPassword,
@@ -32,7 +44,7 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const me = (admin) => ({ email: admin.email, role: admin.role, lastLoginAt: admin.lastLoginAt });
 
-module.exports = () => {
+module.exports = (io) => {
   const router = express.Router();
 
   // Few tries for anything that takes a password or code
@@ -184,6 +196,237 @@ module.exports = () => {
     const query = before && !isNaN(before) ? { at: { $lt: before } } : {};
     const entries = await AdminAudit.find(query, { _id: 0, __v: 0 }).sort({ at: -1 }).limit(100).lean();
     res.json({ success: true, entries });
+  });
+
+  // --- Users -------------------------------------------------------------------
+
+  const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const createdAt = (user) => user._id.getTimestamp();
+  const listItem = (u) => ({
+    id: String(u._id),
+    name: u.name || "",
+    avatarUrl: u.avatarUrl || null,
+    phone: maskPhone(u.phone),
+    createdAt: createdAt(u),
+    lastOnline: u.lastOnline || null,
+    isAvailable: !!u.isAvailable,
+    platform: u.pushTokenMetadata?.platform || u.voipTokenMetadata?.platform || null,
+    suspendedUntil: u.suspendedUntil && u.suspendedUntil > new Date() ? u.suspendedUntil : null,
+  });
+
+  async function findUser(req, res) {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      res.status(400).json({ success: false, error: "invalid_id" });
+      return null;
+    }
+    const user = await User.findById(req.params.id);
+    if (!user) res.status(404).json({ success: false, error: "not_found" });
+    return user;
+  }
+
+  // GET /admin/users?q=: by name or (part of the) number; newest without q
+  router.get("/admin/users", requireAdmin("support"), async (req, res) => {
+    const q = String(req.query.q || "").trim().slice(0, 50);
+    let filter = {};
+    if (q) {
+      const digits = q.replace(/[^\d]/g, "");
+      filter =
+        digits.length >= 4 && /^[+\d\s()/-]+$/.test(q)
+          ? { phone: { $regex: escape(digits.replace(/^0+/, "")) } }
+          : { name: { $regex: escape(q), $options: "i" } };
+    }
+    const users = await User.find(filter).sort({ _id: -1 }).limit(25).lean();
+    if (q) await audit(req, "user_search", { meta: { length: q.length, results: users.length } });
+    res.json({ success: true, users: users.map(listItem) });
+  });
+
+  router.get("/admin/users/:id", requireAdmin("support"), async (req, res) => {
+    const user = await findUser(req, res);
+    if (!user) return;
+    const phone = user.phone;
+    const since = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    const today = metrics.todayKey();
+    const [circles, talks, calls, reportsAgainst, reportsBy, blockedBy, blocking, moments, decisions, activeDays] = await Promise.all([
+      Circle.find({ "members.phone": phone }, { name: 1, emoji: 1, members: 1 }).lean(),
+      Talk.aggregate([
+        { $match: { startedAt: { $gte: since }, $or: [{ group: { $ne: true }, participants: phone }, { group: true, owner: phone }] } },
+        { $group: { _id: "$group", n: { $sum: 1 }, seconds: { $sum: "$seconds" } } },
+      ]),
+      Call.aggregate([
+        { $match: { createdAt: { $gte: since }, $or: [{ caller: phone }, { callee: phone }] } },
+        { $group: { _id: "$status", n: { $sum: 1 } } },
+      ]),
+      Report.find({ reported: phone }).sort({ createdAt: -1 }).limit(20).lean(),
+      Report.countDocuments({ reporter: phone }),
+      Block.countDocuments({ blocked: phone }),
+      Block.countDocuments({ blocker: phone }),
+      CallMoment.countDocuments({ userPhone: phone }),
+      PushDecision.find({ to: phone }).sort({ at: -1 }).limit(30).lean(),
+      ActiveDay.find({ who: User.hashPhone(phone), day: { $gte: shiftDateKey(today, -27) } }, { day: 1 }).lean(),
+    ]);
+    const talkBy = Object.fromEntries(talks.map((t) => [String(!!t._id), t]));
+    await audit(req, "user_view", { target: String(user._id) });
+    res.json({
+      success: true,
+      user: {
+        ...listItem(user),
+        timezone: user.timezone || null,
+        mood: user.mood || null,
+        suspendReason: user.suspendReason || null,
+        tokensValidAfter: user.tokensValidAfter || null,
+        contacts: user.contacts.length,
+        invitesJoined: user.invitesJoined || 0,
+        joinedViaInvite: !!user.joinedViaInvite,
+        push: {
+          expo: !!user.pushToken,
+          expoRegisteredAt: user.pushTokenMetadata?.registeredAt || null,
+          expoValidated: user.pushTokenMetadata?.lastValidated || null,
+          voip: !!user.voipToken,
+          voipEnvironment: user.voipTokenMetadata?.environment || null,
+          prefs: user.notificationPrefs || null,
+        },
+        circles: circles.map((c) => ({ id: String(c._id), name: c.name, emoji: c.emoji, members: c.members.length })),
+        last30: {
+          talks: talkBy.false?.n || 0,
+          talkMinutes: Math.round((talkBy.false?.seconds || 0) / 60),
+          roomMinutes: Math.round((talkBy.true?.seconds || 0) / 60),
+          calls: Object.fromEntries(calls.map((c) => [c._id, c.n])),
+          activeDays: activeDays.map((d) => d.day).sort(),
+        },
+        safety: {
+          reportsAgainst: reportsAgainst.map((r) => ({ id: String(r._id), reason: r.reason, note: r.note, status: r.status, resolution: r.resolution, createdAt: r.createdAt })),
+          reportsBy,
+          blockedBy,
+          blocking,
+          moments,
+        },
+        // "about" is a person: masked
+        pushLog: decisions.map((d) => ({ type: d.type, result: d.result, app: d.app || null, delivery: d.delivery || null, about: maskPhone(d.about), at: d.at })),
+      },
+    });
+  });
+
+  router.post("/admin/users/:id/reveal", requireAdmin("support"), async (req, res) => {
+    const user = await findUser(req, res);
+    if (!user) return;
+    await audit(req, "phone_revealed", { target: String(user._id) });
+    res.json({ success: true, phone: user.phone });
+  });
+
+  router.post("/admin/users/:id/test-push", requireAdmin("support"), async (req, res) => {
+    const user = await findUser(req, res);
+    if (!user) return;
+    const result = await moderation.testPush(user);
+    await audit(req, "test_push", { target: String(user._id), meta: { result } });
+    res.json({ success: true, result });
+  });
+
+  router.post("/admin/users/:id/reset-push", requireAdmin("support"), async (req, res) => {
+    const user = await findUser(req, res);
+    if (!user) return;
+    await moderation.resetPush(user.phone);
+    await audit(req, "push_reset", { target: String(user._id) });
+    res.json({ success: true });
+  });
+
+  router.post("/admin/users/:id/logout", requireAdmin("support"), async (req, res) => {
+    const user = await findUser(req, res);
+    if (!user) return;
+    await moderation.endSessions(user.phone, io);
+    await audit(req, "user_logged_out", { target: String(user._id) });
+    res.json({ success: true });
+  });
+
+  router.post("/admin/users/:id/suspend", requireAdmin("support"), async (req, res) => {
+    const user = await findUser(req, res);
+    if (!user) return;
+    const days = Number(req.body?.days);
+    if (!Number.isFinite(days) || days < 1 || days > moderation.MAX_SUSPEND_DAYS) {
+      return res.status(400).json({ success: false, error: "invalid_days" });
+    }
+    const until = await moderation.suspend(user.phone, { days, reason: req.body?.reason }, io);
+    await audit(req, "user_suspended", { target: String(user._id), meta: { days, reason: String(req.body?.reason || "").slice(0, 300) } });
+    res.json({ success: true, suspendedUntil: until });
+  });
+
+  router.post("/admin/users/:id/unsuspend", requireAdmin("support"), async (req, res) => {
+    const user = await findUser(req, res);
+    if (!user) return;
+    await moderation.unsuspend(user.phone);
+    await audit(req, "user_unsuspended", { target: String(user._id) });
+    res.json({ success: true });
+  });
+
+  // Delete the account and block the number. Owner only, typed confirmation.
+  router.post("/admin/users/:id/ban", requireAdmin("owner"), async (req, res) => {
+    const user = await findUser(req, res);
+    if (!user) return;
+    if (req.body?.confirm !== "SPERREN") return res.status(400).json({ success: false, error: "confirm_required" });
+    await audit(req, "user_banned", { target: String(user._id), meta: { reason: String(req.body?.reason || "").slice(0, 300) } });
+    await moderation.ban(user.phone, { reason: req.body?.reason, by: req.admin.email }, io);
+    res.json({ success: true });
+  });
+
+  // Delete on request (e.g. by e-mail). Owner only, typed confirmation.
+  router.post("/admin/users/:id/delete", requireAdmin("owner"), async (req, res) => {
+    const user = await findUser(req, res);
+    if (!user) return;
+    if (req.body?.confirm !== "LÖSCHEN") return res.status(400).json({ success: false, error: "confirm_required" });
+    await audit(req, "user_deleted", { target: String(user._id) });
+    await deleteAccount(user.phone, io);
+    res.json({ success: true });
+  });
+
+  // --- Reports -------------------------------------------------------------------
+
+  const person = async (phone) => {
+    const u = await User.findOne({ phone }, { name: 1, avatarUrl: 1, phone: 1 }).lean();
+    return u ? { id: String(u._id), name: u.name || "", avatarUrl: u.avatarUrl || null, phone: maskPhone(phone) } : { id: null, name: "Gelöscht", phone: maskPhone(phone) };
+  };
+
+  router.get("/admin/reports", requireAdmin("support"), async (req, res) => {
+    const status = req.query.status === "resolved" ? "resolved" : "open";
+    const reports = await Report.find({ status }).sort(status === "open" ? { createdAt: 1, _id: 1 } : { createdAt: -1, _id: -1 }).limit(100).lean();
+    const counts = await Report.aggregate([
+      { $match: { reported: { $in: [...new Set(reports.map((r) => r.reported))] } } },
+      { $group: { _id: "$reported", n: { $sum: 1 } } },
+    ]);
+    const against = Object.fromEntries(counts.map((c) => [c._id, c.n]));
+    const out = [];
+    for (const r of reports) {
+      const moment = r.momentId ? await CallMoment.findById(r.momentId, { screenshot: 1, note: 1, hidden: 1, mood: 1, timestamp: 1 }).lean() : null;
+      out.push({
+        id: String(r._id),
+        reason: r.reason,
+        note: r.note,
+        status: r.status,
+        resolution: r.resolution,
+        resolvedBy: r.resolvedBy,
+        resolvedAt: r.resolvedAt,
+        createdAt: r.createdAt,
+        reporter: await person(r.reporter),
+        reported: { ...(await person(r.reported)), reportsAgainst: against[r.reported] || 0 },
+        moment: moment ? { screenshot: moment.screenshot, note: moment.note, mood: moment.mood, hidden: !!moment.hidden, at: moment.timestamp } : r.momentId ? { deleted: true } : null,
+      });
+    }
+    res.json({ success: true, reports: out });
+  });
+
+  const ACTIONS = ["dismiss", "hide_moment", "delete_moment", "suspend", "ban"];
+  router.post("/admin/reports/:id/resolve", requireAdmin("support"), async (req, res) => {
+    const { action, days, note } = req.body || {};
+    if (!ACTIONS.includes(action)) return res.status(400).json({ success: false, error: "invalid_action" });
+    if (action === "ban" && req.admin.role !== "owner") return res.status(403).json({ success: false, error: "forbidden" });
+    if (action === "suspend" && !(Number(days) >= 1 && Number(days) <= moderation.MAX_SUSPEND_DAYS)) {
+      return res.status(400).json({ success: false, error: "invalid_days" });
+    }
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ success: false, error: "invalid_id" });
+    const report = await Report.findById(req.params.id);
+    if (!report) return res.status(404).json({ success: false, error: "not_found" });
+    if (report.status !== "open") return res.status(409).json({ success: false, error: "already_resolved" });
+    await audit(req, "report_resolved", { target: String(report._id), meta: { action, days: days || null, note: String(note || "").slice(0, 300) } });
+    const settled = await moderation.resolveReport(report, { action, days, note }, req.admin, io);
+    res.json({ success: true, settled });
   });
 
   return router;

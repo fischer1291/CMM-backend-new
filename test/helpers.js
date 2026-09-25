@@ -113,6 +113,8 @@ async function reset() {
   await require("../models/ActiveDay").syncIndexes();
   await require("../models/MetricsDaily").syncIndexes();
   require("../lib/metrics").resetActivityCache();
+  require("../lib/accessGate").reset();
+  await require("../models/BannedNumber").syncIndexes();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
   fakes.voipPushes.length = 0;
