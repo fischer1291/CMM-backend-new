@@ -10,6 +10,7 @@ const CallMoment = require("../models/CallMoment");
 const { normalizePhone, regionOf } = require("../lib/phone");
 const { blockedWith } = require("../lib/relations");
 const { notifyMany } = require("../lib/notify");
+const { circleBadgesOf } = require("../lib/badges");
 const {
   MAX_MEMBERS,
   MAX_CIRCLES,
@@ -94,6 +95,7 @@ module.exports = (io) => {
         .sort({ timestamp: -1 })
         .limit(30)
         .lean();
+      out.badges = await circleBadgesOf(circle);
       out.moments = moments.map((m) => ({ id: String(m._id), screenshot: m.screenshot, userPhone: m.userPhone, targetPhone: m.targetPhone, mood: m.mood, note: m.note, timestamp: m.timestamp }));
     }
     return out;

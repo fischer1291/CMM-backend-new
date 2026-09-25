@@ -42,7 +42,11 @@ module.exports = (io) => {
     const moment = await activeMomentFor(me);
     if (!moment) return res.status(409).json({ success: false, error: "not_active" });
 
-    await DailyMoment.updateOne({ _id: moment._id }, { $addToSet: { joined: me.phone } });
+    const fast = Date.now() - moment.at.getTime() <= 60 * 1000;
+    await DailyMoment.updateOne(
+      { _id: moment._id },
+      { $addToSet: fast ? { joined: me.phone, fast: me.phone } : { joined: me.phone } },
+    );
     const wasAvailable = me.isAvailable;
     me.isAvailable = true;
     me.availableSource = "daily";

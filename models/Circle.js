@@ -37,6 +37,8 @@ const circleSchema = new mongoose.Schema({
     timezone: { type: String, default: null },
     lastKey: { type: String, default: null },
   },
+  // Weeks (Monday "YYYY-MM-DD") in which everyone talked: circle badges
+  goalWeeks: { type: [String], default: [] },
   createdAt: { type: Date, default: Date.now },
 });
 
