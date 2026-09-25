@@ -1,3 +1,4 @@
+const path = require("path");
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
@@ -71,6 +72,17 @@ function createApp({ ringTimeoutMs } = {}) {
       res.status(500).json({ success: false });
     }
   });
+
+  // Admin console: its own sign-in (cookie + TOTP), static files at /console
+  app.use(require("./routes/admin")());
+  app.use(
+    "/console",
+    helmet.contentSecurityPolicy({
+      directives: { defaultSrc: ["'self'"], imgSrc: ["'self'", "data:"], styleSrc: ["'self'", "https://fonts.googleapis.com"], fontSrc: ["https://fonts.gstatic.com"], frameAncestors: ["'none'"] },
+    }),
+    express.static(path.join(__dirname, "admin-ui"), { index: "index.html", maxAge: 0 }),
+  );
+  app.use("/console/vendor", express.static(path.join(__dirname, "node_modules/htm/preact")));
 
   // Everything below knows the requesting user (req.auth) or is legacy.
   // Exception: the invite link preview (/circles/code/:code) is public.
