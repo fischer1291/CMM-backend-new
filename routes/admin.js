@@ -438,7 +438,7 @@ module.exports = (io) => {
     const user = await findUser(req, res);
     if (!user) return;
     await audit(req, "user_exported", { target: String(user._id) });
-    res.set("Content-Disposition", `attachment; filename="call-me-maybe-export-${user._id}.json"`);
+    res.set("Content-Disposition", `attachment; filename="wanna-yap-export-${user._id}.json"`);
     res.json(await exportAccount(user.phone));
   });
 

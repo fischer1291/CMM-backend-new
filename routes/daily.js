@@ -1,5 +1,5 @@
 /**
- * GET /daily: is the daily Call Me Moment running, am I in, who else is?
+ * GET /daily: is the daily Yap Moment running, am I in, who else is?
  * POST /daily/join { mood? }: I'm in: available until the moment ends.
  */
 const express = require("express");

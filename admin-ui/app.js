@@ -38,7 +38,7 @@ const sum = (series, pick) => series.reduce((s, d) => s + (pick(d) || 0), 0);
 // --- Pieces --------------------------------------------------------------------
 
 function Brand() {
-  return html`<div class="brand"><span class="dot"></span>Call Me Maybe <span class="muted" style="font-weight:500">Admin</span></div>`;
+  return html`<div class="brand"><span class="dot"></span>Wanna yap? <span class="muted" style="font-weight:500">Admin</span></div>`;
 }
 
 function Field({ label, type = 'text', value, onInput, autocomplete, className = '', inputmode, autofocus }) {
