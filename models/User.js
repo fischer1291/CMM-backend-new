@@ -69,6 +69,8 @@ const userSchema = new mongoose.Schema({
   // Badges: people who joined via this user's invites ("Brückenbauer"),
   // the badge tiers already celebrated, and up to 3 badges on show
   invitesJoined: { type: Number, default: 0 },
+  // Came in through someone's invite (admin growth numbers)
+  joinedViaInvite: { type: Boolean, default: false },
   badgeSeen: { type: mongoose.Schema.Types.Mixed, default: null },
   showcase: { type: [String], default: [] },
 

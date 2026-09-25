@@ -109,6 +109,10 @@ async function reset() {
   await require("../models/DailyMoment").syncIndexes();
   await require("../models/Circle").syncIndexes();
   await require("../models/Room").syncIndexes();
+  await require("../models/Admin").syncIndexes();
+  await require("../models/ActiveDay").syncIndexes();
+  await require("../models/MetricsDaily").syncIndexes();
+  require("../lib/metrics").resetActivityCache();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
   fakes.voipPushes.length = 0;

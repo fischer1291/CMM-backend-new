@@ -11,6 +11,7 @@ const { applySchedules } = require("./lib/schedule");
 const { checkReceipts } = require("./lib/receipts");
 const { tickDailyMoments } = require("./lib/dailyMoment");
 const { expirePendingMoments } = require("./lib/moments");
+const { runSnapshots } = require("./lib/metrics");
 const { migratePrivateCircles, tickRituals, endStaleRooms } = require("./lib/circles");
 
 const PORT = process.env.PORT || 3000;
@@ -65,6 +66,11 @@ async function main() {
   setInterval(() => {
     tick().catch((err) => console.error("❌ availability tick:", err.message));
   }, 60 * 1000);
+
+  // Admin numbers: fill missing days now, then refresh every 30 minutes
+  const snapshots = () => runSnapshots().catch((err) => console.error("❌ metrics snapshots:", err.message));
+  snapshots();
+  setInterval(snapshots, 30 * 60 * 1000);
 
   // Every 15 minutes: delivery receipts of sent pushes
   setInterval(() => {
