@@ -162,3 +162,146 @@ test("console: static page with a strict content policy", async () => {
   assert.match(res.headers["content-security-policy"], /frame-ancestors 'none'/);
   await request(ctx.app).get("/console/vendor/standalone.module.js").expect(200);
 });
+
+// --- Phase 10b: users, support, moderation -------------------------------------
+
+const Report = require("../models/Report");
+const CallMoment = require("../models/CallMoment");
+const BannedNumber = require("../models/BannedNumber");
+const admin = (cookie) => ({ Cookie: cookie, "X-Admin-Request": "1" });
+
+async function named(phone, name) {
+  const token = await appLogin(phone);
+  await User.updateOne({ phone }, { name });
+  return { token, id: String((await User.findOne({ phone }))._id) };
+}
+
+test("users: search by name or number, masked; detail is audited; reveal is logged", async () => {
+  const { cookie } = await setUpAdmin();
+  const anna = await named(ANNA, "Anna Berg");
+  await named(BEN, "Ben Koch");
+
+  const byName = await request(ctx.app).get("/admin/users?q=anna").set("Cookie", cookie).expect(200);
+  assert.deepEqual(byName.body.users.map((u) => u.name), ["Anna Berg"]);
+  assert.equal(byName.body.users[0].phone, "+49 ••• 111");
+  const byNumber = await request(ctx.app).get("/admin/users?q=0152 2222").set("Cookie", cookie).expect(200);
+  assert.deepEqual(byNumber.body.users.map((u) => u.name), ["Ben Koch"]);
+  const odd = await request(ctx.app).get("/admin/users?q=(.*").set("Cookie", cookie).expect(200);
+  assert.equal(odd.body.users.length, 0);
+
+  const detail = await request(ctx.app).get(`/admin/users/${anna.id}`).set("Cookie", cookie).expect(200);
+  assert.equal(detail.body.user.name, "Anna Berg");
+  assert.ok(!JSON.stringify(detail.body).includes(ANNA), "no full number in the detail");
+  const revealed = await request(ctx.app).post(`/admin/users/${anna.id}/reveal`).set(admin(cookie)).expect(200);
+  assert.equal(revealed.body.phone, ANNA);
+  const actions = (await AdminAudit.find({ target: anna.id }).lean()).map((a) => a.action);
+  assert.deepEqual(actions.sort(), ["phone_revealed", "user_view"]);
+
+  // A viewer can't look at people
+  await Admin.updateOne({ email: EMAIL }, { role: "viewer" });
+  await request(ctx.app).get("/admin/users").set("Cookie", cookie).expect(403);
+});
+
+test("support: end sessions, test push, reset push tokens", async () => {
+  const { cookie } = await setUpAdmin();
+  const anna = await named(ANNA, "Anna");
+  await request(ctx.app).get("/me").set("Authorization", `Bearer ${anna.token}`).expect(200);
+
+  await new Promise((r) => setTimeout(r, 1100)); // tokens carry seconds
+  await request(ctx.app).post(`/admin/users/${anna.id}/logout`).set(admin(cookie)).expect(200);
+  await request(ctx.app).get("/me").set("Authorization", `Bearer ${anna.token}`).expect(401);
+  // Signing in again works
+  await new Promise((r) => setTimeout(r, 1100));
+  const fresh = await appLogin(ANNA);
+  await request(ctx.app).get("/me").set("Authorization", `Bearer ${fresh}`).expect(200);
+
+  let push = await request(ctx.app).post(`/admin/users/${anna.id}/test-push`).set(admin(cookie)).expect(200);
+  assert.equal(push.body.result, "no_token");
+  await User.updateOne({ phone: ANNA }, { pushToken: "ExponentPushToken[anna]" });
+  push = await request(ctx.app).post(`/admin/users/${anna.id}/test-push`).set(admin(cookie)).expect(200);
+  assert.equal(push.body.result, "sent");
+  assert.equal(fakes.expoPushes.at(-1).data.type, "support_test");
+
+  await request(ctx.app).post(`/admin/users/${anna.id}/reset-push`).set(admin(cookie)).expect(200);
+  assert.equal((await User.findOne({ phone: ANNA })).pushToken, undefined);
+});
+
+test("suspend: offline, signed out, no sign-in until lifted", async () => {
+  const { cookie } = await setUpAdmin();
+  const anna = await named(ANNA, "Anna");
+  await User.updateOne({ phone: ANNA }, { isAvailable: true });
+
+  await request(ctx.app).post(`/admin/users/${anna.id}/suspend`).set(admin(cookie)).send({ days: 0 }).expect(400);
+  await request(ctx.app).post(`/admin/users/${anna.id}/suspend`).set(admin(cookie)).send({ days: 7, reason: "Spam" }).expect(200);
+  const suspended = await User.findOne({ phone: ANNA });
+  assert.equal(suspended.isAvailable, false);
+  assert.ok(suspended.suspendedUntil > new Date(Date.now() + 6 * 24 * 3600 * 1000));
+  await request(ctx.app).get("/me").set("Authorization", `Bearer ${anna.token}`).expect(401);
+  const start = await request(ctx.app).post("/verify/start").send({ phone: ANNA }).expect(403);
+  assert.match(start.body.error, /gesperrt/);
+  await request(ctx.app).post("/verify/check").send({ phone: ANNA, code: fakes.approvedCode }).expect(403);
+
+  await request(ctx.app).post(`/admin/users/${anna.id}/unsuspend`).set(admin(cookie)).expect(200);
+  await new Promise((r) => setTimeout(r, 1100));
+  const token = await appLogin(ANNA);
+  await request(ctx.app).get("/me").set("Authorization", `Bearer ${token}`).expect(200);
+});
+
+test("ban and delete: owner only, typed confirmation; a banned number can't come back", async () => {
+  const { cookie } = await setUpAdmin();
+  const anna = await named(ANNA, "Anna");
+  const ben = await named(BEN, "Ben");
+
+  await request(ctx.app).post(`/admin/users/${anna.id}/ban`).set(admin(cookie)).send({ reason: "x" }).expect(400);
+  await request(ctx.app).post(`/admin/users/${anna.id}/ban`).set(admin(cookie)).send({ reason: "Belästigung", confirm: "SPERREN" }).expect(200);
+  assert.equal(await User.countDocuments({ phone: ANNA }), 0);
+  assert.equal(await BannedNumber.countDocuments(), 1);
+  await request(ctx.app).get("/status/get").set("Authorization", `Bearer ${anna.token}`).expect(401);
+  const again = await request(ctx.app).post("/verify/start").send({ phone: ANNA }).expect(403);
+  assert.match(again.body.error, /gesperrt/);
+
+  await Admin.updateOne({ email: EMAIL }, { role: "support" });
+  await request(ctx.app).post(`/admin/users/${ben.id}/delete`).set(admin(cookie)).send({ confirm: "LÖSCHEN" }).expect(403);
+  await Admin.updateOne({ email: EMAIL }, { role: "owner" });
+  await request(ctx.app).post(`/admin/users/${ben.id}/delete`).set(admin(cookie)).send({ confirm: "LÖSCHEN" }).expect(200);
+  assert.equal(await User.countDocuments({ phone: BEN }), 0);
+  // Deleted, not banned: can sign up again
+  await request(ctx.app).post("/verify/start").send({ phone: BEN }).expect(200);
+});
+
+test("reports: queue with context; hide the moment settles all its reports; suspend settles the person's", async () => {
+  const { cookie } = await setUpAdmin();
+  await named(ANNA, "Anna");
+  await named(BEN, "Ben");
+  const CARL = "+4915333333333";
+  await named(CARL, "Carl");
+  const moment = await CallMoment.create({
+    userPhone: ANNA, userName: "Anna", targetPhone: BEN, targetName: "Ben",
+    screenshot: "https://example.com/m.jpg", mood: "😊", callDuration: "05:00",
+  });
+  const r1 = await Report.create({ reporter: BEN, reported: ANNA, momentId: moment._id, reason: "inappropriate" });
+  await Report.create({ reporter: CARL, reported: ANNA, momentId: moment._id, reason: "inappropriate" });
+  const r3 = await Report.create({ reporter: CARL, reported: ANNA, reason: "harassment", note: "schreibt nachts" });
+
+  const queue = await request(ctx.app).get("/admin/reports").set("Cookie", cookie).expect(200);
+  assert.equal(queue.body.reports.length, 3);
+  const first = queue.body.reports[0];
+  assert.equal(first.reported.name, "Anna");
+  assert.equal(first.reported.reportsAgainst, 3);
+  assert.equal(first.moment.screenshot, "https://example.com/m.jpg");
+  assert.equal(first.reporter.phone, "+49 ••• 222");
+
+  await request(ctx.app).post(`/admin/reports/${r1._id}/resolve`).set(admin(cookie)).send({ action: "nope" }).expect(400);
+  const hidden = await request(ctx.app).post(`/admin/reports/${r1._id}/resolve`).set(admin(cookie)).send({ action: "hide_moment" }).expect(200);
+  assert.equal(hidden.body.settled, 2);
+  assert.equal((await CallMoment.findById(moment._id)).hidden, true);
+  await request(ctx.app).post(`/admin/reports/${r1._id}/resolve`).set(admin(cookie)).send({ action: "dismiss" }).expect(409);
+
+  await Admin.updateOne({ email: EMAIL }, { role: "support" });
+  await request(ctx.app).post(`/admin/reports/${r3._id}/resolve`).set(admin(cookie)).send({ action: "ban" }).expect(403);
+  await request(ctx.app).post(`/admin/reports/${r3._id}/resolve`).set(admin(cookie)).send({ action: "suspend", days: 3 }).expect(200);
+  assert.ok((await User.findOne({ phone: ANNA })).suspendedUntil > new Date());
+  const resolved = await request(ctx.app).get("/admin/reports?status=resolved").set("Cookie", cookie).expect(200);
+  assert.deepEqual(resolved.body.reports.map((r) => r.resolution).sort(), ["hide_moment", "hide_moment", "suspend"]);
+  assert.equal((await request(ctx.app).get("/admin/reports").set("Cookie", cookie)).body.reports.length, 0);
+});

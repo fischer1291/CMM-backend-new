@@ -71,6 +71,12 @@ const userSchema = new mongoose.Schema({
   invitesJoined: { type: Number, default: 0 },
   // Came in through someone's invite (admin growth numbers)
   joinedViaInvite: { type: Boolean, default: false },
+
+  // Moderation (admin console): no sign-in until then; tokens issued before
+  // tokensValidAfter are rejected (lib/accessGate.js)
+  suspendedUntil: { type: Date, default: null },
+  suspendReason: { type: String, default: null },
+  tokensValidAfter: { type: Date, default: null },
   badgeSeen: { type: mongoose.Schema.Types.Mixed, default: null },
   showcase: { type: [String], default: [] },
 
