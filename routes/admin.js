@@ -516,6 +516,8 @@ module.exports = (io) => {
     ticket.updatedAt = new Date();
     await ticket.save();
     await audit(req, `ticket_${status}`, { target: String(ticket._id) });
+    // Open apps show the new state right away
+    io?.to(`user:${ticket.phone}`).emit("supportReply", { id: String(ticket._id), status });
     res.json({ success: true });
   });
 
