@@ -21,6 +21,7 @@ const view = (t) => ({
   messages: t.messages.map(({ from, text: body, at }) => ({ from, text: body, at })),
   createdAt: t.createdAt,
   updatedAt: t.updatedAt,
+  closedAt: t.status === "closed" ? t.updatedAt : null,
 });
 
 module.exports = () => {
