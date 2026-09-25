@@ -168,8 +168,8 @@ test("stats: totals, weekly streak, people and badges", async () => {
   assert.equal(stats.people[0].talks, 2);
 
   const earned = stats.badges.filter((b) => b.earned).map((b) => b.id);
-  assert.deepEqual(earned, ["first_talk", "deep_talk", "hour"]);
-  assert.equal(stats.badges.find((b) => b.id === "ten_talks").progress, 0.3);
+  assert.deepEqual(earned, ["first_talk", "deep_talk", "hours"]);
+  assert.equal(stats.badges.find((b) => b.id === "talks").progress, 0.3);
   assert.equal(sharing.visibility, "private");
 });
 

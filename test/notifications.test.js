@@ -186,14 +186,20 @@ test("moments: the other person is asked to agree; the author hears when they di
     .set(auth(anna))
     .send({ targetPhone: BEN, screenshot: "data:image/jpeg;base64,AAAA", mood: "😊", callDuration: "05:00" })
     .expect(200);
-  await new Promise((r) => setTimeout(r, 100));
-  const ask = fakes.expoPushes.find((p) => p.data?.type === "moment_consent");
+  const waitFor = async (type) => {
+    for (let i = 0; i < 50; i++) {
+      const push = fakes.expoPushes.find((p) => p.data?.type === type);
+      if (push) return push;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return null;
+  };
+  const ask = await waitFor("moment_consent");
   assert.equal(ask.to, TOKEN("2"));
   assert.equal(ask.title, "Anna möchte einen Moment teilen ✨");
 
   await request(ctx.app).post(`/moment/${posted.body.callMoment._id}/consent`).set(auth(ben)).send({ approve: true }).expect(200);
-  await new Promise((r) => setTimeout(r, 100));
-  const done = fakes.expoPushes.find((p) => p.data?.type === "moment_approved");
+  const done = await waitFor("moment_approved");
   assert.equal(done.to, TOKEN("1"));
 });
 
