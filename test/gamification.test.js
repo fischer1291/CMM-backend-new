@@ -167,7 +167,9 @@ test("stats: totals, weekly streak, people and badges", async () => {
   assert.deepEqual(stats.people.map((p) => p.phone), [BEN, CARL]);
   assert.equal(stats.people[0].talks, 2);
 
-  const earned = stats.badges.filter((b) => b.earned).map((b) => b.id);
+  // Secret badges for the time of day or season depend on when the test runs
+  const CLOCK = ["night_owl", "early_bird", "advent", "new_year"];
+  const earned = stats.badges.filter((b) => b.earned && !CLOCK.includes(b.id)).map((b) => b.id);
   assert.deepEqual(earned, ["first_talk", "deep_talk", "hours"]);
   assert.equal(stats.badges.find((b) => b.id === "talks").progress, 0.3);
   assert.equal(sharing.visibility, "private");

@@ -38,7 +38,10 @@ const badge = (body, id) => body.badges.find((b) => b.id === id);
 
 test("album: categories, tiers, secrets stay secret until found", async () => {
   const anna = await login(ANNA, "Anna");
-  for (let i = 0; i < 12; i++) await talk(ANNA, BEN, new Date(Date.now() - i * 60 * 1000));
+  // Yesterday around noon in Berlin: no night owl or early bird, whenever the test runs
+  const noon = new Date(Date.now() - DAY);
+  noon.setUTCHours(10, 0, 0, 0);
+  for (let i = 0; i < 12; i++) await talk(ANNA, BEN, new Date(noon - i * 60 * 1000));
   const body = await album(anna);
   assert.deepEqual(body.categories.map((c) => c.title), ["Verbindung", "Tiefe", "Rituale", "Kreise", "Entdecken"]);
 
