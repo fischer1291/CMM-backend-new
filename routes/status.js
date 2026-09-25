@@ -4,14 +4,21 @@ const { actingPhone } = require("../lib/auth");
 const { normalizePhone, regionOf } = require("../lib/phone");
 const { notifyMany } = require("../lib/notify");
 const { answerNudges } = require("../lib/nudges");
-const { inAudience, isBlocked } = require("../lib/relations");
+const { audienceOf, isBlocked, blockedWith } = require("../lib/relations");
+const { coMembersOf } = require("../lib/circles");
 
 /**
- * Users who have `phone` in their contact list. Only they may learn about
- * this user's availability.
+ * Who may learn about this user's availability: people who have `phone`
+ * in their address book, and members of the user's circles. Never
+ * someone blocked either way.
  */
 async function followersOf(phone) {
-  return User.find({ contacts: phone }, "phone pushToken notificationPrefs timezone schedule.timezone");
+  const [coMembers, blocked] = await Promise.all([coMembersOf(phone), blockedWith(phone)]);
+  const users = await User.find(
+    { $or: [{ contacts: phone }, { phone: { $in: [...coMembers] } }] },
+    "phone pushToken notificationPrefs timezone schedule.timezone",
+  );
+  return users.filter((u) => u.phone !== phone && !blocked.has(u.phone));
 }
 
 /** Own availability as the app shows it. */
@@ -30,8 +37,9 @@ const statusOf = (user) => ({
 async function broadcastStatus(io, user, { becameAvailable = false } = {}) {
   // Contacts outside the chosen audience see the user as not available
   const all = await followersOf(user.phone);
-  const followers = all.filter((f) => inAudience(user, f.phone));
-  const hidden = all.filter((f) => !inAudience(user, f.phone));
+  const allowed = await audienceOf(user);
+  const followers = all.filter((f) => allowed(f.phone));
+  const hidden = all.filter((f) => !allowed(f.phone));
   if (hidden.length) {
     io.to(hidden.map((f) => `user:${f.phone}`)).emit("statusUpdate", {
       phone: user.phone,
@@ -116,7 +124,7 @@ module.exports = (io) => {
         return res.status(404).json({ success: false, error: "User nicht gefunden" });
       }
       const { availableSource, ...status } = statusOf(user);
-      if (!own && viewer && !inAudience(user, viewer)) {
+      if (!own && viewer && !(await audienceOf(user))(viewer)) {
         status.isAvailable = false;
         status.availableUntil = null;
       }

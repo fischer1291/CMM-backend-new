@@ -11,6 +11,7 @@ const { applySchedules } = require("./lib/schedule");
 const { checkReceipts } = require("./lib/receipts");
 const { tickDailyMoments } = require("./lib/dailyMoment");
 const { expirePendingMoments } = require("./lib/moments");
+const { migratePrivateCircles, tickRituals, endStaleRooms } = require("./lib/circles");
 
 const PORT = process.env.PORT || 3000;
 
@@ -21,6 +22,10 @@ async function migrate() {
     await User.updateOne({ _id: user._id }, { phoneHash: User.hashPhone(user.phone) });
   }
   if (missingHash.length) console.log(`🔧 Added phoneHash to ${missingHash.length} users`);
+
+  // Private circle lists became shared circles (lib/circles.js)
+  const migrated = await migratePrivateCircles();
+  if (migrated) console.log(`🔧 Moved private circles of ${migrated} users to shared circles`);
 
   // Nudges: the unique (from, to) index and the 20 h TTL were replaced by a
   // history with cooldowns; syncIndexes drops/recreates what changed
@@ -54,6 +59,8 @@ async function main() {
     await expireMoments(io);
     await tickDailyMoments(io);
     await expirePendingMoments();
+    await tickRituals(io);
+    await endStaleRooms();
   };
   setInterval(() => {
     tick().catch((err) => console.error("❌ availability tick:", err.message));

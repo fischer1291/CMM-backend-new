@@ -9,6 +9,8 @@ const cloudinary = require("cloudinary").v2;
 
 const User = require("./models/User");
 const Call = require("./models/Call");
+const Room = require("./models/Room");
+const Circle = require("./models/Circle");
 const { authenticate, actingPhone } = require("./lib/auth");
 const { agoraCredentials, buildRtcToken } = require("./lib/agora");
 const { Expo, voipProviders } = require("./lib/push");
@@ -84,6 +86,7 @@ function createApp({ ringTimeoutMs } = {}) {
   app.use(require("./routes/account")(io));
   app.use(require("./routes/social")(io));
   app.use(require("./routes/daily")(io));
+  app.use(require("./routes/circles")(io));
 
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -166,6 +169,15 @@ function createApp({ ringTimeoutMs } = {}) {
       const account = req.auth.phone.replace(/^\+/, "");
       if (String(uid) !== account) {
         return res.status(403).json({ error: "uid does not match token" });
+      }
+      if (channelName.startsWith("room_")) {
+        // A circle's group call: members of that circle, while it's open
+        const room = await Room.findOne({ channel: channelName, active: true });
+        const circle = room && (await Circle.findById(room.circleId, "members.phone"));
+        if (!circle || !circle.members.some((m) => m.phone === req.auth.phone)) {
+          return res.status(403).json({ error: "Not a member of this circle" });
+        }
+        return res.json({ token: buildRtcToken(channelName, uid, role) });
       }
       const call = await Call.findOne({
         channel: channelName,
