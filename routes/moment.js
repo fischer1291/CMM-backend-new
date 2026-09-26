@@ -70,7 +70,6 @@ async function expireMoments(io) {
     user.lastOnline = new Date();
     await user.save();
     await broadcastStatus(io, user);
-    console.log(`⏱️ Auto-offline for ${user.phone}`);
   }
   return expired.length;
 }
@@ -276,50 +275,6 @@ module.exports = (io) => {
     res.json({ success: true, memories: moments.map((m) => present(m, phone)) });
   });
 
-  // GET /moment/callmoments/:phone: moments of one user (self or a contact)
-  router.get("/callmoments/:phone", async (req, res) => {
-    const target = normalizePhone(req.params.phone, regionOf(req.auth?.phone));
-    if (!target) {
-      return res.status(400).json({ success: false, message: "Invalid phone" });
-    }
-    if (req.auth) {
-      const visible = await visiblePhonesFor(req.auth.phone);
-      if (!visible.includes(target)) {
-        return res.status(403).json({ success: false, message: "Not a contact" });
-      }
-    }
-
-    try {
-      const variants = withLegacyVariants([target]);
-      const callMoments = await CallMoment.find({
-        $or: [{ userPhone: { $in: variants } }, { targetPhone: { $in: variants } }],
-        status: { $ne: "pending" },
-        hidden: { $ne: true },
-        timestamp: { $gt: new Date(Date.now() - VISIBLE_MS) },
-      })
-        .sort({ timestamp: -1 })
-        .limit(20);
-
-      res.json({
-        success: true,
-        callMoments: callMoments.map((moment) => ({
-          id: moment._id,
-          userPhone: moment.userPhone,
-          userName: moment.userName,
-          targetPhone: moment.targetPhone,
-          targetName: moment.targetName,
-          screenshot: moment.screenshot,
-          note: moment.note,
-          mood: moment.mood,
-          callDuration: moment.callDuration,
-          timestamp: moment.timestamp,
-        })),
-      });
-    } catch (error) {
-      console.error("Error fetching user CallMoments:", error.message);
-      res.status(500).json({ success: false, message: "Server error" });
-    }
-  });
 
   return router;
 };
