@@ -350,7 +350,7 @@ function Row({ label, children }) {
   return html`<div class="kv"><span>${label}</span><span>${children}</span></div>`;
 }
 
-function UserDetail({ id, role, onBack, onChanged }) {
+function UserDetail({ id, role, onBack, onChanged, onMoments }) {
   const [user, setUser] = useState(null);
   const [error, setError] = useState(null);
   const [phone, setPhone] = useState(null);
@@ -439,7 +439,7 @@ function UserDetail({ id, role, onBack, onChanged }) {
         <${Row} label="Hat gemeldet">${num(user.safety.reportsBy)}<//>
         <${Row} label="Blockiert von">${num(user.safety.blockedBy)}<//>
         <${Row} label="Blockiert selbst">${num(user.safety.blocking)}<//>
-        <${Row} label="Momente">${num(user.safety.moments)}<//>
+        <${Row} label="Momente">${num(user.safety.moments)} ${user.safety.moments ? html`· <a href="#" onClick=${(e) => { e.preventDefault(); onMoments({ id, name: user.name }); }}>ansehen</a>` : null}<//>
         ${user.safety.reportsAgainst.slice(0, 5).map((r) => html`<div class="note">• ${REASONS[r.reason] || r.reason}${r.note ? `: „${r.note}“` : ''} · ${date(r.createdAt)} · ${r.status === 'open' ? 'offen' : RESOLUTIONS[r.resolution] || 'erledigt'}</div>`)}
       </div>
       <div class="card actions">
@@ -709,6 +709,75 @@ function AppSettings({ role }) {
     </div>`;
 }
 
+
+// --- Moments -------------------------------------------------------------------------
+
+const MOMENT_FILTERS = { all: 'Alle', reported: 'Gemeldet', hidden: 'Ausgeblendet', pending: 'Warten auf Zustimmung' };
+
+function Moments({ onOpenUser, userId, userName, onClearUser }) {
+  const [filter, setFilter] = useState('all');
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [zoom, setZoom] = useState(null);
+  const load = useCallback(() => {
+    const q = new URLSearchParams({ filter });
+    if (userId) q.set('user', userId);
+    api(`/moments?${q}`).then(setData).catch(() => setData({ moments: [], counts: {} }));
+  }, [filter, userId]);
+  useEffect(() => {
+    setData(null);
+    load();
+  }, [load]);
+
+  const act = async (m, action) => {
+    if (action === 'delete' && !confirm('Moment endgültig löschen? Das Bild wird auch bei Cloudinary gelöscht.')) return;
+    setBusy(m.id);
+    try {
+      await api(`/moments/${m.id}/${action}`, { method: 'POST' });
+      load();
+    } catch (err) {
+      alert(`Fehler: ${err.code || err.message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const c = data?.counts || {};
+  return html`
+    <div class="now">
+      <div class="tabs">${Object.entries(MOMENT_FILTERS).map(([k, label]) => html`<button class=${filter === k ? 'on' : ''} onClick=${() => setFilter(k)}>${label}${k === 'reported' && c.reported ? html` <span class="count">${c.reported}</span>` : null}</button>`)}</div>
+      ${userId ? html`<span class="pill on">nur ${userName || 'diese Person'} <a href="#" onClick=${(e) => { e.preventDefault(); onClearUser(); }}>✕</a></span>` : null}
+      <span class="spacer"></span>
+      <span class="pill">Letzte 24 h: ${num(c.last24h)}</span>
+      <span class="pill">Ausgeblendet: ${num(c.hidden)}</span>
+    </div>
+    ${!data ? html`<p class="note">Lade …</p>` : data.moments.length === 0 ? html`<div class="card"><p class="note" style="margin:0">Keine Moments.</p></div>` : html`<div class="moments">
+      ${data.moments.map((m) => html`<div class="card moment ${m.hidden ? 'dim' : ''}">
+        <img src=${m.screenshot} alt="Moment" onClick=${() => setZoom(m)} />
+        <div class="body">
+          <div class="inline" style="gap:6px">
+            ${m.reports.open ? html`<span class="pill warn">${m.reports.open} ${m.reports.open === 1 ? 'Meldung' : 'Meldungen'}</span>` : null}
+            ${m.hidden ? html`<span class="pill">ausgeblendet</span>` : null}
+            ${m.status === 'pending' ? html`<span class="pill">wartet</span>` : null}
+            <span class="note">${dateTime(m.at)}</span>
+          </div>
+          <p style="margin:8px 0 4px">
+            <a href="#" onClick=${(e) => { e.preventDefault(); m.author.id && onOpenUser(m.author.id); }}>${m.author.name || m.author.phone}</a>${' mit '}<a href="#" onClick=${(e) => { e.preventDefault(); m.target.id && onOpenUser(m.target.id); }}>${m.target.name || m.target.phone}</a>
+          </p>
+          ${m.note ? html`<p class="quote">„${m.note}“</p>` : null}
+          <p class="note">${m.mood || ''} ${m.callDuration ? `· Gespräch ${m.callDuration}` : ''} · ${m.reactions} Reaktionen${m.reports.total > m.reports.open ? ` · ${m.reports.total - m.reports.open} erledigte Meldungen` : ''}</p>
+          <div class="inline">
+            ${m.hidden
+              ? html`<button class="btn small ghost" disabled=${busy} onClick=${() => act(m, 'unhide')}>Wieder zeigen</button>`
+              : html`<button class="btn small ghost" disabled=${busy} onClick=${() => act(m, 'hide')}>Ausblenden</button>`}
+            <button class="btn small danger" disabled=${busy} onClick=${() => act(m, 'delete')}>Löschen</button>
+          </div>
+        </div>
+      </div>`)}
+    </div>`}
+    ${zoom ? html`<div class="lightbox" onClick=${() => setZoom(null)}><img src=${zoom.screenshot} alt="Moment groß" /></div>` : null}`;
+}
+
 // --- App -------------------------------------------------------------------------
 
 function App() {
@@ -717,6 +786,7 @@ function App() {
   const [userId, setUserId] = useState(null);
   const [openReports, setOpenReports] = useState(0);
   const [openTickets, setOpenTickets] = useState(0);
+  const [momentsOf, setMomentsOf] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -761,10 +831,12 @@ function App() {
   let body;
   if (tab === 'users') {
     body = userId
-      ? html`<${UserDetail} id=${userId} role=${role} onBack=${() => setUserId(null)} onChanged=${() => setUserId(null)} />`
+      ? html`<${UserDetail} id=${userId} role=${role} onBack=${() => setUserId(null)} onChanged=${() => setUserId(null)} onMoments=${(u) => { setMomentsOf(u); setTab('moments'); setUserId(null); }} />`
       : html`<${Users} onOpen=${setUserId} />`;
   } else if (tab === 'reports') {
     body = html`<${Reports} role=${role} onOpenUser=${openUser} onCount=${setOpenReports} />`;
+  } else if (tab === 'moments') {
+    body = html`<${Moments} onOpenUser=${openUser} userId=${momentsOf?.id} userName=${momentsOf?.name} onClearUser=${() => setMomentsOf(null)} />`;
   } else if (tab === 'support') {
     body = html`<${Tickets} onOpenUser=${openUser} onCount=${setOpenTickets} />`;
   } else if (tab === 'app') {
@@ -782,6 +854,7 @@ function App() {
         <button class=${tab === 'dashboard' ? 'on' : ''} onClick=${() => go('dashboard')}>Übersicht</button>
         ${role !== 'viewer' ? html`<button class=${tab === 'users' ? 'on' : ''} onClick=${() => go('users')}>Nutzer</button>
         <button class=${tab === 'reports' ? 'on' : ''} onClick=${() => go('reports')}>Meldungen${openReports ? html` <span class="count">${openReports}</span>` : null}</button>
+        <button class=${tab === 'moments' ? 'on' : ''} onClick=${() => { setMomentsOf(null); go('moments'); }}>Moments</button>
         <button class=${tab === 'support' ? 'on' : ''} onClick=${() => go('support')}>Support${openTickets ? html` <span class="count">${openTickets}</span>` : null}</button>` : null}
         <button class=${tab === 'app' ? 'on' : ''} onClick=${() => go('app')}>App</button>
         ${role === 'owner' ? html`<button class=${tab === 'audit' ? 'on' : ''} onClick=${() => go('audit')}>Protokoll</button>` : null}

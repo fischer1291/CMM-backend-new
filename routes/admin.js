@@ -24,6 +24,7 @@ const SupportTicket = require("../models/SupportTicket");
 const appConfig = require("../lib/appConfig");
 const { notify } = require("../lib/notify");
 const moderation = require("../lib/moderation");
+const { deleteMoment } = require("../lib/moments");
 const { maskPhone } = moderation;
 const { shiftDateKey } = require("../lib/localTime");
 const {
@@ -440,6 +441,112 @@ module.exports = (io) => {
     await audit(req, "user_exported", { target: String(user._id) });
     res.set("Content-Disposition", `attachment; filename="wanna-yap-export-${user._id}.json"`);
     res.json(await exportAccount(user.phone));
+  });
+
+  // --- Moments ------------------------------------------------------------------
+
+  const MOMENT_FILTERS = {
+    all: {},
+    reported: null, // moments with open reports (below)
+    hidden: { hidden: true },
+    pending: { status: "pending" },
+  };
+
+  // GET /admin/moments?filter=all|reported|hidden|pending&user=<id>&before=<iso>
+  router.get("/admin/moments", requireAdmin("support"), async (req, res) => {
+    const filter = Object.hasOwn(MOMENT_FILTERS, req.query.filter) ? req.query.filter : "all";
+    const query = { ...(MOMENT_FILTERS[filter] || {}) };
+    if (filter === "reported") {
+      query._id = { $in: await Report.distinct("momentId", { status: "open", momentId: { $ne: null } }) };
+    }
+    if (req.query.user) {
+      if (!mongoose.isValidObjectId(req.query.user)) return res.status(400).json({ success: false, error: "invalid_id" });
+      const u = await User.findById(req.query.user, { phone: 1 }).lean();
+      if (!u) return res.json({ success: true, moments: [], counts: {} });
+      query.$or = [{ userPhone: u.phone }, { targetPhone: u.phone }];
+    }
+    const before = req.query.before ? new Date(String(req.query.before)) : null;
+    if (before && !isNaN(before)) query.timestamp = { $lt: before };
+
+    const moments = await CallMoment.find(query).sort({ timestamp: -1 }).limit(60).lean();
+    const ids = moments.map((m) => m._id);
+    const reports = await Report.aggregate([
+      { $match: { momentId: { $in: ids } } },
+      { $group: { _id: "$momentId", total: { $sum: 1 }, open: { $sum: { $cond: [{ $eq: ["$status", "open"] }, 1, 0] } } } },
+    ]);
+    const reportsOf = Object.fromEntries(reports.map((r) => [String(r._id), r]));
+    const since = new Date(Date.now() - 24 * 3600 * 1000);
+    const [last24h, hidden, pending, reported] = await Promise.all([
+      CallMoment.countDocuments({ timestamp: { $gt: since } }),
+      CallMoment.countDocuments({ hidden: true }),
+      CallMoment.countDocuments({ status: "pending" }),
+      Report.distinct("momentId", { status: "open", momentId: { $ne: null } }).then((r) => r.length),
+    ]);
+    if (req.query.user) await audit(req, "moments_of_user", { target: String(req.query.user) });
+    res.json({
+      success: true,
+      counts: { last24h, hidden, pending, reported },
+      moments: await Promise.all(
+        moments.map(async (m) => ({
+          id: String(m._id),
+          screenshot: m.screenshot,
+          note: m.note || "",
+          mood: m.mood || null,
+          callDuration: m.callDuration || null,
+          status: m.status || "shared",
+          hidden: !!m.hidden,
+          reactions: m.totalReactions || 0,
+          reports: reportsOf[String(m._id)] || { total: 0, open: 0 },
+          author: await person(m.userPhone),
+          target: await person(m.targetPhone),
+          at: m.timestamp,
+          sharedAt: m.sharedAt || null,
+        })),
+      ),
+    });
+  });
+
+  async function findMoment(req, res) {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      res.status(400).json({ success: false, error: "invalid_id" });
+      return null;
+    }
+    const moment = await CallMoment.findById(req.params.id);
+    if (!moment) res.status(404).json({ success: false, error: "not_found" });
+    return moment;
+  }
+
+  const settleReports = (momentId, resolution, admin) =>
+    Report.updateMany(
+      { momentId, status: "open" },
+      { status: "resolved", resolution, resolvedBy: admin.email, resolvedAt: new Date() },
+    ).then((r) => r.modifiedCount);
+
+  router.post("/admin/moments/:id/hide", requireAdmin("support"), async (req, res) => {
+    const moment = await findMoment(req, res);
+    if (!moment) return;
+    await CallMoment.updateOne({ _id: moment._id }, { hidden: true });
+    const settled = await settleReports(moment._id, "hide_moment", req.admin);
+    await audit(req, "moment_hidden", { target: String(moment._id), meta: { settled } });
+    res.json({ success: true, settled });
+  });
+
+  router.post("/admin/moments/:id/unhide", requireAdmin("support"), async (req, res) => {
+    const moment = await findMoment(req, res);
+    if (!moment) return;
+    await CallMoment.updateOne({ _id: moment._id }, { hidden: false });
+    await audit(req, "moment_unhidden", { target: String(moment._id) });
+    res.json({ success: true });
+  });
+
+  // Deletes the picture at Cloudinary too
+  router.post("/admin/moments/:id/delete", requireAdmin("support"), async (req, res) => {
+    const moment = await findMoment(req, res);
+    if (!moment) return;
+    const settled = await settleReports(moment._id, "delete_moment", req.admin);
+    await audit(req, "moment_deleted", { target: String(moment._id), meta: { author: maskPhone(moment.userPhone), settled } });
+    await deleteMoment(moment);
+    res.json({ success: true, settled });
   });
 
   // --- Support tickets ---------------------------------------------------------

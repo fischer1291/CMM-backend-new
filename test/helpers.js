@@ -124,18 +124,19 @@ async function reset() {
   fakes.receipts = {};
 }
 
-/** a and b had an answered call just now (moments need a real call). */
+/** a and b just finished a two-minute call (moments need a real call). */
 let callCounter = 0;
 async function talked(a, b) {
   const now = new Date();
+  const start = new Date(now.getTime() - 2 * 60 * 1000);
   await require("../models/Call").create({
     callId: `test-call-${++callCounter}`,
     channel: `test_channel_${callCounter}`,
     caller: a,
     callee: b,
     status: "ended",
-    createdAt: now,
-    acceptedAt: now,
+    createdAt: start,
+    acceptedAt: start,
     endedAt: now,
   });
 }

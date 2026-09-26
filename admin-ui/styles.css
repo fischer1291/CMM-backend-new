@@ -114,3 +114,11 @@ td.preview { max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
 .reply textarea:focus { border-color: var(--cyan); }
 .check { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px; }
 a.btn { text-decoration: none; text-align: center; }
+
+.moments { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; }
+.moment { display: flex; gap: 14px; align-items: flex-start; }
+.moment img { width: 120px; height: 180px; object-fit: cover; border-radius: 12px; cursor: zoom-in; flex: 0 0 auto; background: var(--surface); }
+.moment .body { flex: 1; min-width: 0; }
+.moment.dim img { opacity: 0.45; filter: grayscale(0.6); }
+.lightbox { position: fixed; inset: 0; background: rgba(5, 5, 10, 0.88); display: grid; place-items: center; z-index: 10; cursor: zoom-out; }
+.lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 16px; }

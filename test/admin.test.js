@@ -406,3 +406,41 @@ test("export: the owner downloads everything about a person; it's audited", asyn
   await Admin.updateOne({ email: EMAIL }, { role: "support" });
   await request(ctx.app).get(`/admin/users/${anna.id}/export`).set("Cookie", cookie).expect(403);
 });
+
+// --- Moments in the console --------------------------------------------------------
+
+test("moments: list with filters and report counts; hide, unhide, delete settle the reports", async () => {
+  const { cookie } = await setUpAdmin();
+  await named(ANNA, "Anna");
+  await named(BEN, "Ben");
+  const base = { userPhone: ANNA, userName: "Anna", targetPhone: BEN, targetName: "Ben", screenshot: "data:image/jpeg;base64,AAAA", mood: "😊", callDuration: "03:00" };
+  const m1 = await CallMoment.create({ ...base, note: "Eins" });
+  const m2 = await CallMoment.create({ ...base, note: "Zwei" });
+  await Report.create({ reporter: BEN, reported: ANNA, momentId: m1._id, reason: "inappropriate" });
+
+  const all = await request(ctx.app).get("/admin/moments").set("Cookie", cookie).expect(200);
+  assert.equal(all.body.moments.length, 2);
+  assert.equal(all.body.counts.reported, 1);
+  assert.equal(all.body.moments.find((m) => m.id === String(m1._id)).reports.open, 1);
+  assert.equal(all.body.moments[0].author.name, "Anna");
+  assert.equal(all.body.moments[0].author.phone, "+49 ••• 111");
+
+  const reported = await request(ctx.app).get("/admin/moments?filter=reported").set("Cookie", cookie).expect(200);
+  assert.deepEqual(reported.body.moments.map((m) => m.note), ["Eins"]);
+
+  const hide = await request(ctx.app).post(`/admin/moments/${m1._id}/hide`).set(admin(cookie)).expect(200);
+  assert.equal(hide.body.settled, 1);
+  assert.equal((await Report.findOne({ momentId: m1._id })).resolution, "hide_moment");
+  assert.deepEqual((await request(ctx.app).get("/admin/moments?filter=hidden").set("Cookie", cookie)).body.moments.map((m) => m.note), ["Eins"]);
+  await request(ctx.app).post(`/admin/moments/${m1._id}/unhide`).set(admin(cookie)).expect(200);
+  assert.equal((await CallMoment.findById(m1._id)).hidden, false);
+
+  await request(ctx.app).post(`/admin/moments/${m2._id}/delete`).set(admin(cookie)).expect(200);
+  assert.equal(await CallMoment.countDocuments({ _id: m2._id }), 0);
+  const byUser = await request(ctx.app).get(`/admin/moments?user=${(await User.findOne({ phone: BEN }))._id}`).set("Cookie", cookie).expect(200);
+  assert.equal(byUser.body.moments.length, 1);
+  assert.deepEqual((await AdminAudit.find({ action: /^moment_/ }).lean()).map((a) => a.action).sort(), ["moment_deleted", "moment_hidden", "moment_unhidden"]);
+
+  await Admin.updateOne({ email: EMAIL }, { role: "viewer" });
+  await request(ctx.app).get("/admin/moments").set("Cookie", cookie).expect(403);
+});

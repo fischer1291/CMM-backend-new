@@ -6,8 +6,9 @@ const { normalizePhone, regionOf } = require("../lib/phone");
 const { notify } = require("../lib/notify");
 const { blockedWith } = require("../lib/relations");
 const mongoose = require("mongoose");
-const { talkedWith, talkedToday, deleteMoment, VISIBLE_MS, DAY_MS } = require("../lib/moments");
+const { talkedWith, deleteMoment, VISIBLE_MS, DAY_MS } = require("../lib/moments");
 const { broadcastStatus } = require("./status");
+const { unlockState } = require("../lib/unlock");
 
 // Session lengths the app offers; 15 minutes for older app versions
 const SESSION_MINUTES = [15, 30, 60, 120];
@@ -24,6 +25,15 @@ function isAllowedScreenshot(value) {
   if (/^data:image\/(jpeg|png);base64,/.test(value)) return true;
   const cloud = process.env.CLOUDINARY_CLOUD_NAME;
   return !!cloud && value.startsWith(`https://res.cloudinary.com/${cloud}/image/upload/`);
+}
+
+/**
+ * A strongly blurred, small version of a moment's picture for the locked feed
+ * (Cloudinary transformation). Inline pictures from old app versions: none.
+ */
+function blurredScreenshot(url) {
+  if (typeof url !== "string" || !url.includes("/image/upload/")) return null;
+  return url.replace("/image/upload/", "/image/upload/e_blur:2000,q_30,w_240/");
 }
 
 const formatReactionsForUser = (reactions, userPhone) => {
@@ -206,7 +216,7 @@ module.exports = (io) => {
       const mine = withLegacyVariants([phone]);
       const since = new Date(Date.now() - VISIBLE_MS);
 
-      const [recent, pending, waiting, unlocked] = await Promise.all([
+      const [recent, pending, waiting, unlock] = await Promise.all([
         CallMoment.find({
           $or: [{ userPhone: { $in: visible } }, { targetPhone: { $in: mine } }],
           userPhone: { $nin: withLegacyVariants(blocked) },
@@ -218,16 +228,30 @@ module.exports = (io) => {
           .limit(50),
         CallMoment.find({ targetPhone: phone, status: "pending" }).sort({ timestamp: -1 }),
         CallMoment.find({ userPhone: phone, status: "pending" }).sort({ timestamp: -1 }),
-        me ? talkedToday(me) : false,
+        me ? unlockState(me) : { unlocked: false, via: null, streak: 0, best: 0, total: 0 },
       ]);
 
       const involvesMe = (m) => mine.includes(m.userPhone) || mine.includes(m.targetPhone);
-      const feed = unlocked ? recent : recent.filter(involvesMe);
+      const feed = unlock.unlocked ? recent : recent.filter(involvesMe);
+      const locked = unlock.unlocked ? [] : recent.filter((m) => !involvesMe(m));
       res.json({
         success: true,
         callMoments: feed.map((m) => present(m, phone)),
-        locked: !unlocked,
-        lockedCount: recent.length - feed.length,
+        // Old app versions only know these two
+        locked: !unlock.unlocked,
+        lockedCount: locked.length,
+        // Blurred previews: who shared something, not what
+        lockedMoments: locked.map((m) => ({
+          _id: m._id,
+          userPhone: m.userPhone,
+          userName: m.userName,
+          targetPhone: m.targetPhone,
+          targetName: m.targetName,
+          screenshot: blurredScreenshot(m.screenshot),
+          timestamp: m.timestamp,
+          sharedAt: m.sharedAt,
+        })),
+        unlock,
         pending: pending.map((m) => present(m, phone)),
         waiting: waiting.map((m) => present(m, phone)),
       });
