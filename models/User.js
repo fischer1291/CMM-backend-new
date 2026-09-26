@@ -80,6 +80,22 @@ const userSchema = new mongoose.Schema({
   // Missed calls up to here were seen in the call list
   callsSeenAt: { type: Date, default: null },
 
+  // Wanna yap+ (lib/plan.js). source: store (RevenueCat) | admin | gift
+  plus: {
+    active: { type: Boolean, default: false },
+    until: { type: Date, default: null },
+    since: { type: Date, default: null },
+    source: { type: String, default: null },
+    productId: { type: String, default: null },
+    // RevenueCat's last event, to ignore older ones arriving late
+    eventAt: { type: Date, default: null },
+  },
+  // "Interesse zeigen" before purchases are live: when, and what for
+  plusInterest: {
+    at: { type: Date, default: null },
+    features: { type: [String], default: [] },
+  },
+
   // App version last seen (request headers), for support and min versions
   app: {
     version: { type: String, default: null },

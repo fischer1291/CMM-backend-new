@@ -444,3 +444,35 @@ test("moments: list with filters and report counts; hide, unhide, delete settle 
   await Admin.updateOne({ email: EMAIL }, { role: "viewer" });
   await request(ctx.app).get("/admin/moments").set("Cookie", cookie).expect(403);
 });
+
+// --- Wanna yap+ in the console -------------------------------------------------------
+
+test("plus: owner grants and revokes, stats count subscribers and interest, limits are editable", async () => {
+  const { cookie } = await setUpAdmin();
+  const anna = await named(ANNA, "Anna");
+  await request(ctx.app).post("/me/plus-interest").set("Authorization", `Bearer ${anna.token}`).send({ features: ["family"] }).expect(200);
+
+  await request(ctx.app).post(`/admin/users/${anna.id}/plus`).set(admin(cookie)).send({ days: 0 }).expect(400);
+  await request(ctx.app).post(`/admin/users/${anna.id}/plus`).set(admin(cookie)).send({ days: 30 }).expect(200);
+  let stats = (await request(ctx.app).get("/admin/plus").set("Cookie", cookie).expect(200)).body;
+  assert.equal(stats.active, 1);
+  assert.equal(stats.bySource.admin, 1);
+  assert.equal(stats.interest.total, 1);
+  assert.equal(stats.interest.features.family, 1);
+  const detail = await request(ctx.app).get(`/admin/users/${anna.id}`).set("Cookie", cookie).expect(200);
+  assert.equal(detail.body.user.plan, "plus");
+
+  await request(ctx.app).post(`/admin/users/${anna.id}/plus`).set(admin(cookie)).send({ revoke: true }).expect(200);
+  stats = (await request(ctx.app).get("/admin/plus").set("Cookie", cookie)).body;
+  assert.equal(stats.active, 0);
+
+  await request(ctx.app).put("/admin/config").set(admin(cookie)).send({ limits: { free: { circles: 0 } } }).expect(400);
+  await request(ctx.app).put("/admin/config").set(admin(cookie)).send({ limits: { free: { circleMembers: 999 } } }).expect(400);
+  await request(ctx.app).put("/admin/config").set(admin(cookie)).send({ limits: { free: { circles: 5, memoriesDays: null } } }).expect(200);
+  const plan = (await request(ctx.app).get("/me/plan").set("Authorization", `Bearer ${anna.token}`)).body;
+  assert.equal(plan.limits.circles, 5);
+  assert.equal(plan.limits.memoriesDays, null);
+
+  await Admin.updateOne({ email: EMAIL }, { role: "support" });
+  await request(ctx.app).post(`/admin/users/${anna.id}/plus`).set(admin(cookie)).send({ days: 30 }).expect(403);
+});

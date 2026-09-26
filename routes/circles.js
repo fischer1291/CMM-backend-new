@@ -11,6 +11,7 @@ const { normalizePhone, regionOf } = require("../lib/phone");
 const { blockedWith } = require("../lib/relations");
 const { notifyMany } = require("../lib/notify");
 const { circleBadgesOf } = require("../lib/badges");
+const { planOfPhone, limits: planLimits, limitError } = require("../lib/plan");
 const {
   MAX_MEMBERS,
   MAX_CIRCLES,
@@ -36,6 +37,24 @@ module.exports = (io) => {
   router.use(["/circles", "/rooms"], (req, res, next) => (req.path.startsWith("/code/") ? next() : requireAuth(req, res, next)));
 
   const toRooms = (phones) => phones.map((p) => `user:${p}`);
+
+  // A circle's size and its rounds follow the founder's plan (lib/plan.js)
+  const founderLimits = async (circle) => (await planOfPhone(circle.createdBy)).limits;
+  const circleFull = async (circle) => circle.members.length >= Math.min(MAX_MEMBERS, (await founderLimits(circle)).circleMembers);
+  const founderCanUpgrade = async (circle) => {
+    const [mine, all] = await Promise.all([founderLimits(circle), planLimits()]);
+    return all.plus.circleMembers > mine.circleMembers;
+  };
+  const roomFull = async (circle, room, phone) => {
+    const inside = room.participants.filter((p) => !p.leftAt && p.phone !== phone).length;
+    return inside >= (await founderLimits(circle)).roomParticipants;
+  };
+  const roomOut = (room, circle) => ({
+    id: String(room._id),
+    channel: room.channel,
+    circleId: String(circle._id),
+    endsAt: room.endsAt || null,
+  });
   const emitCircle = (circle, event, payload) => io.to(toRooms(memberPhones(circle))).emit(event, payload);
 
   /** The circle as the viewer sees it. */
@@ -70,7 +89,7 @@ module.exports = (io) => {
       invitedCount: circle.invites.length,
       warmth: await warmthOf(circle),
       room: room
-        ? { id: String(room._id), channel: room.channel, participants: room.participants.filter((p) => !p.leftAt).map((p) => p.phone) }
+        ? { id: String(room._id), channel: room.channel, participants: room.participants.filter((p) => !p.leftAt).map((p) => p.phone), endsAt: room.endsAt || null }
         : null,
       ritual: { enabled: circle.ritual.enabled, day: circle.ritual.day, start: circle.ritual.start },
     };
@@ -179,6 +198,10 @@ module.exports = (io) => {
     if ((await Circle.countDocuments({ "members.phone": phone })) >= MAX_CIRCLES) {
       return res.status(400).json({ success: false, error: "too_many_circles" });
     }
+    // Founding counts against the plan; joining others' circles never does
+    const [{ limits: mine }, all] = await Promise.all([planOfPhone(phone), planLimits()]);
+    const founded = await Circle.countDocuments({ createdBy: phone });
+    if (founded >= mine.circles) return res.status(403).json(limitError("circles", mine.circles, all.plus.circles));
     const circle = await Circle.create({
       name,
       emoji: str(req.body?.emoji, 8) || "💛",
@@ -215,7 +238,7 @@ module.exports = (io) => {
     const blocked = await blockedWith(phone);
     if (memberPhones(circle).some((p) => blocked.has(p))) return res.status(404).json({ success: false, error: "not_found" });
     if (!isMember(circle, phone)) {
-      if (circle.members.length >= MAX_MEMBERS) return res.status(400).json({ success: false, error: "full" });
+      if (await circleFull(circle)) return res.status(400).json({ success: false, error: "full", founderCanUpgrade: await founderCanUpgrade(circle) });
       circle.members.push({ phone });
       circle.invites = circle.invites.filter((i) => i.phone !== phone);
       await circle.save();
@@ -278,7 +301,7 @@ module.exports = (io) => {
     if (!circle) return res.status(404).json({ success: false, error: "not_found" });
     circle.invites = circle.invites.filter((i) => i.phone !== phone);
     if (accept && !isMember(circle, phone)) {
-      if (circle.members.length >= MAX_MEMBERS) return res.status(400).json({ success: false, error: "full" });
+      if (await circleFull(circle)) return res.status(400).json({ success: false, error: "full", founderCanUpgrade: await founderCanUpgrade(circle) });
       circle.members.push({ phone });
     }
     await circle.save();
@@ -342,6 +365,7 @@ module.exports = (io) => {
     if (!circle) return;
     const phone = req.auth.phone;
     const { room: opened, created } = await openRoom(circle, phone);
+    if (!created && (await roomFull(circle, opened, phone))) return res.status(403).json({ success: false, error: "room_full" });
     const room = await joinRoom(opened, phone);
     const payload = { circleId: String(circle._id), roomId: String(room._id), channel: room.channel, startedBy: phone };
     emitCircle(circle, created ? "roomOpened" : "roomUpdated", payload);
@@ -356,7 +380,7 @@ module.exports = (io) => {
         circleName: `${circle.emoji} ${circle.name}`,
       });
     }
-    res.json({ success: true, room: { id: String(room._id), channel: room.channel, circleId: String(circle._id) } });
+    res.json({ success: true, room: roomOut(room, circle) });
   });
 
   const loadRoom = async (req, res) => {
@@ -373,9 +397,10 @@ module.exports = (io) => {
     const found = await loadRoom(req, res);
     if (!found) return;
     if (!found.room.active) return res.status(409).json({ success: false, error: "ended" });
+    if (await roomFull(found.circle, found.room, req.auth.phone)) return res.status(403).json({ success: false, error: "room_full" });
     const room = await joinRoom(found.room, req.auth.phone);
     emitCircle(found.circle, "roomUpdated", { circleId: String(found.circle._id), roomId: String(room._id) });
-    res.json({ success: true, room: { id: String(room._id), channel: room.channel, circleId: String(found.circle._id) } });
+    res.json({ success: true, room: roomOut(room, found.circle) });
   });
 
   router.post("/rooms/:id/leave", async (req, res) => {

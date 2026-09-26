@@ -122,3 +122,5 @@ a.btn { text-decoration: none; text-align: center; }
 .moment.dim img { opacity: 0.45; filter: grayscale(0.6); }
 .lightbox { position: fixed; inset: 0; background: rgba(5, 5, 10, 0.88); display: grid; place-items: center; z-index: 10; cursor: zoom-out; }
 .lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 16px; }
+
+input.num { width: 70px; padding: 5px 8px; border-radius: 8px; background: var(--bg-elevated); border: 1px solid var(--border-strong); }
