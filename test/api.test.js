@@ -148,7 +148,8 @@ test("moments: feed only shows own and contacts' moments", async () => {
   feed = await request(ctx.app).get("/moment/callmoments").set(auth(anna)).expect(200);
   assert.deepEqual(feed.body.callMoments.map((m) => m.userPhone), [BEN]);
 
-  await request(ctx.app).get(`/moment/callmoments/${encodeURIComponent(CARL)}`).set(auth(anna)).expect(403);
+  // A contact's moments one by one would skip the unlock: that route is gone
+  await request(ctx.app).get(`/moment/callmoments/${encodeURIComponent(BEN)}`).set(auth(anna)).expect(404);
 });
 
 test("moments: posting validates input and uses the token's phone", async () => {
@@ -542,4 +543,20 @@ test("verify: App Store review login works only when configured, without SMS", a
     delete process.env.REVIEW_PHONE;
     delete process.env.REVIEW_CODE;
   }
+});
+
+test("web: CORS only for our website; unknown routes and bad JSON answer in JSON", async () => {
+  const ok = await request(ctx.app).get("/app-config").set("Origin", "https://wannayap.app").expect(200);
+  assert.equal(ok.headers["access-control-allow-origin"], "https://wannayap.app");
+  const preview = await request(ctx.app).get("/app-config").set("Origin", "https://deploy-preview-23--wanna-yap.netlify.app");
+  assert.equal(preview.headers["access-control-allow-origin"], "https://deploy-preview-23--wanna-yap.netlify.app");
+  const evil = await request(ctx.app).get("/app-config").set("Origin", "https://evil.example");
+  assert.equal(evil.headers["access-control-allow-origin"], undefined);
+  // The app sends no Origin
+  await request(ctx.app).get("/app-config").expect(200);
+
+  const missing = await request(ctx.app).get("/nope").expect(404);
+  assert.deepEqual(missing.body, { success: false, error: "not_found" });
+  const bad = await request(ctx.app).post("/verify/start").set("Content-Type", "application/json").send("{oops").expect(400);
+  assert.equal(bad.body.error, "invalid_json");
 });

@@ -21,10 +21,19 @@ const { setForegroundLookup } = require("./lib/notify");
 const { isValidTimezone } = require("./lib/localTime");
 const { normalizePhone, regionOf } = require("./lib/phone");
 
+/**
+ * Browsers may call the API only from wannayap.app, its Netlify previews and
+ * local development. Requests without an Origin (the app, curl) are fine.
+ */
+const WEB_ORIGINS = [/^https:\/\/(www\.)?wannayap\.app$/, /^https:\/\/[a-z0-9-]+--wanna-yap\.netlify\.app$/, /^https:\/\/wanna-yap\.netlify\.app$/, /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/];
+function corsOrigin(origin, callback) {
+  callback(null, !origin || WEB_ORIGINS.some((re) => re.test(origin)));
+}
+
 function createApp({ ringTimeoutMs } = {}) {
   const app = express();
   const server = http.createServer(app);
-  const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
+  const io = new Server(server, { cors: { origin: corsOrigin, methods: ["GET", "POST"] } });
   const calls = createCallService(io, { ringTimeoutMs });
   // Routes that aren't built with io (e.g. verify) reach it here
   app.set("io", io);
@@ -38,7 +47,8 @@ function createApp({ ringTimeoutMs } = {}) {
   // Render sits behind a proxy; needed for correct client IPs in rate limits
   app.set("trust proxy", 1);
   app.use(helmet());
-  app.use(cors());
+  // The native app sends no Origin; browsers only from our website
+  app.use(cors({ origin: corsOrigin }));
   app.use(express.json({ limit: "2mb" }));
   app.use(
     rateLimit({
@@ -359,6 +369,16 @@ function createApp({ ringTimeoutMs } = {}) {
     return states;
   });
 
+
+  // Unknown routes and unexpected errors: JSON, never a stack trace
+  app.use((req, res) => res.status(404).json({ success: false, error: "not_found" }));
+  // eslint-disable-next-line no-unused-vars
+  app.use((err, req, res, next) => {
+    if (err.type === "entity.parse.failed") return res.status(400).json({ success: false, error: "invalid_json" });
+    if (err.type === "entity.too.large") return res.status(413).json({ success: false, error: "too_large" });
+    console.error("❌ Unhandled error:", req.method, req.path, err.message);
+    res.status(500).json({ success: false, error: "server_error" });
+  });
   return { app, server, io, calls };
 }
 
