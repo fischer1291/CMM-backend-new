@@ -3,6 +3,7 @@
  * POST /daily/join { mood? }: I'm in: available until the moment ends.
  */
 const express = require("express");
+const { noteUnlock } = require("../lib/unlock");
 const User = require("../models/User");
 const DailyMoment = require("../models/DailyMoment");
 const { activeMomentFor } = require("../lib/dailyMoment");
@@ -47,6 +48,8 @@ module.exports = (io) => {
       { _id: moment._id },
       { $addToSet: fast ? { joined: me.phone, fast: me.phone } : { joined: me.phone } },
     );
+    // Joining the Yap Moment unlocks the day's moments
+    await noteUnlock(me, "daily");
     const wasAvailable = me.isAvailable;
     me.isAvailable = true;
     me.availableSource = "daily";

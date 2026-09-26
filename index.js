@@ -12,6 +12,7 @@ const { checkReceipts } = require("./lib/receipts");
 const { tickDailyMoments } = require("./lib/dailyMoment");
 const { expirePendingMoments } = require("./lib/moments");
 const { runSnapshots } = require("./lib/metrics");
+const { tickMomentsWaiting } = require("./lib/unlock");
 const { asLeader, releaseLease, INSTANCE } = require("./lib/leader");
 const { migratePrivateCircles, tickRituals, endStaleRooms } = require("./lib/circles");
 
@@ -63,6 +64,7 @@ async function main() {
     await expirePendingMoments();
     await tickRituals(io);
     await endStaleRooms();
+    await tickMomentsWaiting();
   };
   // Background jobs run on one instance only (lib/leader.js). The minute tick
   // also renews the lease, so the leader keeps it while it's alive.
