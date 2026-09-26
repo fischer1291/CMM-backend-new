@@ -8,6 +8,7 @@ const mongoose = require("mongoose");
 const User = require("../models/User");
 const Circle = require("../models/Circle");
 const { planOf, limits } = require("../lib/plan");
+const { yearReview } = require("../lib/yearReview");
 
 // What people can say they're interested in (the paywall's feature list)
 const INTEREST = ["hd_video", "bigger_circles", "longer_rounds", "memories", "year_review", "icons", "rituals", "family", "support"];
@@ -78,6 +79,17 @@ module.exports = (io) => {
     const features = Array.isArray(req.body?.features) ? [...new Set(req.body.features.filter((f) => INTEREST.includes(f)))] : [];
     await User.updateOne({ phone: req.auth.phone }, { plusInterest: { at: new Date(), features } });
     res.json({ success: true });
+  });
+
+  // GET /me/year-review?year=2026: the headline for everyone, the story with Plus
+  router.get("/me/year-review", requireAuth, async (req, res) => {
+    const me = await User.findOne({ phone: req.auth.phone });
+    if (!me) return res.status(404).json({ success: false });
+    const now = new Date();
+    const year = Number(req.query.year) || now.getUTCFullYear();
+    if (year < 2024 || year > now.getUTCFullYear()) return res.status(400).json({ success: false, error: "invalid_year" });
+    const { limits: mine } = await planOf(me);
+    res.json({ success: true, review: await yearReview(me, year, { full: !!mine.yearReview }) });
   });
 
   return router;

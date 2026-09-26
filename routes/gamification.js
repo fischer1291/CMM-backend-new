@@ -14,6 +14,7 @@ const { badgesOf, CATEGORIES, newlyEarned, seenState, nextUp, friendshipOf } = r
 const { isBlocked } = require("../lib/relations");
 const { coMembersOf } = require("../lib/circles");
 const { nextNudgeAllowed, VISIBLE_MS } = require("../lib/nudges");
+const { isPlus, limits: planLimits } = require("../lib/plan");
 
 const MAX_NUDGES_PER_DAY = 20;
 const MAX_SHARED_WITH = 200;
@@ -199,9 +200,19 @@ module.exports = (io) => {
       return res.status(429).json({ success: false, error: next.reason, nextAllowedAt: next.allowedAt });
     }
 
-    await Nudge.create({ from, to });
-    io.to(`user:${to}`).emit("nudge", { from, name: sender.name || "", at: new Date() });
-    const result = await notify(target, "nudge", { phone: from, name: sender.name });
+    // An own line: Wanna yap+ (one line, no links)
+    let message = null;
+    if (req.body?.message != null) {
+      const all = await planLimits();
+      if (!all[isPlus(sender) ? "plus" : "free"].nudgeMessage) return res.status(403).json({ success: false, error: "plus_only" });
+      message = String(req.body.message).replace(/\s+/g, " ").trim().slice(0, 80);
+      if (/https?:\/\/|www\./i.test(message)) return res.status(400).json({ success: false, error: "no_links" });
+      message = message || null;
+    }
+
+    await Nudge.create({ from, to, message });
+    io.to(`user:${to}`).emit("nudge", { from, name: sender.name || "", at: new Date(), message });
+    const result = await notify(target, "nudge", { phone: from, name: sender.name, message });
     const after = await nextNudgeAllowed(from, to);
     res.json({ success: true, pushed: !!result.sent, nextAllowedAt: after.allowedAt });
   });
@@ -226,7 +237,7 @@ module.exports = (io) => {
     }
     res.json({
       success: true,
-      received: received.map((n) => ({ from: n.from, name: nameOf.get(n.from) || "", at: n.createdAt })),
+      received: received.map((n) => ({ from: n.from, name: nameOf.get(n.from) || "", at: n.createdAt, message: n.message || null })),
       sent,
     });
   });
