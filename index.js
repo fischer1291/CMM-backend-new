@@ -12,6 +12,7 @@ const { checkReceipts } = require("./lib/receipts");
 const { tickDailyMoments } = require("./lib/dailyMoment");
 const { expirePendingMoments } = require("./lib/moments");
 const { runSnapshots } = require("./lib/metrics");
+const { asLeader, releaseLease, INSTANCE } = require("./lib/leader");
 const { migratePrivateCircles, tickRituals, endStaleRooms } = require("./lib/circles");
 
 const PORT = process.env.PORT || 3000;
@@ -63,25 +64,53 @@ async function main() {
     await tickRituals(io);
     await endStaleRooms();
   };
+  // Background jobs run on one instance only (lib/leader.js). The minute tick
+  // also renews the lease, so the leader keeps it while it's alive.
+  const JOBS = "jobs";
+  let leading = false;
+  const asJobLeader = async (name, fn) => {
+    const result = await asLeader(JOBS, async () => {
+      if (!leading) console.log(`👑 ${INSTANCE} runs the background jobs`);
+      leading = true;
+      return fn();
+    });
+    if (result === undefined && leading) {
+      console.log(`👋 ${INSTANCE} lost the background jobs to another instance`);
+      leading = false;
+    }
+    return result;
+  };
   setInterval(() => {
-    tick().catch((err) => console.error("❌ availability tick:", err.message));
+    asJobLeader("tick", tick).catch((err) => console.error("❌ availability tick:", err.message));
   }, 60 * 1000);
 
   // Admin numbers: fill missing days now, then refresh every 30 minutes
-  const snapshots = () => runSnapshots().catch((err) => console.error("❌ metrics snapshots:", err.message));
+  const snapshots = () =>
+    asJobLeader("snapshots", runSnapshots).catch((err) => console.error("❌ metrics snapshots:", err.message));
   snapshots();
   setInterval(snapshots, 30 * 60 * 1000);
 
   // Every 15 minutes: delivery receipts of sent pushes
   setInterval(() => {
-    checkReceipts()
-      .then(({ errors, removedTokens }) => {
-        if (errors) console.log(`📬 Push receipts: ${errors} errors, ${removedTokens} tokens removed`);
+    asJobLeader("receipts", checkReceipts)
+      .then((result) => {
+        if (result?.errors) console.log(`📬 Push receipts: ${result.errors} errors, ${result.removedTokens} tokens removed`);
       })
       .catch((err) => console.error("❌ checkReceipts:", err.message));
   }, 15 * 60 * 1000);
 
   server.listen(PORT, () => console.log(`🚀 Server läuft mit WebSocket auf Port ${PORT}`));
+
+  // Render stops the old instance with SIGTERM after a deploy: hand the jobs
+  // over right away instead of waiting for the lease to run out
+  const shutdown = async (signal) => {
+    console.log(`🛑 ${signal}: shutting down`);
+    await releaseLease(JOBS);
+    server.close();
+    setTimeout(() => process.exit(0), 5000).unref();
+  };
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("SIGINT", () => shutdown("SIGINT"));
 }
 
 main().catch((err) => {
