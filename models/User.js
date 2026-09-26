@@ -77,6 +77,8 @@ const userSchema = new mongoose.Schema({
   suspendedUntil: { type: Date, default: null },
   suspendReason: { type: String, default: null },
   tokensValidAfter: { type: Date, default: null },
+  // Missed calls up to here were seen in the call list
+  callsSeenAt: { type: Date, default: null },
 
   // App version last seen (request headers), for support and min versions
   app: {

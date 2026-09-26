@@ -560,3 +560,32 @@ test("web: CORS only for our website; unknown routes and bad JSON answer in JSON
   const bad = await request(ctx.app).post("/verify/start").set("Content-Type", "application/json").send("{oops").expect(400);
   assert.equal(bad.body.error, "invalid_json");
 });
+
+test("call list: names, missed incoming calls, unseen count until the list was opened", async () => {
+  const anna = await login(ANNA, "Anna");
+  const ben = await login(BEN, "Ben");
+  const t = (min) => new Date(Date.now() - min * 60 * 1000);
+  await Call.create({ callId: "l1", channel: "l1", caller: BEN, callee: ANNA, status: "missed", createdAt: t(30), endedAt: t(29) });
+  await Call.create({ callId: "l2", channel: "l2", caller: BEN, callee: ANNA, status: "cancelled", video: false, createdAt: t(20), endedAt: t(20) });
+  await Call.create({ callId: "l3", channel: "l3", caller: ANNA, callee: BEN, status: "ended", createdAt: t(10), acceptedAt: t(10), endedAt: t(5) });
+  await Call.create({ callId: "l4", channel: "l4", caller: BEN, callee: ANNA, status: "ringing", createdAt: t(0) });
+
+  let list = (await request(ctx.app).get("/calls").set(auth(anna)).expect(200)).body;
+  assert.deepEqual(list.calls.map((c) => c.callId), ["l3", "l2", "l1"], "newest first, ringing left out");
+  assert.deepEqual(list.calls.map((c) => c.missed), [false, true, true]);
+  assert.equal(list.calls[0].otherName, "Ben");
+  assert.equal(list.calls[0].durationSec, 300);
+  assert.equal(list.calls[1].video, false);
+  assert.equal(list.unseenMissed, 2);
+  assert.equal((await request(ctx.app).get("/calls/unseen").set(auth(anna))).body.count, 2);
+
+  // Ben's side: his calls to Anna are not "missed" for him
+  const benList = (await request(ctx.app).get("/calls").set(auth(ben)).expect(200)).body;
+  assert.equal(benList.calls.filter((c) => c.missed).length, 0);
+
+  await request(ctx.app).post("/calls/seen").set(auth(anna)).expect(200);
+  assert.equal((await request(ctx.app).get("/calls/unseen").set(auth(anna))).body.count, 0);
+  await Call.create({ callId: "l5", channel: "l5", caller: BEN, callee: ANNA, status: "missed", createdAt: new Date(Date.now() + 1000) });
+  list = (await request(ctx.app).get("/calls").set(auth(anna)).expect(200)).body;
+  assert.equal(list.unseenMissed, 1);
+});
