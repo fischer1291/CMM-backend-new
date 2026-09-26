@@ -93,6 +93,9 @@ function createApp({ ringTimeoutMs } = {}) {
     }
   });
 
+  // Store purchases (RevenueCat), authenticated with its own secret
+  app.use(require("./routes/plus").webhook(io));
+
   // Admin console: its own sign-in (cookie + TOTP), static files at /console
   app.use(require("./routes/admin")(io));
   app.use(
@@ -125,6 +128,7 @@ function createApp({ ringTimeoutMs } = {}) {
   app.use(require("./routes/daily")(io));
   app.use(require("./routes/circles")(io));
   app.use(require("./routes/support")());
+  app.use(require("./routes/plus")(io));
 
   const upload = multer({
     storage: multer.memoryStorage(),

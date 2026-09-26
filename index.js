@@ -63,7 +63,19 @@ async function main() {
     await tickDailyMoments(io);
     await expirePendingMoments();
     await tickRituals(io);
-    await endStaleRooms();
+    // Everyone in a round that ended by time (free plan) or crash hears it
+    for (const room of await endStaleRooms()) {
+      const circle = await require("./models/Circle").findById(room.circleId, { members: 1 }).lean();
+      const byTime = room.endsAt && room.endsAt <= new Date();
+      if (circle) {
+        io.to(circle.members.map((m) => `user:${m.phone}`)).emit("roomUpdated", {
+          circleId: String(room.circleId),
+          roomId: String(room._id),
+          ended: true,
+          reason: byTime ? "time_limit" : "stale",
+        });
+      }
+    }
     await tickMomentsWaiting();
   };
   // Background jobs run on one instance only (lib/leader.js). The minute tick

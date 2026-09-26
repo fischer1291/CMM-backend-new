@@ -17,6 +17,8 @@ const appConfigSchema = new mongoose.Schema(
     },
     // Switch features on and off without a new build
     flags: { type: Map, of: Boolean, default: {} },
+    // Plan limits (lib/plan.js), e.g. { free: { circles: 3 }, plus: {...} }
+    limits: { type: mongoose.Schema.Types.Mixed, default: null },
     updatedBy: { type: String, default: null },
     updatedAt: { type: Date, default: Date.now },
   },

@@ -292,6 +292,7 @@ function Audit() {
 const PLATFORM = { ios: 'iOS', android: 'Android' };
 const dateTime = (d) => (d ? new Date(d).toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'short' }) : '–');
 const date = (d) => (d ? new Date(d).toLocaleDateString('de-DE', { dateStyle: 'medium' }) : '–');
+const PLUS_SOURCES = { store: 'App Store', admin: 'vergeben', gift: 'Geschenk' };
 const REASONS = { spam: 'Spam', harassment: 'Belästigung', inappropriate: 'Unangemessen', other: 'Sonstiges' };
 const RESOLUTIONS = { dismiss: 'Verworfen', hide_moment: 'Moment ausgeblendet', delete_moment: 'Moment gelöscht', suspend: 'Gesperrt', ban: 'Gebannt' };
 
@@ -404,6 +405,7 @@ function UserDetail({ id, role, onBack, onChanged, onMoments }) {
         <${Row} label="Dabei seit">${date(user.createdAt)}<//>
         <${Row} label="Zuletzt online">${dateTime(user.lastOnline)}<//>
         <${Row} label="Zeitzone">${user.timezone || '–'}<//>
+        <${Row} label="Plan">${user.plan === 'plus' ? html`<span class="pill on">Plus</span> ${user.plus?.until ? `bis ${date(user.plus.until)}` : 'ohne Ende'} · ${PLUS_SOURCES[user.plus?.source] || ''}` : 'Gratis'}${user.plusInterest ? html` · <span class="muted">Interesse ${date(user.plusInterest.at)}</span>` : null}<//>
         <${Row} label="App">${user.app ? `${user.app.version} (Build ${user.app.build || '?'})${user.app.os ? ` · ${PLATFORM[user.app.platform] || ''} ${user.app.os}` : ''}` : '–'}<//>
         <${Row} label="Über Einladung">${user.joinedViaInvite ? 'ja' : 'nein'}<//>
         <${Row} label="Kontakte in der App">${num(user.contacts)}<//>
@@ -455,6 +457,9 @@ function UserDetail({ id, role, onBack, onChanged, onMoments }) {
               <button class="btn small danger" disabled=${busy} onClick=${() => confirm(`${user.name || 'Konto'} für ${days} Tage sperren? Die Person wird abgemeldet.`) && act('suspend', '/suspend', { days: Number(days), reason }, (r) => `Gesperrt bis ${date(r.suspendedUntil)}.`)}>Sperren</button>
             </div>`}
         ${role === 'owner' ? html`<a class="btn small ghost" href=${`/admin/users/${id}/export`} download>Daten exportieren (DSGVO)</a>` : null}
+        ${role === 'owner' ? (user.plan === 'plus' && user.plus?.source !== 'store'
+          ? html`<button class="btn small ghost" disabled=${busy} onClick=${() => confirm('Plus entziehen?') && act('plus', '/plus', { revoke: true }, () => 'Plus entzogen.')}>Plus entziehen</button>`
+          : user.plan !== 'plus' ? html`<button class="btn small ghost" disabled=${busy} onClick=${() => { const d = prompt('Plus für wie viele Tage? (leer = ohne Ende)', '30'); if (d !== null) act('plus', '/plus', { days: d.trim() ? Number(d) : null }, () => 'Plus vergeben.'); }}>Plus vergeben</button>` : null) : null}
         ${role === 'owner' ? html`
           <button class="btn small danger" disabled=${busy} onClick=${() => { const c = prompt('Konto endgültig löschen (z. B. auf Wunsch per E-Mail). Zum Bestätigen LÖSCHEN eingeben:'); if (c) act('delete', '/delete', { confirm: c }, () => 'Konto gelöscht.'); }}>Konto löschen</button>
           <button class="btn small danger" disabled=${busy} onClick=${() => { const c = prompt('Konto löschen UND Nummer dauerhaft sperren. Zum Bestätigen SPERREN eingeben:'); if (c) act('ban', '/ban', { confirm: c, reason }, () => 'Gebannt.'); }}>Bannen</button>` : null}
@@ -700,6 +705,8 @@ function AppSettings({ role }) {
     </div>
     ${owner ? html`<div class="inline" style="justify-content:flex-end"><button class="btn" onClick=${save}>Speichern</button></div>` : html`<p class="note">Nur Owner können Einstellungen ändern.</p>`}
 
+    <${PlusPanel} role=${role} />
+
     <div class="section">App-Versionen <span class="note">(aktiv in den letzten 30 Tagen)</span></div>
     <div class="card">${data.versions.length ? html`<table>
       <thead><tr><th>Version</th><th>Build</th><th>Plattform</th><th>Personen</th></tr></thead>
@@ -776,6 +783,78 @@ function Moments({ onOpenUser, userId, userName, onClearUser }) {
       </div>`)}
     </div>`}
     ${zoom ? html`<div class="lightbox" onClick=${() => setZoom(null)}><img src=${zoom.screenshot} alt="Moment groß" /></div>` : null}`;
+}
+
+
+// --- Wanna yap+ -----------------------------------------------------------------------
+
+const LIMIT_LABELS = {
+  circles: 'Eigene Kreise',
+  circleMembers: 'Personen pro Kreis',
+  roomParticipants: 'Personen pro Runde',
+  roomMinutes: 'Minuten pro Runde (leer = unbegrenzt)',
+  memoriesDays: 'Erinnerungen, Tage (leer = alle)',
+  hdVideo: 'Video in HD',
+};
+const INTEREST_LABELS = { hd_video: 'Video in HD', bigger_circles: 'Größere Kreise', longer_rounds: 'Längere Runden', memories: 'Erinnerungen für immer', year_review: 'Jahresrückblick', icons: 'App-Icons & Themen', rituals: 'Mehr Rituale', family: 'Familien-Abo', support: 'Unterstützen' };
+
+function PlusPanel({ role }) {
+  const [data, setData] = useState(null);
+  const [form, setForm] = useState(null);
+  const [flash, setFlash] = useState(null);
+  const load = useCallback(() => {
+    api('/plus').then((d) => {
+      setData(d);
+      setForm(JSON.parse(JSON.stringify(d.limits)));
+    }).catch(() => setData(false));
+  }, []);
+  useEffect(load, [load]);
+  if (data === false) return html`<div class="card">Plus-Daten konnten nicht geladen werden.</div>`;
+  if (!data || !form) return html`<p class="note">Lade Plus …</p>`;
+  const owner = role === 'owner';
+  const set = (plan, key, value) => setForm({ ...form, [plan]: { ...form[plan], [key]: value } });
+  const save = async () => {
+    setFlash(null);
+    try {
+      await api('/config', { method: 'PUT', body: { limits: form } });
+      setFlash('Grenzen gespeichert. Sie gelten sofort; bestehende Kreise bleiben, wie sie sind.');
+      load();
+    } catch (err) {
+      setFlash(`Fehler: ${err.code === 'invalid_limits' ? 'ungültige Werte (Zahlen ab 1; Personen pro Kreis max. 50, pro Runde max. 16)' : err.code || err.message}`);
+    }
+  };
+  const field = (plan, key) => {
+    const value = form[plan][key];
+    if (typeof data.defaults[plan][key] === 'boolean') {
+      return html`<input type="checkbox" checked=${!!value} disabled=${!owner} onChange=${(e) => set(plan, key, e.target.checked)} />`;
+    }
+    const nullable = key === 'roomMinutes' || key === 'memoriesDays';
+    return html`<input class="num" inputmode="numeric" value=${value ?? ''} disabled=${!owner} placeholder=${nullable ? '∞' : ''}
+      onInput=${(e) => { const v = e.target.value.replace(/\D/g, ''); set(plan, key, v ? Number(v) : nullable ? null : 0); }} />`;
+  };
+  const interest = Object.entries(data.interest.features).sort((a, b) => b[1] - a[1]);
+  return html`
+    <div class="section">Wanna yap+</div>
+    ${flash ? html`<div class="flash">${flash}</div>` : null}
+    <div class="kpis">
+      <${Kpi} label="Plus aktiv" value=${num(data.active)} sub=${Object.entries(data.bySource).map(([k, v]) => `${PLUS_SOURCES[k] || k}: ${v}`).join(' · ') || 'noch niemand'} color="var(--violet)" />
+      <${Kpi} label="Interesse gezeigt" value=${num(data.interest.total)} sub=${`${num(data.interest.last7Days)} in den letzten 7 Tagen`} color="var(--pink)" />
+      <${Kpi} label="Käufe" value=${data.webhookConfigured ? 'verbunden' : 'noch nicht'} sub=${data.webhookConfigured ? 'RevenueCat-Webhook aktiv' : 'REVENUECAT_WEBHOOK_SECRET fehlt'} />
+    </div>
+    <div class="grid3">
+      <div class="card">
+        <div class="label">Grenzen</div>
+        <table><thead><tr><th></th><th>Gratis</th><th>Plus</th></tr></thead><tbody>
+          ${Object.keys(LIMIT_LABELS).map((k) => html`<tr><td>${LIMIT_LABELS[k]}</td><td>${field('free', k)}</td><td>${field('plus', k)}</td></tr>`)}
+        </tbody></table>
+        ${owner ? html`<div class="inline" style="justify-content:flex-end;margin-top:10px"><button class="btn small" onClick=${save}>Grenzen speichern</button></div>` : null}
+        <p class="note">Eigene Kreise zählen nur beim Gründen; Beitreten ist nie begrenzt. Größe und Runden eines Kreises richten sich nach dem Plan der Person, die ihn gegründet hat.</p>
+      </div>
+      <div class="card">
+        <div class="label">Was die Leute interessiert</div>
+        ${interest.map(([k, v]) => html`<div class="kv"><span>${INTEREST_LABELS[k] || k}</span><span>${num(v)}</span></div>`)}
+      </div>
+    </div>`;
 }
 
 // --- App -------------------------------------------------------------------------

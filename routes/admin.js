@@ -22,6 +22,8 @@ const ActiveDay = require("../models/ActiveDay");
 const { deleteAccount, exportAccount } = require("../lib/account");
 const SupportTicket = require("../models/SupportTicket");
 const appConfig = require("../lib/appConfig");
+const plan = require("../lib/plan");
+const { INTEREST } = require("./plus");
 const { notify } = require("../lib/notify");
 const moderation = require("../lib/moderation");
 const { deleteMoment } = require("../lib/moments");
@@ -276,6 +278,9 @@ module.exports = (io) => {
         ...listItem(user),
         timezone: user.timezone || null,
         app: user.app?.version ? user.app : null,
+        plan: (await plan.planOf(user)).plan,
+        plus: user.plus?.since || user.plus?.active ? { active: plan.isPlus(user), until: user.plus.until, since: user.plus.since, source: user.plus.source, productId: user.plus.productId } : null,
+        plusInterest: user.plusInterest?.at ? user.plusInterest : null,
         mood: user.mood || null,
         suspendReason: user.suspendReason || null,
         tokensValidAfter: user.tokensValidAfter || null,
@@ -432,6 +437,57 @@ module.exports = (io) => {
     await audit(req, "report_resolved", { target: String(report._id), meta: { action, days: days || null, note: String(note || "").slice(0, 300) } });
     const settled = await moderation.resolveReport(report, { action, days, note }, req.admin, io);
     res.json({ success: true, settled });
+  });
+
+  // Grant or take back Plus (testers, gifts, goodwill). Owner only.
+  // { days: 30 } for a while, { days: null } without end, { revoke: true }
+  router.post("/admin/users/:id/plus", requireAdmin("owner"), async (req, res) => {
+    const user = await findUser(req, res);
+    if (!user) return;
+    if (req.body?.revoke) {
+      if (user.plus?.source === "store" && plan.isPlus(user)) return res.status(409).json({ success: false, error: "store_subscription" });
+      user.plus = { ...(user.plus?.toObject?.() || {}), active: false, until: new Date() };
+    } else {
+      const days = req.body?.days === null ? null : Number(req.body?.days);
+      if (days !== null && !(Number.isInteger(days) && days >= 1 && days <= 3650)) return res.status(400).json({ success: false, error: "invalid_days" });
+      const now = new Date();
+      user.plus = {
+        ...(user.plus?.toObject?.() || {}),
+        active: true,
+        until: days ? new Date(now.getTime() + days * 24 * 3600 * 1000) : null,
+        since: user.plus?.since || now,
+        source: "admin",
+      };
+    }
+    await user.save();
+    io?.to(`user:${user.phone}`).emit("planChanged", {});
+    await audit(req, req.body?.revoke ? "plus_revoked" : "plus_granted", { target: String(user._id), meta: { days: req.body?.days ?? null } });
+    res.json({ success: true, plus: user.plus });
+  });
+
+  // Subscriptions and "Interesse zeigen" in numbers
+  router.get("/admin/plus", requireAdmin("viewer"), async (req, res) => {
+    const now = new Date();
+    const activeQuery = { "plus.active": true, $or: [{ "plus.until": null }, { "plus.until": { $gt: now } }] };
+    const [active, bySource, byProduct, interested, features, recent, limits] = await Promise.all([
+      User.countDocuments(activeQuery),
+      User.aggregate([{ $match: activeQuery }, { $group: { _id: "$plus.source", n: { $sum: 1 } } }]),
+      User.aggregate([{ $match: { ...activeQuery, "plus.source": "store" } }, { $group: { _id: "$plus.productId", n: { $sum: 1 } } }]),
+      User.countDocuments({ "plusInterest.at": { $ne: null } }),
+      User.aggregate([{ $match: { "plusInterest.at": { $ne: null } } }, { $unwind: "$plusInterest.features" }, { $group: { _id: "$plusInterest.features", n: { $sum: 1 } } }]),
+      User.countDocuments({ "plusInterest.at": { $gt: new Date(now - 7 * 24 * 3600 * 1000) } }),
+      plan.limits(),
+    ]);
+    res.json({
+      success: true,
+      active,
+      bySource: Object.fromEntries(bySource.map((x) => [x._id || "unknown", x.n])),
+      byProduct: Object.fromEntries(byProduct.map((x) => [x._id || "unknown", x.n])),
+      interest: { total: interested, last7Days: recent, features: Object.fromEntries(INTEREST.map((f) => [f, features.find((x) => x._id === f)?.n || 0])) },
+      limits,
+      defaults: plan.DEFAULT_LIMITS,
+      webhookConfigured: !!process.env.REVENUECAT_WEBHOOK_SECRET,
+    });
   });
 
   // DSGVO: everything about a person as JSON (e.g. a request by e-mail)

@@ -11,6 +11,8 @@ const roomSchema = new mongoose.Schema({
     default: [],
   },
   active: { type: Boolean, default: true },
+  // Free circles: rounds end after the plan's minutes (lib/plan.js); null: no limit
+  endsAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now },
   endedAt: { type: Date, default: null },
 });

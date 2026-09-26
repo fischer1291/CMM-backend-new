@@ -9,6 +9,7 @@ const mongoose = require("mongoose");
 const { talkedWith, deleteMoment, VISIBLE_MS, DAY_MS } = require("../lib/moments");
 const { broadcastStatus } = require("./status");
 const { unlockState } = require("../lib/unlock");
+const { planOfPhone } = require("../lib/plan");
 
 // Session lengths the app offers; 15 minutes for older app versions
 const SESSION_MINUTES = [15, 30, 60, 120];
@@ -265,14 +266,19 @@ module.exports = (io) => {
     const phone = req.auth?.phone;
     if (!phone) return res.status(401).json({ success: false, error: "Authentication required" });
     const mine = withLegacyVariants([phone]);
-    const moments = await CallMoment.find({
+    const base = {
       $or: [{ userPhone: { $in: mine } }, { targetPhone: { $in: mine } }],
       status: { $ne: "pending" },
       hidden: { $ne: true },
-    })
-      .sort({ timestamp: -1 })
-      .limit(200);
-    res.json({ success: true, memories: moments.map((m) => present(m, phone)) });
+    };
+    // Free: the last N days; older ones stay stored and come back with Plus
+    const { limits } = await planOfPhone(phone);
+    const since = limits.memoriesDays ? new Date(Date.now() - limits.memoriesDays * 24 * 3600 * 1000) : null;
+    const [moments, older] = await Promise.all([
+      CallMoment.find(since ? { ...base, timestamp: { $gte: since } } : base).sort({ timestamp: -1 }).limit(since ? 200 : 1000),
+      since ? CallMoment.countDocuments({ ...base, timestamp: { $lt: since } }) : 0,
+    ]);
+    res.json({ success: true, memories: moments.map((m) => present(m, phone)), olderHidden: older, memoriesDays: limits.memoriesDays });
   });
 
 
