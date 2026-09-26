@@ -16,7 +16,7 @@ const { authenticate, actingPhone } = require("./lib/auth");
 const { agoraCredentials, buildRtcToken } = require("./lib/agora");
 const { Expo, voipProviders } = require("./lib/push");
 const { registerSocketHandlers } = require("./socket");
-const { createCallService, historyEntry } = require("./lib/calls");
+const { createCallService, historyEntry, MISSED } = require("./lib/calls");
 const { setForegroundLookup } = require("./lib/notify");
 const { isValidTimezone } = require("./lib/localTime");
 const { normalizePhone, regionOf } = require("./lib/phone");
@@ -316,21 +316,52 @@ function createApp({ ringTimeoutMs } = {}) {
     }
   });
 
-  // Call history of the authenticated user
+  // Missed calls since the call list was last opened
+  const unseenMissed = async (phone) => {
+    const me = await User.findOne({ phone }, { callsSeenAt: 1 }).lean();
+    return Call.countDocuments({
+      callee: phone,
+      status: { $in: MISSED },
+      ...(me?.callsSeenAt ? { createdAt: { $gt: me.callsSeenAt } } : {}),
+    });
+  };
+
+  // GET /calls: the call list (calls are kept 30 days), with names
   app.get("/calls", async (req, res) => {
     if (!req.auth) {
       return res.status(401).json({ success: false, error: "Authentication required" });
     }
-    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const limit = Math.min(Number(req.query.limit) || 100, 200);
     const phone = req.auth.phone;
     try {
-      const list = await Call.find({ $or: [{ caller: phone }, { callee: phone }] })
+      const list = await Call.find({ $or: [{ caller: phone }, { callee: phone }], status: { $nin: ["ringing"] } })
         .sort({ createdAt: -1 })
         .limit(limit);
-      res.json({ success: true, calls: list.map((c) => historyEntry(c, phone)) });
+      const entries = list.map((c) => historyEntry(c, phone));
+      const others = await User.find({ phone: { $in: [...new Set(entries.map((e) => e.otherPhone))] } }, { phone: 1, name: 1, avatarUrl: 1 }).lean();
+      const byPhone = Object.fromEntries(others.map((u) => [u.phone, u]));
+      res.json({
+        success: true,
+        calls: entries.map((e) => ({ ...e, otherName: byPhone[e.otherPhone]?.name || null, otherAvatarUrl: byPhone[e.otherPhone]?.avatarUrl || null })),
+        unseenMissed: await unseenMissed(phone),
+      });
     } catch (error) {
       res.status(500).json({ success: false, error: "Anrufe konnten nicht geladen werden" });
     }
+  });
+
+  // GET /calls/unseen: just the badge number
+  app.get("/calls/unseen", async (req, res) => {
+    if (!req.auth) return res.status(401).json({ success: false, error: "Authentication required" });
+    res.json({ success: true, count: await unseenMissed(req.auth.phone) });
+  });
+
+  // POST /calls/seen: the call list was opened (other devices update too)
+  app.post("/calls/seen", async (req, res) => {
+    if (!req.auth) return res.status(401).json({ success: false, error: "Authentication required" });
+    await User.updateOne({ phone: req.auth.phone }, { callsSeenAt: new Date() });
+    io.to(`user:${req.auth.phone}`).emit("callsSeen", {});
+    res.json({ success: true });
   });
 
   // POST /calls/end { channel, other }: decline, cancel or hang up over HTTP.
