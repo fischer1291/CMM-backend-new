@@ -137,7 +137,10 @@ input.num { width: 70px; padding: 5px 8px; border-radius: 8px; background: var(-
 @media (max-width: 600px) {
   .wrap { padding-left: max(14px, env(safe-area-inset-left)); padding-right: max(14px, env(safe-area-inset-right)); }
   .topbar { gap: 10px; margin-bottom: 18px; }
-  .topbar .tabs { order: 3; width: 100%; }
+  /* Main menu: every section visible at once, no sideways scrolling */
+  .topbar .tabs { order: 3; width: 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); border-radius: 18px; overflow: visible; }
+  .topbar .tabs button { position: relative; padding: 9px 4px; border-radius: 14px; font-size: 13px; }
+  .topbar .tabs .count { position: absolute; top: -4px; right: -2px; }
   .topbar .who { display: none; }
   .tabs button { padding: 8px 14px; }
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
