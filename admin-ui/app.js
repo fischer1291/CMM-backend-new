@@ -177,16 +177,41 @@ function Retention() {
   const max = Math.max(0, ...cohorts.map((c) => c.weeks.length));
   return html`<div class="card scroll">
     <table>
-      <thead><tr><th>Anmeldewoche</th><th>Neu</th>${Array.from({ length: max }, (_, i) => html`<th style="text-align:center">Woche ${i + 1}</th>`)}</tr></thead>
+      <thead><tr><th>Anmeldewoche</th><th>Neu</th><th title="Mindestens ein Gespräch in den ersten 7 Tagen">Aktiviert</th><th>Laden ein</th><th>Über Einladung</th><th title="Über diese Woche dazugekommene Menschen pro Person">K</th>${Array.from({ length: max }, (_, i) => html`<th style="text-align:center">Woche ${i + 1}</th>`)}</tr></thead>
       <tbody>${cohorts.map((c) => html`<tr>
         <td>ab ${shortDay(c.week)}</td><td>${num(c.size)}</td>
+        <td class="cell" style=${c.activated == null ? '' : `background:rgba(255,46,147,${0.06 + c.activated * 0.4})`}>${c.activated == null ? '–' : pct(c.activated)}</td>
+        <td class="cell">${c.inviters == null ? '–' : pct(c.inviters)}</td>
+        <td class="cell">${c.viaInvite == null ? '–' : pct(c.viaInvite)}</td>
+        <td class="cell">${c.k == null ? '–' : c.k.toFixed(2).replace('.', ',')}</td>
         ${Array.from({ length: max }, (_, i) => {
           const v = c.weeks[i];
           return html`<td class="cell" style=${v == null ? '' : `background:rgba(0,229,255,${0.06 + v * 0.4})`}>${v == null ? '' : pct(v)}</td>`;
         })}
       </tr>`)}</tbody>
     </table>
-    <p class="note" style="margin:10px 0 0">Anteil einer Anmeldewoche, der in den Folgewochen die App genutzt oder telefoniert hat.</p>
+    <p class="note" style="margin:10px 0 0">Aktiviert: Anteil mit mindestens einem Gespräch in den ersten 7 Tagen (Ziel vor bezahlter Werbung: über 40 %; gezählt, sobald die 7 Tage um sind). Laden ein: hat mindestens eine Einladung verschickt. K: Menschen, die diese Woche bisher über Einladungen mitgebracht hat, pro Person (ab 1 wächst die App von allein). Wochen: Anteil, der in den Folgewochen die App genutzt oder telefoniert hat.</p>
+  </div>`;
+}
+
+function AppErrors() {
+  const [errors, setErrors] = useState(null);
+  useEffect(() => {
+    api('/errors').then((d) => setErrors(d.errors)).catch(() => setErrors([]));
+  }, []);
+  if (!errors) return html`<div class="card note">Lade Fehler …</div>`;
+  if (!errors.length) return html`<div class="card note">Keine App-Fehler in den letzten 30 Tagen.</div>`;
+  return html`<div class="card scroll">
+    <table>
+      <thead><tr><th>Fehler</th><th>Anzahl</th><th>Zuletzt</th><th>Versionen</th></tr></thead>
+      <tbody>${errors.map((e) => html`<tr>
+        <td><details><summary>${e.fatal ? html`<span class="pill warn">Absturz</span> ` : null}${e.message}</summary><pre style="white-space:pre-wrap;font-size:11px">${e.stack}</pre></details></td>
+        <td>${num(e.count)}</td>
+        <td>${new Date(e.lastAt).toLocaleString('de-DE')}</td>
+        <td>${e.versions.join(', ')}</td>
+      </tr>`)}</tbody>
+    </table>
+    <p class="note" style="margin:10px 0 0">JavaScript-Fehler aus der App, ohne Personenbezug gruppiert. Native Abstürze stehen in Xcode → Organizer.</p>
   </div>`;
 }
 
@@ -270,6 +295,8 @@ function Dashboard() {
 
     <div class="section">Bleiben die Leute?</div>
     <${Retention} />
+    <div class="section">App-Fehler</div>
+    <${AppErrors} />
     <p class="note" style="margin-top:20px">Stand ${new Date(today.computedAt || Date.now()).toLocaleTimeString('de-DE')} · Tage nach ${data.zone} · heute noch unvollständig (blassere Balken)</p>
   `;
 }

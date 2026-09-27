@@ -43,6 +43,7 @@ const {
   requireAdmin,
 } = require("../lib/adminAuth");
 const metrics = require("../lib/metrics");
+const ClientError = require("../models/ClientError");
 
 const MAX_FAILED = 5;
 const LOCK_MINUTES = 15;
@@ -193,6 +194,12 @@ module.exports = (io) => {
       console.error("❌ admin retention:", err.message);
       res.status(500).json({ success: false });
     }
+  });
+
+  // App errors (routes/diagnostics.js), most recent first
+  router.get("/admin/errors", requireAdmin("viewer"), async (req, res) => {
+    const errors = await ClientError.find({}, { _id: 0, __v: 0 }).sort({ lastAt: -1 }).limit(50).lean();
+    res.json({ success: true, errors });
   });
 
   // --- Audit log ---------------------------------------------------------------

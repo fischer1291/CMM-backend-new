@@ -8,6 +8,7 @@ const mongoose = require("mongoose");
 const User = require("../models/User");
 const Circle = require("../models/Circle");
 const { planOf, limits } = require("../lib/plan");
+const { referralOf } = require("../lib/referral");
 const { yearReview } = require("../lib/yearReview");
 
 // What people can say they're interested in (the paywall's feature list)
@@ -70,6 +71,7 @@ module.exports = (io) => {
       all,
       usage: { circlesFounded: founded },
       products: PRODUCT_IDS,
+      referral: referralOf(me),
       interest: me.plusInterest?.at ? { at: me.plusInterest.at, features: me.plusInterest.features } : null,
     });
   });
