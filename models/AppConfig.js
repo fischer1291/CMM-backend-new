@@ -19,6 +19,8 @@ const appConfigSchema = new mongoose.Schema(
     flags: { type: Map, of: Boolean, default: {} },
     // Plan limits (lib/plan.js), e.g. { free: { circles: 3 }, plus: {...} }
     limits: { type: mongoose.Schema.Types.Mixed, default: null },
+    // Launch mail to the waitlist (lib/waitlist.js): { startedAt, by, finishedAt, sent, failed }
+    waitlistLaunch: { type: mongoose.Schema.Types.Mixed, default: null },
     updatedBy: { type: String, default: null },
     updatedAt: { type: Date, default: Date.now },
   },

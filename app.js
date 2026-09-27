@@ -109,6 +109,9 @@ function createApp({ ringTimeoutMs } = {}) {
 
   // Crash reports, also before sign-in: no user involved
   app.use(require("./routes/diagnostics")());
+  // Waitlist on the landing page: no account
+  const waitlistRoutes = require("./routes/waitlist");
+  app.use(waitlistRoutes.publicRoutes());
 
   // Everything below knows the requesting user (req.auth) or is legacy.
   // Exception: the invite link preview (/circles/code/:code) is public.
@@ -132,6 +135,7 @@ function createApp({ ringTimeoutMs } = {}) {
   app.use(require("./routes/circles")(io));
   app.use(require("./routes/support")());
   app.use(require("./routes/plus")(io));
+  app.use(waitlistRoutes.appRoutes(io));
 
   const upload = multer({
     storage: multer.memoryStorage(),
