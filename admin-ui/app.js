@@ -563,10 +563,9 @@ function Reports({ role, onOpenUser, onCount }) {
 const CATEGORIES = { bug: 'Fehler', idea: 'Idee', account: 'Konto', other: 'Sonstiges' };
 const TICKET_STATUS = { open: 'Offen', answered: 'Beantwortet', closed: 'Geschlossen' };
 
-function Tickets({ onOpenUser, onCount }) {
+function Tickets({ openId, onOpen, onOpenUser, onCount }) {
   const [status, setStatus] = useState('open');
   const [data, setData] = useState(null);
-  const [openId, setOpenId] = useState(null);
   const load = useCallback(() => {
     api(`/tickets?status=${status}`).then((d) => {
       setData(d);
@@ -578,12 +577,12 @@ function Tickets({ onOpenUser, onCount }) {
     load();
   }, [load]);
 
-  if (openId) return html`<${Ticket} id=${openId} onBack=${() => { setOpenId(null); load(); }} onOpenUser=${onOpenUser} />`;
+  if (openId) return html`<${Ticket} id=${openId} onBack=${() => { onOpen(null); load(); }} onOpenUser=${onOpenUser} />`;
   return html`
     <div class="now"><div class="tabs">${Object.entries(TICKET_STATUS).map(([k, label]) => html`<button class=${status === k ? 'on' : ''} onClick=${() => setStatus(k)}>${label}${data?.counts?.[k] ? html` <span class="muted">${data.counts[k]}</span>` : null}</button>`)}</div></div>
-    ${!data ? html`<p class="note">Lade …</p>` : data.tickets.length === 0 ? html`<div class="card"><p class="note" style="margin:0">${status === 'open' ? 'Keine offenen Anfragen. 🎉' : 'Nichts hier.'}</p></div>` : html`<div class="card" style="padding:6px 8px"><table class="rows">
+    ${!data ? html`<p class="note">Lade …</p>` : data.tickets.length === 0 ? html`<div class="card"><p class="note" style="margin:0">${status === 'open' ? 'Keine offenen Anfragen. 🎉' : 'Nichts hier.'}</p></div>` : html`<div class="card scroll" style="padding:6px 8px"><table class="rows">
       <thead><tr><th></th><th>Von</th><th>Art</th><th>Letzte Nachricht</th><th>App</th><th>Aktualisiert</th></tr></thead>
-      <tbody>${data.tickets.map((t) => html`<tr class="click" onClick=${() => setOpenId(t.id)}>
+      <tbody>${data.tickets.map((t) => html`<tr class="click" onClick=${() => onOpen(t.id)}>
         <td style="width:44px"><${Avatar} name=${t.user.name} url=${t.user.avatarUrl} /></td>
         <td><strong>${t.user.name || t.user.phone}</strong></td>
         <td><span class="pill">${CATEGORIES[t.category]}</span></td>
@@ -735,7 +734,7 @@ function AppSettings({ role }) {
     <${PlusPanel} role=${role} />
 
     <div class="section">App-Versionen <span class="note">(aktiv in den letzten 30 Tagen)</span></div>
-    <div class="card">${data.versions.length ? html`<table>
+    <div class="card scroll">${data.versions.length ? html`<table>
       <thead><tr><th>Version</th><th>Build</th><th>Plattform</th><th>Personen</th></tr></thead>
       <tbody>${data.versions.map((v) => html`<tr><td>${v.version}</td><td>${v.build || '–'}</td><td>${PLATFORM[v.platform] || '–'}</td><td>${num(v.users)}</td></tr>`)}</tbody>
     </table>` : html`<p class="note" style="margin:0">Noch keine Daten. Die App meldet ihre Version ab dem nächsten Build.</p>`}
@@ -953,10 +952,16 @@ function Waitlist({ role }) {
   `;
 }
 
+// The open page lives in the URL hash (#users/<id>, #support/<ticket>, …), so a
+// reload, the home-screen app coming back and the back button keep it.
+const readRoute = () => {
+  const [tab, id] = decodeURIComponent(location.hash.slice(1)).split('/');
+  return { tab: tab || 'dashboard', id: id || null };
+};
+
 function App() {
   const [state, setState] = useState({ loading: true });
-  const [tab, setTab] = useState('dashboard');
-  const [userId, setUserId] = useState(null);
+  const [route, setRoute] = useState(readRoute);
   const [openReports, setOpenReports] = useState(0);
   const [openTickets, setOpenTickets] = useState(0);
   const [momentsOf, setMomentsOf] = useState(null);
@@ -979,6 +984,12 @@ function App() {
     api('/tickets').then((d) => setOpenTickets(d.counts.open || 0)).catch(() => {});
   }, [state.admin]);
 
+  useEffect(() => {
+    const onHash = () => setRoute(readRoute());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
   const logout = async () => {
     await api('/auth/logout', { method: 'POST' }).catch(() => {});
     setState({ setupNeeded: false });
@@ -992,26 +1003,32 @@ function App() {
   }
 
   const role = state.admin.role;
-  const go = (next) => {
-    setTab(next);
-    setUserId(null);
+  const tabs = ['dashboard', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'app', ...(role === 'owner' ? ['audit'] : [])];
+  const tab = tabs.includes(route.tab) ? route.tab : 'dashboard';
+  const nav = (next, id = null) => {
+    const hash = id ? `#${next}/${encodeURIComponent(id)}` : `#${next}`;
+    if (location.hash !== hash) {
+      location.hash = hash;
+      window.scrollTo(0, 0);
+    }
+    setRoute({ tab: next, id });
   };
-  const openUser = (id) => {
-    setTab('users');
-    setUserId(id);
-  };
+  const go = (next) => nav(next);
+  const openUser = (id) => nav('users', id);
+  const userId = tab === 'users' ? route.id : null;
+  const setUserId = (id) => nav('users', id);
 
   let body;
   if (tab === 'users') {
     body = userId
-      ? html`<${UserDetail} id=${userId} role=${role} onBack=${() => setUserId(null)} onChanged=${() => setUserId(null)} onMoments=${(u) => { setMomentsOf(u); setTab('moments'); setUserId(null); }} />`
+      ? html`<${UserDetail} id=${userId} role=${role} onBack=${() => setUserId(null)} onChanged=${() => setUserId(null)} onMoments=${(u) => { setMomentsOf(u); go('moments'); }} />`
       : html`<${Users} onOpen=${setUserId} />`;
   } else if (tab === 'reports') {
     body = html`<${Reports} role=${role} onOpenUser=${openUser} onCount=${setOpenReports} />`;
   } else if (tab === 'moments') {
     body = html`<${Moments} onOpenUser=${openUser} userId=${momentsOf?.id} userName=${momentsOf?.name} onClearUser=${() => setMomentsOf(null)} />`;
   } else if (tab === 'support') {
-    body = html`<${Tickets} onOpenUser=${openUser} onCount=${setOpenTickets} />`;
+    body = html`<${Tickets} openId=${tab === 'support' ? route.id : null} onOpen=${(id) => nav('support', id)} onOpenUser=${openUser} onCount=${setOpenTickets} />`;
   } else if (tab === 'app') {
     body = html`<${AppSettings} role=${role} />`;
   } else if (tab === 'audit') {
