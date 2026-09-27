@@ -122,6 +122,7 @@ module.exports = (io) => {
         updateOne: { filter: { from: req.auth.phone, toHash }, update: { $setOnInsert: { createdAt: new Date() } }, upsert: true },
       })),
     );
+    await User.updateOne({ phone: req.auth.phone, firstInviteAt: null }, { firstInviteAt: new Date() });
     res.json({ success: true, invited: valid.length });
   });
 

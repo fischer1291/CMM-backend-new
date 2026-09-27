@@ -113,7 +113,7 @@ router.post("/check", perPhone(10), async (req, res) => {
 
     if (isNew) {
       // Invited by friends: connect them right away
-      connectInviters(user).catch((err) => console.error("❌ connectInviters:", err.message));
+      connectInviters(user, req.app.get("io")).catch((err) => console.error("❌ connectInviters:", err.message));
     }
 
     res.json({

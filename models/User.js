@@ -71,6 +71,10 @@ const userSchema = new mongoose.Schema({
   invitesJoined: { type: Number, default: 0 },
   // Came in through someone's invite (admin growth numbers)
   joinedViaInvite: { type: Boolean, default: false },
+  // First invite sent (activation funnel) and invite rewards already given
+  // (lib/referral.js)
+  firstInviteAt: { type: Date, default: null },
+  referralRewards: { type: Number, default: 0 },
 
   // Moderation (admin console): no sign-in until then; tokens issued before
   // tokensValidAfter are rejected (lib/accessGate.js)
@@ -80,7 +84,7 @@ const userSchema = new mongoose.Schema({
   // Missed calls up to here were seen in the call list
   callsSeenAt: { type: Date, default: null },
 
-  // Wanna yap+ (lib/plan.js). source: store (RevenueCat) | admin | gift
+  // Wanna yap+ (lib/plan.js). source: store (RevenueCat) | admin | gift | referral
   plus: {
     active: { type: Boolean, default: false },
     until: { type: Date, default: null },

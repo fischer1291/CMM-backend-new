@@ -107,6 +107,9 @@ function createApp({ ringTimeoutMs } = {}) {
   );
   app.use("/console/vendor", express.static(path.join(__dirname, "node_modules/htm/preact")));
 
+  // Crash reports, also before sign-in: no user involved
+  app.use(require("./routes/diagnostics")());
+
   // Everything below knows the requesting user (req.auth) or is legacy.
   // Exception: the invite link preview (/circles/code/:code) is public.
   app.use((req, res, next) =>

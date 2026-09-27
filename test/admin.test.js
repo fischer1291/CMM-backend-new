@@ -9,7 +9,7 @@ const Talk = require("../models/Talk");
 const Call = require("../models/Call");
 const Circle = require("../models/Circle");
 const { totpAt, currentStep } = require("../lib/adminAuth");
-const { dayStart } = require("../lib/metrics");
+const { dayStart, activation } = require("../lib/metrics");
 
 let ctx;
 before(async () => {
@@ -147,6 +147,30 @@ test("metrics: today's users, activity, calls, talks and circles", async () => {
   const retention = await request(ctx.app).get("/admin/metrics/retention?weeks=4").set("Cookie", cookie).expect(200);
   assert.equal(retention.body.cohorts.length, 4);
   assert.equal(retention.body.cohorts.at(-1).size, 2);
+});
+
+test("metrics: activation = a real conversation within 7 days of signing up", async () => {
+  const mongoose = require("mongoose");
+  const now = new Date();
+  const ago = (days) => new Date(now.getTime() - days * 24 * 3600 * 1000);
+  const idFrom = (date) => mongoose.Types.ObjectId.createFromTime(Math.floor(date.getTime() / 1000));
+  const users = [
+    // talked on day 2: activated; invited someone and brought in two people
+    { _id: idFrom(ago(20)), phone: "+491", firstInviteAt: ago(19), invitesJoined: 2 },
+    // talked only on day 10: not activated
+    { _id: idFrom(ago(20)), phone: "+492", joinedViaInvite: true },
+    // in a group round on day 1: activated
+    { _id: idFrom(ago(20)), phone: "+493" },
+    // signed up 3 days ago: window not over, not measured yet
+    { _id: idFrom(ago(3)), phone: "+494" },
+  ];
+  await Talk.create([
+    { callId: "a", participants: ["+491", "+499"], startedAt: ago(18), seconds: 60 },
+    { callId: "b", participants: ["+492", "+499"], startedAt: ago(10), seconds: 60 },
+    { callId: "c", participants: ["+493", "+499"], startedAt: ago(19), seconds: 60, group: true, owner: "+493" },
+  ]);
+  assert.deepEqual(await activation(users, now), { activated: 0.67, measured: 3, inviters: 0.25, viaInvite: 0.25, k: 0.5 });
+  assert.deepEqual(await activation([], now), { activated: null, measured: 0, inviters: null, viaInvite: null, k: null });
 });
 
 test("metrics: local days across daylight saving time", () => {
@@ -392,6 +416,30 @@ test("app versions: remembered from request headers, shown per version", async (
   assert.deepEqual(config.body.versions, [{ version: "1.0.0", build: "21", platform: "ios", users: 1 }]);
   const detail = await request(ctx.app).get(`/admin/users/${anna.id}`).set("Cookie", cookie).expect(200);
   assert.equal(detail.body.user.app.version, "1.0.0");
+});
+
+test("app errors: reported without sign-in, grouped, listed for the console", async () => {
+  const { cookie } = await setUpAdmin();
+  process.env.AUTH_REQUIRED = "true";
+  try {
+    const report = (line, version) =>
+      request(ctx.app)
+        .post("/diagnostics/errors")
+        .send({ message: "TypeError: x is undefined", stack: `TypeError: x is undefined\n    at StatusView (app.bundle:${line}:12)`, version, platform: "ios", fatal: true })
+        .expect(200);
+    await report(1200, "1.0.0 (21)");
+    await report(1300, "1.0.1 (22)"); // other line number, same place in the code
+    await request(ctx.app).post("/diagnostics/errors").send({}).expect(400);
+  } finally {
+    delete process.env.AUTH_REQUIRED;
+  }
+  const res = await request(ctx.app).get("/admin/errors").set("Cookie", cookie).expect(200);
+  assert.equal(res.body.errors.length, 1);
+  const [error] = res.body.errors;
+  assert.equal(error.count, 2);
+  assert.equal(error.fatal, true);
+  assert.deepEqual(error.versions, ["1.0.0 (21)", "1.0.1 (22)"]);
+  await request(ctx.app).get("/admin/errors").expect(401);
 });
 
 test("export: the owner downloads everything about a person; it's audited", async () => {
