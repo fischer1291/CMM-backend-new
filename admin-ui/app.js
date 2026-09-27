@@ -581,7 +581,7 @@ function Tickets({ onOpenUser, onCount }) {
   if (openId) return html`<${Ticket} id=${openId} onBack=${() => { setOpenId(null); load(); }} onOpenUser=${onOpenUser} />`;
   return html`
     <div class="now"><div class="tabs">${Object.entries(TICKET_STATUS).map(([k, label]) => html`<button class=${status === k ? 'on' : ''} onClick=${() => setStatus(k)}>${label}${data?.counts?.[k] ? html` <span class="muted">${data.counts[k]}</span>` : null}</button>`)}</div></div>
-    ${!data ? html`<p class="note">Lade …</p>` : data.tickets.length === 0 ? html`<div class="card"><p class="note" style="margin:0">${status === 'open' ? 'Keine offenen Anfragen. 🎉' : 'Nichts hier.'}</p></div>` : html`<div class="card" style="padding:6px 8px"><table class="rows">
+    ${!data ? html`<p class="note">Lade …</p>` : data.tickets.length === 0 ? html`<div class="card"><p class="note" style="margin:0">${status === 'open' ? 'Keine offenen Anfragen. 🎉' : 'Nichts hier.'}</p></div>` : html`<div class="card scroll" style="padding:6px 8px"><table class="rows">
       <thead><tr><th></th><th>Von</th><th>Art</th><th>Letzte Nachricht</th><th>App</th><th>Aktualisiert</th></tr></thead>
       <tbody>${data.tickets.map((t) => html`<tr class="click" onClick=${() => setOpenId(t.id)}>
         <td style="width:44px"><${Avatar} name=${t.user.name} url=${t.user.avatarUrl} /></td>
@@ -735,7 +735,7 @@ function AppSettings({ role }) {
     <${PlusPanel} role=${role} />
 
     <div class="section">App-Versionen <span class="note">(aktiv in den letzten 30 Tagen)</span></div>
-    <div class="card">${data.versions.length ? html`<table>
+    <div class="card scroll">${data.versions.length ? html`<table>
       <thead><tr><th>Version</th><th>Build</th><th>Plattform</th><th>Personen</th></tr></thead>
       <tbody>${data.versions.map((v) => html`<tr><td>${v.version}</td><td>${v.build || '–'}</td><td>${PLATFORM[v.platform] || '–'}</td><td>${num(v.users)}</td></tr>`)}</tbody>
     </table>` : html`<p class="note" style="margin:0">Noch keine Daten. Die App meldet ihre Version ab dem nächsten Build.</p>`}
