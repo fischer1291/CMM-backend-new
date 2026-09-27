@@ -111,6 +111,7 @@ async function main() {
       .then((result) => {
         if (result?.sent || result?.failed) console.log(`✉️  Launch mail: ${result.sent} sent, ${result.failed} failed`);
         if (result?.done) console.log("✉️  Launch mail: all sent");
+        if (result?.purged !== undefined) console.log(`🗑️  Waitlist deleted 12 months after launch (${result.purged} entries)`);
       })
       .catch((err) => console.error("❌ launch mail:", err.message));
   }, 15 * 1000);

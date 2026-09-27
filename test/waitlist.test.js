@@ -154,4 +154,9 @@ test("launch: owner only, typed confirmation, test mail, background batches send
   const csv = await request(ctx.app).get("/admin/waitlist/export").set(admin(cookie)).expect(200);
   assert.match(csv.text, /lea@example\.com/);
   assert.doesNotMatch(csv.text, /pending@example\.com/);
+  // 12 months after the launch the whole list is deleted (privacy policy)
+  assert.equal(await runLaunchBatch(new Date(Date.now() + 200 * DAY)), null);
+  assert.deepEqual(await runLaunchBatch(new Date(Date.now() + 366 * DAY)), { purged: 3 });
+  assert.equal(await WaitlistEntry.countDocuments(), 0);
+  assert.equal(await runLaunchBatch(new Date(Date.now() + 400 * DAY)), null);
 });
