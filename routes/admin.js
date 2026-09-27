@@ -44,6 +44,9 @@ const {
 } = require("../lib/adminAuth");
 const metrics = require("../lib/metrics");
 const ClientError = require("../models/ClientError");
+const waitlist = require("../lib/waitlist");
+const WaitlistEntry = require("../models/WaitlistEntry");
+const mailer = require("../lib/mailer");
 
 const MAX_FAILED = 5;
 const LOCK_MINUTES = 15;
@@ -200,6 +203,48 @@ module.exports = (io) => {
   router.get("/admin/errors", requireAdmin("viewer"), async (req, res) => {
     const errors = await ClientError.find({}, { _id: 0, __v: 0 }).sort({ lastAt: -1 }).limit(50).lean();
     res.json({ success: true, errors });
+  });
+
+  // --- Waitlist (lib/waitlist.js) ----------------------------------------------
+
+  router.get("/admin/waitlist", requireAdmin("viewer"), async (req, res) => {
+    res.json({ success: true, mailConfigured: mailer.configured(), goal: waitlist.REFERRAL_GOAL, ...(await waitlist.overview()) });
+  });
+
+  // Confirmed addresses as CSV, e.g. for a newsletter tool. Owner only, audited.
+  router.get("/admin/waitlist/export", requireAdmin("owner"), async (req, res) => {
+    const entries = await WaitlistEntry.find({ status: "confirmed" }).sort({ confirmedAt: 1 }).lean();
+    await audit(req, "waitlist_exported", { meta: { count: entries.length } });
+    const cell = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const rows = [
+      ["email", "bestaetigt", "quelle", "kampagne", "empfohlen_von", "code", "eingeloest"],
+      ...entries.map((e) => [e.email, e.confirmedAt?.toISOString(), e.source, e.campaign, e.referredBy, e.code, e.claimedAt ? "ja" : "nein"]),
+    ];
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="warteliste-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send(`\uFEFF${rows.map((r) => r.map(cell).join(";")).join("\n")}`);
+  });
+
+  // The launch mail to one address first. Owner only.
+  router.post("/admin/waitlist/test-mail", requireAdmin("owner"), async (req, res) => {
+    try {
+      const result = await waitlist.sendTestLaunchMail(req.body?.email);
+      if (result.error) return res.status(400).json({ success: false, error: result.error });
+      await audit(req, "waitlist_test_mail");
+      res.json({ success: true });
+    } catch (err) {
+      res.status(503).json({ success: false, error: err.message === "mail_not_configured" ? "mail_not_configured" : "send_failed" });
+    }
+  });
+
+  // Release day: the launch mail to everyone confirmed. Owner only, typed
+  // confirmation; sending runs in the background (index.js) and only once.
+  router.post("/admin/waitlist/launch", requireAdmin("owner"), async (req, res) => {
+    if (req.body?.confirm !== "STARTEN") return res.status(400).json({ success: false, error: "confirm_required" });
+    if (!mailer.configured()) return res.status(503).json({ success: false, error: "mail_not_configured" });
+    const { state, already } = await waitlist.startLaunch(req.admin.email);
+    if (!already) await audit(req, "waitlist_launch_started");
+    res.json({ success: true, already: !!already, launch: state });
   });
 
   // --- Audit log ---------------------------------------------------------------

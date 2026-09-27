@@ -74,6 +74,12 @@ const userSchema = new mongoose.Schema({
   // First invite sent (activation funnel) and invite rewards already given
   // (lib/referral.js)
   firstInviteAt: { type: Date, default: null },
+  // Waitlist code redeemed (lib/waitlist.js): badge "Von Anfang an"
+  waitlist: {
+    code: { type: String, default: null },
+    at: { type: Date, default: null },
+    referrals: { type: Number, default: 0 },
+  },
   referralRewards: { type: Number, default: 0 },
 
   // Moderation (admin console): no sign-in until then; tokens issued before
@@ -84,7 +90,7 @@ const userSchema = new mongoose.Schema({
   // Missed calls up to here were seen in the call list
   callsSeenAt: { type: Date, default: null },
 
-  // Wanna yap+ (lib/plan.js). source: store (RevenueCat) | admin | gift | referral
+  // Wanna yap+ (lib/plan.js). source: store (RevenueCat) | admin | gift | referral | waitlist
   plus: {
     active: { type: Boolean, default: false },
     until: { type: Date, default: null },

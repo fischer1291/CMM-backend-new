@@ -16,6 +16,9 @@ const fakes = {
   // ticket id -> receipt, filled by tests
   receipts: {},
   ticketCounter: 0,
+  // Mails "sent" via lib/mailer.js
+  mails: [],
+  failMailTo: null,
 };
 
 const originalLoad = Module._load;
@@ -56,6 +59,17 @@ Module._load = function (request, parent, isMain) {
       }
     }
     return { Expo };
+  }
+  if (request === "nodemailer") {
+    return {
+      createTransport: () => ({
+        sendMail: async (mail) => {
+          if (fakes.failMailTo && mail.to === fakes.failMailTo) throw new Error("smtp_rejected");
+          fakes.mails.push(mail);
+          return { messageId: `m-${fakes.mails.length}` };
+        },
+      }),
+    };
   }
   if (request === "node-apn") {
     class Provider {
@@ -119,9 +133,12 @@ async function reset() {
   await require("../models/AppConfig").syncIndexes();
   await require("../models/BannedNumber").syncIndexes();
   await require("../models/ClientError").syncIndexes();
+  await require("../models/WaitlistEntry").syncIndexes();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
   fakes.voipPushes.length = 0;
+  fakes.mails.length = 0;
+  fakes.failMailTo = null;
   fakes.receipts = {};
 }
 

@@ -890,6 +890,69 @@ function PlusPanel({ role }) {
 
 // --- App -------------------------------------------------------------------------
 
+function Waitlist({ role }) {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const load = useCallback(() => api('/waitlist').then(setData).catch(() => setData({ error: true })), []);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 15_000);
+    return () => clearInterval(t);
+  }, [load]);
+  const run = async (fn, ok) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await fn();
+      setMsg({ ok: true, text: ok });
+      load();
+    } catch (e) {
+      const why = { mail_not_configured: 'E-Mail-Versand ist nicht eingerichtet (SMTP_URL auf Render).', confirm_required: 'Bestätigung falsch eingegeben.', invalid_email: 'Ungültige Adresse.' }[e.message];
+      setMsg({ ok: false, text: why || 'Hat nicht geklappt.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!data) return html`<div class="card note">Lade Warteliste …</div>`;
+  if (data.error) return html`<div class="card">Die Warteliste konnte nicht geladen werden.</div>`;
+  const launch = data.launch;
+  const conversion = data.confirmed + data.pending ? data.confirmed / (data.confirmed + data.pending) : null;
+  return html`
+    ${!data.mailConfigured ? html`<div class="card" style="border-color:var(--warning)">E-Mail-Versand ist nicht eingerichtet: Auf Render <b>SMTP_URL</b> und <b>MAIL_FROM</b> setzen, sonst kommen weder Bestätigungs- noch Launch-Mails an.</div>` : null}
+    <div class="kpis">
+      <${Kpi} label="Bestätigt" value=${num(data.confirmed)} sub=${`${num(data.pending)} warten auf Bestätigung`} color="var(--cyan)" />
+      <${Kpi} label="Bestätigungsquote" value=${pct(conversion)} sub="bestätigt / eingetragen (7 Tage)" />
+      <${Kpi} label="Über Empfehlung" value=${pct(data.confirmed ? data.viaReferral / data.confirmed : null)} sub=${`${num(data.viaReferral)} Menschen`} color="var(--pink)" />
+      <${Kpi} label="Ziel erreicht" value=${num(data.reachedGoal)} sub=${`haben ${data.goal}+ Freunde mitgebracht`} />
+      <${Kpi} label="Code eingelöst" value=${num(data.claimed)} sub="in der App" color="var(--violet)" />
+    </div>
+    <div class="grid2">
+      <${Chart} title="Neue Bestätigungen" subtitle="letzte 30 Tage" series=${data.byDay} keys=${[{ label: 'bestätigt', color: 'var(--cyan)', value: (d) => d.count }]} />
+      <div class="card">
+        <h3>Woher</h3>
+        <table><tbody>${data.bySource.map((s) => html`<tr><td>${s.source}</td><td style="text-align:right">${num(s.count)}</td></tr>`)}</tbody></table>
+        <p class="note" style="margin:10px 0 0">Aus <code>utm_source</code> im Link zur Landing Page, sonst „empfehlung“ oder „direkt“.</p>
+        <h3 style="margin-top:18px">Die besten Empfehler</h3>
+        <table><tbody>${data.topReferrers.length ? data.topReferrers.map((t) => html`<tr><td><code>${t.code}</code></td><td style="text-align:right">${num(t.count)}</td></tr>`) : html`<tr><td class="note">Noch niemand.</td></tr>`}</tbody></table>
+      </div>
+    </div>
+
+    <div class="section">Launch-Mail</div>
+    <div class="card">
+      ${launch?.startedAt
+        ? html`<p><b>${launch.finishedAt ? 'Verschickt' : 'Wird verschickt …'}</b> · gestartet ${new Date(launch.startedAt).toLocaleString('de-DE')} von ${launch.by} · ${num(launch.sent || 0)} gesendet${launch.failed ? `, ${num(launch.failed)} fehlgeschlagen` : ''} · ${num(data.mailed)} von ${num(data.confirmed)} Adressen erreicht</p>`
+        : html`<p>Am Release-Tag geht an alle bestätigten Adressen eine Mail mit App-Store-Link und ihrem persönlichen Code. Erst eine Testmail an dich schicken und prüfen, dann starten. Der Versand läuft im Hintergrund, jede Adresse bekommt die Mail genau einmal.</p>`}
+      ${role === 'owner' ? html`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn small ghost" disabled=${busy} onClick=${() => { const e = prompt('Testmail an:'); if (e) run(() => api('/waitlist/test-mail', { method: 'POST', body: { email: e } }), `Testmail an ${e} verschickt.`); }}>Testmail schicken</button>
+        ${!launch?.startedAt ? html`<button class="btn small danger" disabled=${busy || !data.confirmed} onClick=${() => { const c = prompt(`Launch-Mail an ${data.confirmed} Adressen schicken? Das lässt sich nicht zurückholen. Zum Bestätigen STARTEN eingeben:`); if (c) run(() => api('/waitlist/launch', { method: 'POST', body: { confirm: c } }), 'Versand gestartet.'); }}>Launch-Mail an alle …</button>` : null}
+        <a class="btn small ghost" href="/admin/waitlist/export">Export (CSV)</a>
+      </div>` : null}
+      ${msg ? html`<p class=${msg.ok ? 'note' : 'error'} style="margin-top:10px">${msg.text}</p>` : null}
+    </div>
+  `;
+}
+
 function App() {
   const [state, setState] = useState({ loading: true });
   const [tab, setTab] = useState('dashboard');
@@ -953,6 +1016,8 @@ function App() {
     body = html`<${AppSettings} role=${role} />`;
   } else if (tab === 'audit') {
     body = html`<${Audit} />`;
+  } else if (tab === 'waitlist') {
+    body = html`<${Waitlist} role=${role} />`;
   } else {
     body = html`<${Dashboard} />`;
   }
@@ -966,6 +1031,7 @@ function App() {
         <button class=${tab === 'reports' ? 'on' : ''} onClick=${() => go('reports')}>Meldungen${openReports ? html` <span class="count">${openReports}</span>` : null}</button>
         <button class=${tab === 'moments' ? 'on' : ''} onClick=${() => { setMomentsOf(null); go('moments'); }}>Moments</button>
         <button class=${tab === 'support' ? 'on' : ''} onClick=${() => go('support')}>Support${openTickets ? html` <span class="count">${openTickets}</span>` : null}</button>` : null}
+        <button class=${tab === 'waitlist' ? 'on' : ''} onClick=${() => go('waitlist')}>Warteliste</button>
         <button class=${tab === 'app' ? 'on' : ''} onClick=${() => go('app')}>App</button>
         ${role === 'owner' ? html`<button class=${tab === 'audit' ? 'on' : ''} onClick=${() => go('audit')}>Protokoll</button>` : null}
       </div>

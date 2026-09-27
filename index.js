@@ -104,6 +104,18 @@ async function main() {
   snapshots();
   setInterval(snapshots, 30 * 60 * 1000);
 
+  // Launch mail to the waitlist, once started in the console: a batch every 15 s
+  const { runLaunchBatch } = require("./lib/waitlist");
+  setInterval(() => {
+    asJobLeader("waitlist", runLaunchBatch)
+      .then((result) => {
+        if (result?.sent || result?.failed) console.log(`✉️  Launch mail: ${result.sent} sent, ${result.failed} failed`);
+        if (result?.done) console.log("✉️  Launch mail: all sent");
+        if (result?.purged !== undefined) console.log(`🗑️  Waitlist deleted 12 months after launch (${result.purged} entries)`);
+      })
+      .catch((err) => console.error("❌ launch mail:", err.message));
+  }, 15 * 1000);
+
   // Every 15 minutes: delivery receipts of sent pushes
   setInterval(() => {
     asJobLeader("receipts", checkReceipts)
