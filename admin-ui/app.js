@@ -795,6 +795,10 @@ const LIMIT_LABELS = {
   roomMinutes: 'Minuten pro Runde (leer = unbegrenzt)',
   memoriesDays: 'Erinnerungen, Tage (leer = alle)',
   hdVideo: 'Video in HD',
+  rituals: 'Rituale pro Kreis (max. 3)',
+  nudgeMessage: 'Eigene Anstups-Texte',
+  yearReview: 'Voller Jahresrückblick',
+  appIcons: 'App-Icons',
 };
 const INTEREST_LABELS = { hd_video: 'Video in HD', bigger_circles: 'Größere Kreise', longer_rounds: 'Längere Runden', memories: 'Erinnerungen für immer', year_review: 'Jahresrückblick', icons: 'App-Icons & Themen', rituals: 'Mehr Rituale', family: 'Familien-Abo', support: 'Unterstützen' };
 

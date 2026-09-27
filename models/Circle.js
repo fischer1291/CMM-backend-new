@@ -36,6 +36,22 @@ const circleSchema = new mongoose.Schema({
     start: { type: Number, default: 18 * 60 },
     timezone: { type: String, default: null },
     lastKey: { type: String, default: null },
+    label: { type: String, default: null },
+  },
+  // Further rituals (Wanna yap+: up to 3 in total, lib/plan.js). Kept apart
+  // from `ritual` so older app versions still see and edit the first one.
+  moreRituals: {
+    type: [
+      {
+        label: { type: String, default: null },
+        enabled: { type: Boolean, default: true },
+        day: { type: Number, required: true },
+        start: { type: Number, required: true },
+        timezone: { type: String, default: null },
+        lastKey: { type: String, default: null },
+      },
+    ],
+    default: [],
   },
   // Weeks (Monday "YYYY-MM-DD") in which everyone talked: circle badges
   goalWeeks: { type: [String], default: [] },

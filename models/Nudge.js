@@ -10,6 +10,8 @@ const nudgeSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   // open -> answered (they talked / recipient became available) | dismissed
   status: { type: String, enum: ["open", "answered", "dismissed"], default: "open" },
+  // Wanna yap+: an own short line instead of the standard text
+  message: { type: String, default: null },
   resolvedAt: { type: Date, default: null },
 });
 

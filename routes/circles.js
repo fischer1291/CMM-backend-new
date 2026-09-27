@@ -38,6 +38,11 @@ module.exports = (io) => {
 
   const toRooms = (phones) => phones.map((p) => `user:${p}`);
 
+  const ritualsOf = (circle) => [
+    { id: "main", label: circle.ritual.label || null, enabled: circle.ritual.enabled, day: circle.ritual.day, start: circle.ritual.start },
+    ...(circle.moreRituals || []).map((r) => ({ id: String(r._id), label: r.label || null, enabled: r.enabled, day: r.day, start: r.start })),
+  ];
+
   // A circle's size and its rounds follow the founder's plan (lib/plan.js)
   const founderLimits = async (circle) => (await planOfPhone(circle.createdBy)).limits;
   const circleFull = async (circle) => circle.members.length >= Math.min(MAX_MEMBERS, (await founderLimits(circle)).circleMembers);
@@ -92,6 +97,8 @@ module.exports = (io) => {
         ? { id: String(room._id), channel: room.channel, participants: room.participants.filter((p) => !p.leftAt).map((p) => p.phone), endsAt: room.endsAt || null }
         : null,
       ritual: { enabled: circle.ritual.enabled, day: circle.ritual.day, start: circle.ritual.start },
+      // All rituals (the first is `ritual`, for older app versions)
+      rituals: ritualsOf(circle),
     };
     if (detail) {
       out.code = circle.code;
@@ -252,11 +259,12 @@ module.exports = (io) => {
     if (circle) res.json({ success: true, circle: await present(circle, req.auth.phone, { detail: true }) });
   });
 
-  // PATCH /circles/:id { name?, emoji?, ritual? }: name/emoji by the creator, the ritual by anyone
+  // PATCH /circles/:id { name?, emoji?, ritual?, rituals? }: name/emoji by the creator,
+  // rituals by anyone; how many follows the founder's plan
   router.patch("/circles/:id", async (req, res) => {
     const circle = await loadMine(req, res);
     if (!circle) return;
-    const { name, emoji, ritual } = req.body || {};
+    const { name, emoji, ritual, rituals } = req.body || {};
     if ((name !== undefined || emoji !== undefined) && circle.createdBy !== req.auth.phone) {
       return res.status(403).json({ success: false, error: "creator_only" });
     }
@@ -271,7 +279,25 @@ module.exports = (io) => {
         return res.status(400).json({ success: false, error: "Invalid ritual" });
       }
       const me = await User.findOne({ phone: req.auth.phone }, "timezone");
-      circle.ritual = { enabled, day, start, timezone: me?.timezone || circle.ritual.timezone, lastKey: null };
+      circle.ritual = { enabled, day, start, timezone: me?.timezone || circle.ritual.timezone, lastKey: null, label: circle.ritual.label };
+    }
+    if (rituals !== undefined) {
+      const list = Array.isArray(rituals) ? rituals : null;
+      const valid =
+        list &&
+        list.length >= 1 &&
+        list.every((r) => r && typeof r.enabled === "boolean" && Number.isInteger(r.day) && r.day >= 0 && r.day <= 6 && Number.isInteger(r.start) && r.start >= 0 && r.start < 24 * 60);
+      if (!valid) return res.status(400).json({ success: false, error: "Invalid ritual" });
+      const [{ limits: founder }, all] = await Promise.all([planOfPhone(circle.createdBy), planLimits()]);
+      // Existing extra rituals stay (e.g. after Plus ended); only adding more is limited
+      const allowed = Math.max(founder.rituals, ritualsOf(circle).length);
+      if (list.length > allowed) return res.status(403).json(limitError("rituals", founder.rituals, all.plus.rituals));
+      const me = await User.findOne({ phone: req.auth.phone }, "timezone");
+      const zone = me?.timezone || circle.ritual.timezone;
+      const clean = (r) => ({ enabled: r.enabled, day: r.day, start: r.start, timezone: zone, lastKey: null, label: str(r.label, 30) || null });
+      const [first, ...rest] = list;
+      circle.ritual = clean(first);
+      circle.moreRituals = rest.map(clean);
     }
     await circle.save();
     emitCircle(circle, "circleUpdated", { circleId: String(circle._id) });
