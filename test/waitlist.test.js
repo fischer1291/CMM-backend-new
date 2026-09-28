@@ -160,3 +160,38 @@ test("launch: owner only, typed confirmation, test mail, background batches send
   assert.equal(await WaitlistEntry.countDocuments(), 0);
   assert.equal(await runLaunchBatch(new Date(Date.now() + 400 * DAY)), null);
 });
+
+test("landing page visits: counted per source and campaign, next to the sign-ups they brought", async () => {
+  const visit = (body) => request(ctx.app).post("/waitlist/visit").send(body).expect(204);
+  await visit({ source: "TikTok", campaign: "Hook_1" });
+  await visit({ source: "tiktok", campaign: "hook_1" });
+  await visit({ source: "instagram" });
+  await visit({ ref: "ABCD1234" });
+  await visit({});
+  // Nothing usable left after cleaning: counts as direct
+  await visit({ source: "<>" });
+  const LandingVisit = require("../models/LandingVisit");
+  // Only counters: nothing about the visitor
+  assert.deepEqual(Object.keys((await LandingVisit.findOne({ source: "tiktok" })).toObject()).sort(), ["__v", "_id", "campaign", "day", "source", "visits"]);
+
+  await join("lea@example.com", { source: "tiktok", campaign: "hook_1" });
+  await join("ben@example.com", { source: "TikTok", campaign: "HOOK_1" });
+  // Signed up but never confirmed: not counted
+  await request(ctx.app).post("/waitlist").send({ email: "tom@example.com", source: "instagram" }).expect(200);
+
+  const cookie = await adminCookie();
+  const { visits } = (await request(ctx.app).get("/admin/waitlist").set(admin(cookie)).expect(200)).body;
+  assert.equal(visits.today, 6);
+  assert.equal(visits.last7Days, 6);
+  assert.equal(visits.last30Days, 6);
+  assert.equal(visits.signups30Days, 2);
+  assert.equal(visits.byDay.length, 30);
+  assert.equal(visits.byDay.at(-1).count, 6);
+  assert.equal(visits.byDay.at(-1).partial, true);
+  const row = (source, campaign = null) => visits.campaigns.find((c) => c.source === source && c.campaign === campaign);
+  assert.deepEqual(row("tiktok", "hook_1"), { source: "tiktok", campaign: "hook_1", visits: 2, signups: 2 });
+  assert.deepEqual(row("instagram"), { source: "instagram", campaign: null, visits: 1, signups: 0 });
+  assert.equal(row("empfehlung").visits, 1);
+  assert.equal(row("direkt").visits, 2);
+  assert.equal(visits.campaigns[0].source, "tiktok");
+});
