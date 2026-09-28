@@ -165,6 +165,24 @@ test("failures are retried up to three times, 15 minutes apart; 'Jetzt posten' s
   await request(ctx.app).post(`/admin/marketing/drafts/${id}/publish-now`).set(admin(cookie)).expect(409);
 });
 
+test("publish now: a video approved before any channel was connected (no posting status) goes out on the channel connected later", async () => {
+  const cookie = await ownerCookie();
+  const id = await heroDraft();
+  await request(ctx.app).post(`/admin/marketing/drafts/${id}/decision`).set(admin(cookie)).send({ action: "approve" }).expect(200);
+  const before = (await request(ctx.app).get("/admin/marketing/drafts?status=approved").set(admin(cookie)).expect(200)).body.drafts[0];
+  assert.equal(before.publish.instagram, null, "nothing scheduled without a channel");
+  const none = await request(ctx.app).post(`/admin/marketing/drafts/${id}/publish-now`).set(admin(cookie)).expect(409);
+  assert.equal(none.body.error, "nothing_to_post");
+
+  fakeInstagram();
+  await request(ctx.app).post("/admin/marketing/channels/instagram").set(admin(cookie)).send({ token: "IGTOKEN-long-lived-0123456789" }).expect(200);
+  await request(ctx.app).post(`/admin/marketing/drafts/${id}/publish-now`).set(admin(cookie)).expect(202);
+  await posting.runDue();
+  const done = (await AdDraft.findById(id).lean()).publish;
+  assert.equal(done.instagram.status, "posted");
+  assert.equal(done.tiktok.status, null, "TikTok is not connected");
+});
+
 test("tiktok: login with signed state, draft into the TikTok app, direct post with AI label, token refresh", async () => {
   fakeTiktok();
   const cookie = await ownerCookie();
