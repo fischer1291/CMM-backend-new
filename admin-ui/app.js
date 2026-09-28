@@ -978,8 +978,9 @@ function Waitlist({ role }) {
   `;
 }
 
-const TEMPLATE_LABELS = { chat: 'Chat', moment: 'Yap Moment', list: 'Liste' };
-const APPROVAL_FILTERS = { pending: 'Offen', approved: 'Freigegeben', rejected: 'Verworfen' };
+const TEMPLATE_LABELS = { chat: 'Chat', moment: 'Yap Moment', list: 'Liste', hero: 'Hero-Szene' };
+const APPROVAL_FILTERS = { pending: 'Offen', approved: 'Freigegeben', rejected: 'Verworfen', characters: 'Figuren' };
+const euro = (n) => (n == null ? '–' : `${n.toFixed(2).replace('.', ',')} €`);
 const PLATFORM_LABELS = { instagram: 'Instagram', tiktok: 'TikTok' };
 
 function CopyButton({ text, label = 'Kopieren' }) {
@@ -1020,6 +1021,9 @@ function AdDraftCard({ draft, owner, onChanged }) {
     <div class="body">
       <div class="inline" style="margin-bottom:6px">
         <span class="pill">${TEMPLATE_LABELS[draft.template] || draft.template}</span>
+        ${draft.ai ? html`<span class="pill warn" title="Beim Posten auf TikTok und Instagram als KI-generiert kennzeichnen">KI-Szene</span>` : null}
+        ${draft.characters?.length ? html`<span class="pill">${draft.characters.join(', ')}</span>` : null}
+        ${draft.costEur != null ? html`<span class="pill">${euro(draft.costEur)}</span>` : null}
         ${draft.seconds ? html`<span class="pill">${draft.seconds} s</span>` : null}
         ${draft.status === 'posted' ? html`<span class="pill on">gepostet</span>` : null}
         <span class="muted" style="font-size:12px">${dateTime(draft.createdAt)}</span>
@@ -1027,6 +1031,7 @@ function AdDraftCard({ draft, owner, onChanged }) {
       <h3 style="margin:0 0 4px">${draft.title}</h3>
       <div class="note" style="margin-bottom:10px"><code>${draft.campaign}</code></div>
       ${draft.idea ? html`<p style="margin:0 0 12px;color:var(--text-2)">${draft.idea}</p>` : null}
+      ${draft.ai ? html`<p class="note" style="margin:0 0 12px">Enthält realistische KI-Personen: beim Posten auf TikTok „KI-generierter Inhalt“ und auf Instagram „KI-Info“ einschalten.</p>` : null}
       ${Object.keys(PLATFORM_LABELS).map((p) => html`<div class="caption">
         <div class="inline" style="justify-content:space-between"><span class="label" style="margin:0">${PLATFORM_LABELS[p]}</span><${CopyButton} text=${postText(draft, p)} label="Text kopieren" /></div>
         <p>${postText(draft, p)}</p>
@@ -1048,10 +1053,69 @@ function AdDraftCard({ draft, owner, onChanged }) {
   </div>`;
 }
 
+
+function BudgetCard({ owner }) {
+  const [data, setData] = useState(null);
+  const [edit, setEdit] = useState(null);
+  const [error, setError] = useState(null);
+  const load = useCallback(() => api('/marketing/budget').then(setData).catch(() => setData({ error: true })), []);
+  useEffect(() => { load(); }, [load]);
+  if (!data) return null;
+  if (data.error) return html`<div class="card">Das Budget konnte nicht geladen werden.</div>`;
+  const b = data.budget;
+  const bar = (spent, cap) => html`<div class="bar"><i style=${`width:${Math.min(100, cap ? (spent / cap) * 100 : 100)}%`}></i></div>`;
+  const save = async () => {
+    setError(null);
+    try {
+      await api('/marketing/budget', { method: 'PUT', body: { dailyEur: Number(String(edit.daily).replace(',', '.')), weeklyEur: Number(String(edit.weekly).replace(',', '.')) } });
+      setEdit(null);
+      load();
+    } catch (e) {
+      setError(e.code === 'daily_above_weekly' ? 'Das Tagesbudget darf nicht über dem Wochenbudget liegen.' : 'Bitte gültige Beträge eingeben.');
+    }
+  };
+  return html`<div class="card budget" style="margin-bottom:12px">
+    <div class="inline" style="justify-content:space-between"><div class="label" style="margin:0">Marketing-Budget</div>
+      ${owner && !edit ? html`<button class="btn small ghost" onClick=${() => setEdit({ daily: b.dailyEur, weekly: b.weeklyEur })}>Ändern</button>` : null}</div>
+    <div class="grid2" style="margin-top:8px">
+      <div><div class="kv"><span>Heute</span><span><b>${euro(b.spentTodayEur)}</b> von ${euro(b.dailyEur)}</span></div>${bar(b.spentTodayEur, b.dailyEur)}</div>
+      <div><div class="kv"><span>Diese Woche (ab Mo.)</span><span><b>${euro(b.spentWeekEur)}</b> von ${euro(b.weeklyEur)}</span></div>${bar(b.spentWeekEur, b.weeklyEur)}</div>
+    </div>
+    ${edit ? html`<div class="inline" style="margin-top:10px">
+      <label class="inline">Tag <input class="num" inputmode="decimal" value=${edit.daily} onInput=${(e) => setEdit({ ...edit, daily: e.target.value })} /> €</label>
+      <label class="inline">Woche <input class="num" inputmode="decimal" value=${edit.weekly} onInput=${(e) => setEdit({ ...edit, weekly: e.target.value })} /> €</label>
+      <button class="btn small" onClick=${save}>Speichern</button><button class="btn small ghost" onClick=${() => setEdit(null)}>Abbrechen</button>
+    </div>` : null}
+    ${error ? html`<p class="error" style="margin:8px 0 0">${error}</p>` : null}
+    <p class="note" style="margin:8px 0 0">Vor jedem Aufruf (Claude, Veo, Bilder) reserviert der Agent den Betrag; was nicht mehr ins Budget passt, lässt er aus. Diese Woche: Claude ${euro(data.weekByProvider.anthropic || 0)}, Google ${euro(data.weekByProvider.google || 0)}.</p>
+  </div>`;
+}
+
+function Characters({ owner }) {
+  const [list, setList] = useState(null);
+  const [redo, setRedo] = useState({});
+  const load = useCallback(() => api('/marketing/characters').then((d) => setList(d.characters)).catch(() => setList([])), []);
+  useEffect(() => { load(); }, [load]);
+  if (!list) return html`<p class="note">Lade …</p>`;
+  if (!list.length) return html`<div class="card"><p class="note" style="margin:0">Noch keine Figuren. Der Agent legt sie beim nächsten Lauf mit Bildvorschlägen an.</p></div>`;
+  const choose = async (key, url) => { await api(`/marketing/characters/${key}/choose`, { method: 'POST', body: { url } }).catch(() => {}); load(); };
+  const askNew = async (key) => { await api(`/marketing/characters/${key}/redo`, { method: 'POST', body: { feedback: redo[key] || '' } }).catch(() => {}); setRedo({ ...redo, [key]: undefined }); load(); };
+  return html`<div class="ads">${list.map((c) => html`<div class="card">
+    <h3 style="margin:0 0 4px">${c.name}</h3>
+    <p class="note" style="margin:0 0 10px">${c.summary}</p>
+    <div>${c.chosen ? html`<div class="label">Gewählt</div><img class="ref chosen" src=${c.chosen} alt=${c.name} />` : html`<p class="pill warn">Noch kein Referenzbild gewählt: ohne Bild keine Hero-Videos mit ${c.name}.</p>`}</div>
+    <div>${c.wantsNew ? html`<p class="note">Neue Vorschläge kommen beim nächsten Lauf${c.feedback ? ` („${c.feedback}“)` : ''}.</p>` : c.candidates.length ? html`
+      <div class="label" style="margin-top:10px">Vorschläge${owner ? ': antippen zum Auswählen' : ''}</div>
+      <div class="refs">${c.candidates.map((url) => html`<img key=${url} class=${`ref ${url === c.chosen ? 'chosen' : ''}`} src=${url} alt="" onClick=${() => owner && url !== c.chosen && choose(c.key, url)} />`)}</div>` : null}</div>
+    ${owner && !c.wantsNew ? html`<div class="inline" style="margin-top:10px"><input placeholder="Was soll anders sein? (optional)" value=${redo[c.key] || ''} onInput=${(e) => setRedo({ ...redo, [c.key]: e.target.value })} /><button class="btn small ghost" onClick=${() => askNew(c.key)}>Neue Vorschläge</button></div>` : null}
+  </div>`)}</div>`;
+}
+
 function Approvals({ role, onCount }) {
   const [filter, setFilter] = useState('pending');
   const [data, setData] = useState(null);
   const load = useCallback(() => {
+    if (filter === 'characters') return;
     api(`/marketing/drafts?status=${filter}`).then((d) => {
       setData(d);
       onCount(d.counts.pending || 0);
@@ -1064,8 +1128,10 @@ function Approvals({ role, onCount }) {
   const c = data?.counts || {};
   const counts = { pending: c.pending, approved: (c.approved || 0) + (c.posted || 0), rejected: c.rejected };
   return html`
+    <${BudgetCard} owner=${role === 'owner'} />
     <div class="now"><div class="tabs">${Object.entries(APPROVAL_FILTERS).map(([k, label]) => html`<button class=${filter === k ? 'on' : ''} onClick=${() => setFilter(k)}>${label}${counts[k] ? html` <span class=${k === 'pending' ? 'count' : 'muted'}>${counts[k]}</span>` : null}</button>`)}</div></div>
-    ${!data ? html`<p class="note">Lade …</p>`
+    ${filter === 'characters' ? html`<${Characters} owner=${role === 'owner'} />`
+      : !data ? html`<p class="note">Lade …</p>`
       : data.error ? html`<div class="card">Die Entwürfe konnten nicht geladen werden.</div>`
       : data.drafts.length === 0 ? html`<div class="card"><p class="note" style="margin:0">${filter === 'pending' ? 'Nichts zu tun. Der Marketing-Agent legt jeden Morgen neue Videos hier ab.' : 'Nichts hier.'}</p></div>`
       : html`<div class="ads">${data.drafts.map((d) => html`<${AdDraftCard} key=${d.id} draft=${d} owner=${role === 'owner'} onChanged=${load} />`)}</div>`}
