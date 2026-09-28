@@ -23,6 +23,7 @@ const ERRORS = {
   invalid_email: 'Bitte eine gültige E-Mail-Adresse eingeben.',
   already_set_up: 'Es gibt schon einen Admin. Bitte anmelden.',
   locked: 'Zu viele Versuche. Bitte in 15 Minuten erneut versuchen.',
+  nothing_to_post: 'Kein verbundener Kanal, auf dem das Video noch fehlt. Verbinden unter Freigabe → Kanäle.',
 };
 const message = (err) => ERRORS[err.code] || (err.status === 429 ? ERRORS.locked : 'Das hat nicht geklappt. Bitte erneut versuchen.');
 
@@ -997,6 +998,9 @@ function CopyButton({ text, label = 'Kopieren' }) {
 }
 
 /** Caption as it goes on the platform: text, then the hashtags. */
+// Not posted yet on some platform, and nothing already under way there (also
+// videos approved before automatic posting existed, which have no status)
+const canPostNow = (draft) => Object.keys(PLATFORM_LABELS).some((p) => !draft.posted?.[p] && (!draft.publish?.[p] || ['scheduled', 'failed'].includes(draft.publish[p].status)));
 const postText = (draft, platform) => [draft.captions[platform], draft.hashtags.map((h) => `#${h}`).join(' ')].filter(Boolean).join('\n\n');
 
 function AdDraftCard({ draft, owner, onChanged }) {
@@ -1060,7 +1064,7 @@ function AdDraftCard({ draft, owner, onChanged }) {
         })}
         <div class="inline" style="margin-top:10px">
           ${draft.downloadUrl ? html`<a class="btn small ghost" href=${draft.downloadUrl}>MP4 laden</a>` : null}
-          ${owner && Object.values(draft.publish || {}).some((pub) => pub && ['scheduled', 'failed'].includes(pub.status)) ? html`<button class="btn small" disabled=${busy} onClick=${() => run('publish-now')}>Jetzt posten</button>` : null}
+          ${owner && canPostNow(draft) ? html`<button class="btn small" disabled=${busy} onClick=${() => run('publish-now')}>Jetzt posten</button>` : null}
         </div>
       </div>` : null}
     </div>
