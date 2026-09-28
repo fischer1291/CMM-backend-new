@@ -1,0 +1,145 @@
+const { test, before, after, beforeEach } = require("node:test");
+const assert = require("node:assert/strict");
+const request = require("supertest");
+const { setup, teardown, reset, fakes } = require("./helpers");
+const AdDraft = require("../models/AdDraft");
+const marketing = require("../lib/marketing");
+const { totpAt, currentStep } = require("../lib/adminAuth");
+
+let ctx;
+const uploads = [];
+before(async () => {
+  process.env.MARKETING_AGENT_KEY = "agent-key-for-tests-0123456789";
+  marketing.setUploader(async (buffer, publicId) => {
+    uploads.push({ bytes: buffer.length, publicId });
+    return { url: `https://res.cloudinary.com/testcloud/video/upload/v1/marketing/${publicId}.mp4`, publicId: `marketing/${publicId}`, bytes: buffer.length };
+  });
+  ctx = await setup();
+});
+after(async () => {
+  delete process.env.MARKETING_AGENT_KEY;
+  await teardown();
+});
+beforeEach(async () => {
+  await reset();
+  uploads.length = 0;
+  fakes.mails.length = 0;
+});
+
+const AGENT = { Authorization: "Bearer agent-key-for-tests-0123456789" };
+const cookieOf = (res) => (res.headers["set-cookie"] || [])[0]?.split(";")[0];
+const admin = (cookie) => ({ Cookie: cookie, "X-Admin-Request": "1" });
+
+async function ownerCookie() {
+  const who = { email: "owner@example.com", password: "a-long-admin-password" };
+  const started = await request(ctx.app).post("/admin/auth/setup").send({ ...who, setupKey: "admin-key" }).expect(200);
+  const done = await request(ctx.app)
+    .post("/admin/auth/setup/confirm")
+    .send({ ...who, code: totpAt(started.body.secret, currentStep()) })
+    .expect(200);
+  return cookieOf(done);
+}
+
+const DRAFT = {
+  campaign: "yap-0928-oma-sonntag",
+  template: "chat",
+  title: "Oma am Sonntag",
+  idea: "Familien-Hook, weil empfehlung gut konvertiert",
+  content: { hook: "Wann hast du Oma zuletzt angerufen?", bubbles: [{ from: "me", text: "Sonntag?" }] },
+  seconds: 13,
+  captions: { instagram: "Ruf an, wenn’s passt.", tiktok: "POV: Oma hat Zeit" },
+  hashtags: ["#familie", "telefonieren", "not a tag!"],
+  model: "claude-opus-5",
+};
+// Smallest thing that looks like an MP4: "ftyp" at offset 4
+const MP4 = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypisom"), Buffer.alloc(4000)]);
+
+async function draftWithVideo(overrides = {}) {
+  const created = await request(ctx.app).post("/marketing/drafts").set(AGENT).send({ ...DRAFT, ...overrides }).expect(201);
+  await request(ctx.app).put(`/marketing/drafts/${created.body.draft.id}/video`).set(AGENT).set("Content-Type", "video/mp4").send(MP4).expect(200);
+  return created.body.draft;
+}
+
+test("agent: needs its key, creates drafts, uploads the video once", async () => {
+  await request(ctx.app).get("/marketing/context").expect(401);
+  await request(ctx.app).get("/marketing/context").set({ Authorization: "Bearer wrong" }).expect(401);
+  await request(ctx.app).post("/marketing/drafts").send(DRAFT).expect(401);
+
+  await request(ctx.app).post("/marketing/drafts").set(AGENT).send({ ...DRAFT, campaign: "Nicht OK!" }).expect(400);
+  await request(ctx.app).post("/marketing/drafts").set(AGENT).send({ ...DRAFT, template: "html" }).expect(400);
+  const created = await request(ctx.app).post("/marketing/drafts").set(AGENT).send(DRAFT).expect(201);
+  const { draft } = created.body;
+  assert.equal(draft.status, "rendering");
+  assert.deepEqual(draft.hashtags, ["familie", "telefonieren"]);
+  assert.equal(draft.links.tiktok, "https://wannayap.app/?utm_source=tiktok&utm_campaign=yap-0928-oma-sonntag");
+  await request(ctx.app).post("/marketing/drafts").set(AGENT).send(DRAFT).expect(409);
+
+  const url = `/marketing/drafts/${draft.id}/video`;
+  await request(ctx.app).put(url).set(AGENT).set("Content-Type", "video/mp4").send(Buffer.alloc(4000)).expect(400);
+  const uploaded = await request(ctx.app).put(url).set(AGENT).set("Content-Type", "video/mp4").send(MP4).expect(200);
+  assert.equal(uploaded.body.draft.status, "pending");
+  assert.match(uploaded.body.draft.downloadUrl, /\/video\/upload\/fl_attachment:yap-0928-oma-sonntag\//);
+  assert.deepEqual(uploads, [{ bytes: MP4.length, publicId: "yap-0928-oma-sonntag" }]);
+  await request(ctx.app).put(url).set(AGENT).set("Content-Type", "video/mp4").send(MP4).expect(400);
+
+  // Without a key on the server nobody gets in
+  const key = process.env.MARKETING_AGENT_KEY;
+  delete process.env.MARKETING_AGENT_KEY;
+  await request(ctx.app).get("/marketing/context").set(AGENT).expect(401);
+  process.env.MARKETING_AGENT_KEY = key;
+});
+
+test("console: owners approve or reject, the agent sees decisions and reasons, posted per platform", async () => {
+  const cookie = await ownerCookie();
+  const first = await draftWithVideo();
+  const second = await draftWithVideo({ campaign: "yap-0928-kein-feed", template: "list" });
+  // A draft still rendering is not shown yet
+  await request(ctx.app).post("/marketing/drafts").set(AGENT).send({ ...DRAFT, campaign: "yap-0928-halb" }).expect(201);
+
+  const notified = await request(ctx.app).post("/marketing/notify").set(AGENT).expect(200);
+  assert.equal(notified.body.pending, 2);
+  assert.equal(notified.body.mailed, 1);
+  assert.match(fakes.mails.at(-1).subject, /2 Werbevideos warten/);
+
+  await request(ctx.app).get("/admin/marketing/drafts").expect(401);
+  const listed = (await request(ctx.app).get("/admin/marketing/drafts").set(admin(cookie)).expect(200)).body;
+  assert.equal(listed.drafts.length, 2);
+  assert.equal(listed.counts.pending, 2);
+
+  const decide = (id, body) => request(ctx.app).post(`/admin/marketing/drafts/${id}/decision`).set(admin(cookie)).send(body);
+  await decide(first.id, { action: "publish" }).expect(400);
+  await decide(first.id, { action: "approve" }).expect(200);
+  await decide(first.id, { action: "reject" }).expect(409);
+  await decide(second.id, { action: "reject", feedback: "Zu viel Text, keiner liest vier Zeilen" }).expect(200);
+
+  const posted = (platform, posted = true) =>
+    request(ctx.app).post(`/admin/marketing/drafts/${first.id}/posted`).set(admin(cookie)).send({ platform, posted });
+  await request(ctx.app).post(`/admin/marketing/drafts/${second.id}/posted`).set(admin(cookie)).send({ platform: "tiktok" }).expect(409);
+  await posted("youtube").expect(400);
+  assert.equal((await posted("tiktok").expect(200)).body.draft.status, "posted");
+  assert.equal((await posted("tiktok", false).expect(200)).body.draft.status, "approved");
+  await posted("instagram").expect(200);
+
+  const approved = (await request(ctx.app).get("/admin/marketing/drafts?status=approved").set(admin(cookie)).expect(200)).body;
+  assert.deepEqual(approved.drafts.map((d) => d.campaign), ["yap-0928-oma-sonntag"]);
+  assert.ok(approved.drafts[0].posted.instagram);
+
+  const context = (await request(ctx.app).get("/marketing/context").set(AGENT).expect(200)).body;
+  assert.equal(context.visits.byDay.length, 30);
+  const rejected = context.drafts.find((d) => d.campaign === "yap-0928-kein-feed");
+  assert.equal(rejected.status, "rejected");
+  assert.equal(rejected.feedback, "Zu viel Text, keiner liest vier Zeilen");
+  assert.ok(!context.drafts.some((d) => d.campaign === "yap-0928-halb"));
+  assert.equal(await AdDraft.countDocuments({ status: "rendering" }), 1);
+});
+
+test("console: viewers may look but not decide", async () => {
+  await ownerCookie();
+  const draft = await draftWithVideo();
+  const Admin = require("../models/Admin");
+  const { signSession, COOKIE } = require("../lib/adminAuth");
+  const viewer = await Admin.create({ email: "look@example.com", role: "viewer", totpEnabled: true, passwordHash: "x", totpSecret: "x" });
+  const viewerCookie = `${COOKIE}=${encodeURIComponent(signSession(viewer))}`;
+  await request(ctx.app).get("/admin/marketing/drafts").set(admin(viewerCookie)).expect(200);
+  await request(ctx.app).post(`/admin/marketing/drafts/${draft.id}/decision`).set(admin(viewerCookie)).send({ action: "approve" }).expect(403);
+});

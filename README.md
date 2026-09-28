@@ -49,4 +49,5 @@ still accepted (older app versions). Once all clients send tokens, set
 | `MAIL_FROM` | no | Sender, defaults to `Wanna yap? <hallo@wannayap.app>` (the domain needs SPF/DKIM at the mail provider) |
 | `SITE_URL`, `PUBLIC_API_URL` | no | Links in mails, default `https://wannayap.app` and `https://api.wannayap.app` |
 | `WAITLIST_BATCH` | no | Launch mails per 15 s batch (default 40, max 200); keep under the provider's rate limit |
+| `MARKETING_AGENT_KEY` | agent | Bearer key of the daily marketing agent (CMM repo, `marketing/AGENT.md`), at least 24 characters; without it `/marketing/*` refuses everyone |
 | `PORT` | no | Set by Render |

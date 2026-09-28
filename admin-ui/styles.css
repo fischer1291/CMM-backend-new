@@ -157,3 +157,16 @@ input.num { width: 70px; padding: 5px 8px; border-radius: 8px; background: var(-
   .report .shot { width: 100%; height: auto; max-height: 320px; }
   .moment img { width: 96px; height: 144px; }
 }
+
+/* Freigabe: ad drafts from the marketing agent */
+.ads { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(560px, 100%), 1fr)); gap: 12px; }
+.ad { display: flex; gap: 18px; align-items: flex-start; }
+.ad video { width: 220px; aspect-ratio: 9 / 16; border-radius: 14px; background: #000; flex: 0 0 auto; }
+.ad .body { flex: 1; min-width: 0; }
+.ad .caption { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+.ad .caption p { margin: 8px 0; white-space: pre-wrap; font-size: 14px; }
+.ad input.reason { padding: 10px 12px; border-radius: 10px; background: var(--bg-elevated); border: 1px solid var(--border-strong); }
+@media (max-width: 600px) {
+  .ad { flex-direction: column; }
+  .ad video { width: 100%; max-height: 70vh; }
+}

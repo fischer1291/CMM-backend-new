@@ -98,10 +98,14 @@ function createApp({ ringTimeoutMs } = {}) {
 
   // Admin console: its own sign-in (cookie + TOTP), static files at /console
   app.use(require("./routes/admin")(io));
+  const marketingRoutes = require("./routes/marketing");
+  app.use(marketingRoutes.adminRoutes());
+  // The daily marketing agent (GitHub Action), with its own key
+  app.use(marketingRoutes.agentRoutes());
   app.use(
     "/console",
     helmet.contentSecurityPolicy({
-      directives: { defaultSrc: ["'self'"], imgSrc: ["'self'", "data:", "https://res.cloudinary.com"], styleSrc: ["'self'", "https://fonts.googleapis.com"], fontSrc: ["https://fonts.gstatic.com"], frameAncestors: ["'none'"] },
+      directives: { defaultSrc: ["'self'"], imgSrc: ["'self'", "data:", "https://res.cloudinary.com"], mediaSrc: ["'self'", "https://res.cloudinary.com"], styleSrc: ["'self'", "https://fonts.googleapis.com"], fontSrc: ["https://fonts.gstatic.com"], frameAncestors: ["'none'"] },
     }),
     express.static(path.join(__dirname, "admin-ui"), { index: "index.html", maxAge: 0 }),
   );
