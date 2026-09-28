@@ -116,6 +116,22 @@ async function main() {
       .catch((err) => console.error("❌ launch mail:", err.message));
   }, 15 * 1000);
 
+  // Approved ad videos: post what is due every 5 minutes; keep the Instagram and
+  // TikTok tokens alive every hour (lib/socialPosting.js)
+  const posting = require("./lib/socialPosting");
+  setInterval(() => {
+    asJobLeader("posting", () => posting.runDue())
+      .then((results) => {
+        for (const r of results || []) console.log(`📣 ${r.platform} ${r.campaign}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
+      })
+      .catch((err) => console.error("❌ posting:", err.message));
+  }, 5 * 60 * 1000);
+  setInterval(() => {
+    asJobLeader("tokens", () => posting.refreshTokens())
+      .then((done) => done?.length && console.log(`🔑 Tokens erneuert: ${done.join(", ")}`))
+      .catch((err) => console.error("❌ token refresh:", err.message));
+  }, 60 * 60 * 1000);
+
   // Every 15 minutes: delivery receipts of sent pushes
   setInterval(() => {
     asJobLeader("receipts", checkReceipts)
