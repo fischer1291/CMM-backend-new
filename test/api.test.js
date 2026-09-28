@@ -521,9 +521,18 @@ test("verify: App Store review login works only when configured, without SMS", a
   await request(ctx.app).post("/verify/start").send({ phone: REVIEW }).expect(200);
   assert.deepEqual(fakes.sms, [REVIEW]);
 
+  assert.equal((await request(ctx.app).get("/api/push-health")).body.reviewLogin, "off");
+  process.env.REVIEW_PHONE = "keine Nummer";
+  process.env.REVIEW_CODE = "246810";
+  assert.equal((await request(ctx.app).get("/api/push-health")).body.reviewLogin, "invalid_phone");
   process.env.REVIEW_PHONE = REVIEW;
+  process.env.REVIEW_CODE = "2468";
+  assert.equal((await request(ctx.app).get("/api/push-health")).body.reviewLogin, "invalid_code");
   process.env.REVIEW_CODE = "246810";
   try {
+    const health = (await request(ctx.app).get("/api/push-health")).body;
+    assert.equal(health.reviewLogin, "on");
+    assert.ok(!JSON.stringify(health).includes("246810") && !JSON.stringify(health).includes("15999"), "never the values");
     fakes.sms.length = 0;
     await request(ctx.app).post("/verify/start").send({ phone: "0159 99999999" }).expect(200);
     assert.deepEqual(fakes.sms, [], "no SMS for the review number");

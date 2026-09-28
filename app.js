@@ -74,6 +74,8 @@ function createApp({ ringTimeoutMs } = {}) {
         authRequired: process.env.AUTH_REQUIRED === "true",
         // Only whether the certificate comes from the environment, never the value
         agoraCertificateFromEnv: !agoraCredentials().usingLegacyCertificate,
+        // App Store review demo login: on, off, invalid_phone or invalid_code
+        reviewLogin: require("./routes/verify").reviewLoginStatus(),
         // Which commit is deployed (set by Render)
         version: (process.env.RENDER_GIT_COMMIT || "dev").slice(0, 7),
         timestamp: new Date().toISOString(),
