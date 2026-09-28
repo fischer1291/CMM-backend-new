@@ -11,6 +11,15 @@ const adDraftSchema = new mongoose.Schema({
   title: { type: String, required: true },
   // Why the agent thinks this one is worth trying
   idea: { type: String, default: "" },
+  // app: animated app screens; hero: realistic scenes made with Veo
+  kind: { type: String, enum: ["app", "hero"], default: "app" },
+  // Realistic AI people in it: must be marked on TikTok and Instagram
+  ai: { type: Boolean, default: false },
+  characters: { type: [String], default: [] },
+  // Hero videos form a running story: what happened in this episode
+  episode: { type: String, default: null },
+  // What making it cost (Claude, Veo), in euros
+  costEur: { type: Number, default: null },
   template: { type: String, required: true },
   // What the template shows (texts, screen), as the agent wrote it
   content: { type: mongoose.Schema.Types.Mixed, default: {} },
