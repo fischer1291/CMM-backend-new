@@ -142,6 +142,8 @@ input.num { width: 70px; padding: 5px 8px; border-radius: 8px; background: var(-
   .topbar .tabs button { position: relative; padding: 9px 4px; border-radius: 14px; font-size: 13px; }
   .topbar .tabs .count { position: absolute; top: -4px; right: -2px; }
   .topbar .who { display: none; }
+  .topbar .brand .muted { display: none; }
+  .topbar .btn.small { padding: 7px 12px; }
   .tabs button { padding: 8px 14px; }
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .kpi { padding: 14px; }
@@ -202,3 +204,10 @@ img.ref.chosen { border-color: var(--cyan); }
 .ad .publish { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .ad .publish .kv { align-items: center; }
 .field select { width: 100%; max-width: 100%; padding: 10px 12px; border-radius: 12px; background: var(--bg-elevated); border: 1px solid var(--border-strong); }
+
+/* Mitteilungen */
+.check.toggle { align-items: flex-start; padding: 8px 0; margin: 0; border-bottom: 1px solid var(--border); }
+.check.toggle:last-of-type { border-bottom: 0; }
+.check.toggle input { margin-top: 3px; }
+.btn.bell { padding-left: 10px; padding-right: 10px; }
+.btn.bell.on { background: var(--surface-strong); }

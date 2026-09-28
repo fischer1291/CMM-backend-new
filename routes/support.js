@@ -24,6 +24,18 @@ const view = (t) => ({
   closedAt: t.status === "closed" ? t.updatedAt : null,
 });
 
+const CATEGORY_LABEL = { bug: "Fehler", idea: "Idee", account: "Konto", other: "Sonstiges" };
+/** Push to the console: a new ticket or a reply from the user. */
+function tellSupport(ticket, message) {
+  const first = ticket.messages.length <= 1;
+  require("../lib/adminPush").tell("support", {
+    title: first ? `Neue Support-Anfrage: ${CATEGORY_LABEL[ticket.category] || ticket.category}` : "Neue Antwort im Support",
+    body: message.length > 140 ? `${message.slice(0, 139)}…` : message,
+    url: `#support/${ticket._id}`,
+    tag: `support-${ticket._id}`,
+  });
+}
+
 module.exports = () => {
   const router = express.Router();
   const requireAuth = (req, res, next) =>
@@ -56,6 +68,7 @@ module.exports = () => {
       messages: [{ from: "user", text: message }],
       app: { version: clean(app.version, 20), build: clean(app.build, 10), platform: clean(app.platform, 10), os: clean(app.os, 20) },
     });
+    tellSupport(ticket, message);
     res.json({ success: true, ticket: view(ticket) });
   });
 
@@ -68,6 +81,7 @@ module.exports = () => {
       { new: true },
     );
     if (!ticket) return res.status(404).json({ success: false, error: "not_found" });
+    tellSupport(ticket, message);
     res.json({ success: true, ticket: view(ticket) });
   });
 

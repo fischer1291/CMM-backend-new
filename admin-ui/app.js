@@ -1293,6 +1293,99 @@ function Approvals({ role, onCount }) {
   `;
 }
 
+// --- Mitteilungen: Web Push on this device (lib/adminPush.js, sw.js) -------------------
+
+const NOTIFY_LABELS = {
+  approvals: ['Neue Videos zur Freigabe', 'Wenn der Marketing-Agent Videos vorbereitet hat'],
+  posting: ['Posten', 'Online auf Instagram oder TikTok, TikTok-Entwurf wartet, Fehler'],
+  support: ['Support', 'Neue Anfragen und Antworten aus der App'],
+  reports: ['Meldungen', 'Wenn jemand in der App etwas meldet'],
+  daily: ['Tageszahlen', 'Neue Nutzer, aktive Nutzer, Gespräche, Website, Warteliste'],
+};
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
+const standalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const keyBytes = (base64url) => {
+  const raw = atob((base64url + '='.repeat((4 - (base64url.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+};
+
+function Notify() {
+  const [data, setData] = useState(null);
+  const [mine, setMine] = useState(null); // this device's subscription
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const load = useCallback(async () => {
+    const d = await api('/push').catch(() => ({ error: true }));
+    setData(d);
+    if (pushSupported()) {
+      const reg = await navigator.serviceWorker.getRegistration('./');
+      setMine((await reg?.pushManager.getSubscription()) || null);
+    }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  if (!data) return html`<p class="note">Lade …</p>`;
+  if (data.error) return html`<div class="card">Die Einstellungen konnten nicht geladen werden.</div>`;
+
+  const run = async (fn, ok) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await fn();
+      if (ok) setMsg({ ok: true, text: ok });
+      await load();
+    } catch (e) {
+      setMsg({ ok: false, text: e.message && !e.status ? e.message : message(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const enable = () => run(async () => {
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') throw new Error('Mitteilungen sind für die Konsole nicht erlaubt. Einstellungen → Mitteilungen → Yap Admin.');
+    const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+    await navigator.serviceWorker.ready;
+    const sub = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(data.publicKey) }));
+    await api('/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+  }, 'Mitteilungen sind auf diesem Gerät an.');
+  const disable = () => run(async () => {
+    if (mine) {
+      await api('/push/unsubscribe', { method: 'POST', body: { endpoint: mine.endpoint } });
+      await mine.unsubscribe();
+    }
+  }, 'Auf diesem Gerät aus.');
+  const save = (patch) => run(() => api('/push/settings', { method: 'PUT', body: patch }).then(setData));
+  const here = mine && data.devices.some((d) => d.endpoint === mine.endpoint);
+
+  return html`
+    ${msg ? html`<p class=${msg.ok ? 'flash' : 'error'}>${msg.text}</p>` : null}
+    <div class="card" style="margin-bottom:12px">
+      <h3 style="margin:0 0 6px">Dieses Gerät</h3>
+      ${!pushSupported() ? html`<p class="note" style="margin:0">${isIOS() && !standalone()
+          ? 'Auf dem iPhone gehen Mitteilungen nur aus der Konsole auf dem Home-Bildschirm: in Safari Teilen → „Zum Home-Bildschirm“, die Konsole dort öffnen und hier einschalten.'
+          : 'Dieser Browser kann keine Mitteilungen empfangen.'}</p>`
+        : here ? html`<p style="margin:0 0 10px">Mitteilungen sind hier <b>an</b>.</p>
+            <div class="inline"><button class="btn small" disabled=${busy} onClick=${() => run(() => api('/push/test', { method: 'POST' }), 'Test verschickt. Sie sollte gleich erscheinen.')}>Test-Mitteilung</button>
+            <button class="btn small ghost" disabled=${busy} onClick=${disable}>Hier ausschalten</button></div>`
+        : html`<p class="note" style="margin:0 0 10px">${Notification.permission === 'denied' ? 'Mitteilungen sind für die Konsole blockiert. Auf dem iPhone: Einstellungen → Mitteilungen → Yap Admin.' : 'Neue Videos zur Freigabe, Support, Meldungen und die Tageszahlen als Mitteilung aufs Handy.'}</p>
+            <button class="btn" disabled=${busy || Notification.permission === 'denied'} onClick=${enable}>Mitteilungen einschalten</button>`}
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <h3 style="margin:0 0 6px">Worüber</h3>
+      ${data.kinds.map((k) => html`<label class="check toggle"><input type="checkbox" checked=${data.notify[k]} disabled=${busy} onChange=${(e) => save({ [k]: e.target.checked })} />
+        <span><b>${NOTIFY_LABELS[k][0]}</b><br /><span class="note">${NOTIFY_LABELS[k][1]}</span></span></label>`)}
+      ${data.kinds.includes('daily') && data.notify.daily ? html`<label class="field" style="margin-top:6px"><span>Tageszahlen um</span>
+        <select value=${data.notify.dailyHour} disabled=${busy} onChange=${(e) => save({ dailyHour: Number(e.target.value) })}>
+          ${Array.from({ length: 24 }, (_, h) => html`<option value=${h}>${String(h).padStart(2, '0')}:00 Uhr</option>`)}
+        </select></label>` : null}
+    </div>
+    <div class="card">
+      <h3 style="margin:0 0 6px">Deine Geräte</h3>
+      ${data.devices.length ? data.devices.map((d) => html`<${Row} label=${d.device + (mine && d.endpoint === mine.endpoint ? ' (dieses)' : '')}>seit ${date(d.createdAt)}${d.lastSentAt ? `, zuletzt ${dateTime(d.lastSentAt)}` : ''}<//>`)
+        : html`<p class="note" style="margin:0">Noch kein Gerät.</p>`}
+    </div>`;
+}
+
 // The open page lives in the URL hash (#users/<id>, #support/<ticket>, …), so a
 // reload, the home-screen app coming back and the back button keep it.
 const readRoute = () => {
@@ -1337,6 +1430,24 @@ function App() {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
+  // Push tapped while the console was open (sw.js): go to its page
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {});
+    const onMessage = (e) => {
+      if (e.data?.type === 'open' && typeof e.data.hash === 'string') location.hash = e.data.hash;
+    };
+    navigator.serviceWorker.addEventListener('message', onMessage);
+    return () => navigator.serviceWorker.removeEventListener('message', onMessage);
+  }, []);
+
+  // The number on the home-screen icon: what is waiting
+  useEffect(() => {
+    if (!state.admin || !navigator.setAppBadge) return;
+    const n = openApprovals + openTickets + openReports;
+    (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {});
+  }, [state.admin, openApprovals, openTickets, openReports]);
+
   const logout = async () => {
     await api('/auth/logout', { method: 'POST' }).catch(() => {});
     setState({ setupNeeded: false });
@@ -1350,7 +1461,7 @@ function App() {
   }
 
   const role = state.admin.role;
-  const tabs = ['dashboard', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'approvals', 'app', ...(role === 'owner' ? ['audit'] : [])];
+  const tabs = ['dashboard', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'approvals', 'app', ...(role === 'owner' ? ['audit'] : []), 'notify'];
   const tab = tabs.includes(route.tab) ? route.tab : 'dashboard';
   const nav = (next, id = null) => {
     const hash = id ? `#${next}/${encodeURIComponent(id)}` : `#${next}`;
@@ -1384,6 +1495,8 @@ function App() {
     body = html`<${Waitlist} role=${role} />`;
   } else if (tab === 'approvals') {
     body = html`<${Approvals} role=${role} onCount=${setOpenApprovals} />`;
+  } else if (tab === 'notify') {
+    body = html`<${Notify} />`;
   } else {
     body = html`<${Dashboard} />`;
   }
@@ -1404,6 +1517,7 @@ function App() {
       </div>
       <span class="spacer"></span>
       <span class="who">${state.admin.email}</span>
+      <button class=${`btn small ghost bell ${tab === 'notify' ? 'on' : ''}`} title="Mitteilungen" aria-label="Mitteilungen" onClick=${() => go('notify')}>🔔</button>
       <button class="btn small ghost" onClick=${logout}>Abmelden</button>
     </div>
     ${body}

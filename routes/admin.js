@@ -166,6 +166,52 @@ module.exports = (io) => {
     res.json({ success: true, admin: me(req.admin) });
   });
 
+  // --- Push to the console on the phone (lib/adminPush.js) ----------------------
+  const adminPush = require("../lib/adminPush");
+  const NOTIFY_KEYS = ["approvals", "posting", "support", "reports", "daily"];
+  const pushView = async (admin) => ({
+    publicKey: (await adminPush.vapid()).publicKey,
+    // Only what this role gets at all
+    kinds: NOTIFY_KEYS.filter((k) => adminPush.KINDS[k].includes(admin.role)),
+    notify: { ...Object.fromEntries(NOTIFY_KEYS.map((k) => [k, admin.notify?.[k] !== false])), dailyHour: admin.notify?.dailyHour ?? 20 },
+    devices: (await adminPush.devices(admin)).map((d) => ({ device: d.device, createdAt: d.createdAt, lastSentAt: d.lastSentAt, endpoint: d.endpoint })),
+  });
+
+  router.get("/admin/push", requireAdmin(), async (req, res) => {
+    res.json({ success: true, ...(await pushView(req.admin)) });
+  });
+
+  // POST /admin/push/subscribe { subscription }: what PushManager.subscribe returned
+  router.post("/admin/push/subscribe", requireAdmin(), async (req, res) => {
+    const result = await adminPush.subscribe(req.admin, req.body?.subscription, req.get("user-agent"));
+    if (result.error) return res.status(400).json({ success: false, error: result.error });
+    await audit(req, "push_subscribed");
+    res.json({ success: true, ...(await pushView(req.admin)) });
+  });
+
+  router.post("/admin/push/unsubscribe", requireAdmin(), async (req, res) => {
+    await adminPush.unsubscribe(req.admin, req.body?.endpoint);
+    res.json({ success: true, ...(await pushView(req.admin)) });
+  });
+
+  // PUT /admin/push/settings { approvals, posting, support, reports, daily: bool, dailyHour: 0–23 }
+  router.put("/admin/push/settings", requireAdmin(), async (req, res) => {
+    const set = {};
+    for (const k of NOTIFY_KEYS) if (typeof req.body?.[k] === "boolean") set[`notify.${k}`] = req.body[k];
+    if (req.body?.dailyHour !== undefined) {
+      const h = Number(req.body.dailyHour);
+      if (!Number.isInteger(h) || h < 0 || h > 23) return res.status(400).json({ success: false, error: "invalid_hour" });
+      set["notify.dailyHour"] = h;
+    }
+    const admin = await Admin.findByIdAndUpdate(req.admin._id, set, { new: true });
+    res.json({ success: true, ...(await pushView(admin)) });
+  });
+
+  router.post("/admin/push/test", requireAdmin(), async (req, res) => {
+    const delivered = await adminPush.sendTo(req.admin, { title: "Mitteilungen sind an", body: "So sieht eine Mitteilung der Wanna yap?-Konsole aus.", url: "#notify", tag: "test" });
+    res.json({ success: true, delivered });
+  });
+
   // --- Numbers ---------------------------------------------------------------
 
   router.get("/admin/metrics", requireAdmin("viewer"), async (req, res) => {

@@ -132,6 +132,14 @@ async function main() {
       .catch((err) => console.error("❌ token refresh:", err.message));
   }, 60 * 60 * 1000);
 
+  // The day's numbers as a push to the console, at each admin's hour (lib/adminPush.js)
+  const adminPush = require("./lib/adminPush");
+  setInterval(() => {
+    asJobLeader("admin-daily", () => adminPush.dailyDue())
+      .then((sent) => sent && console.log(`📊 Tageszahlen an ${sent} Admin(s)`))
+      .catch((err) => console.error("❌ admin daily push:", err.message));
+  }, 5 * 60 * 1000);
+
   // Every 15 minutes: delivery receipts of sent pushes
   setInterval(() => {
     asJobLeader("receipts", checkReceipts)
