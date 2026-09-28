@@ -10,6 +10,7 @@
 const express = require("express");
 const marketing = require("../lib/marketing");
 const budget = require("../lib/marketingBudget");
+const posting = require("../lib/socialPosting");
 const { requireAdmin, audit } = require("../lib/adminAuth");
 
 function agentRoutes() {
@@ -110,6 +111,59 @@ function agentRoutes() {
 
 function adminRoutes() {
   const router = express.Router();
+
+  // --- Posting channels (lib/socialPosting.js) ---
+  router.get("/admin/marketing/channels", requireAdmin("viewer"), async (req, res) => {
+    res.json({ success: true, ...(await posting.channelStatus()) });
+  });
+
+  // POST /admin/marketing/channels/instagram { token }: the long-lived token from the Meta app dashboard
+  router.post("/admin/marketing/channels/instagram", requireAdmin("owner"), async (req, res) => {
+    const result = await posting.connectInstagram(req.body?.token, req.admin.email);
+    if (result.error) return res.status(400).json({ success: false, error: result.error, message: result.message });
+    await audit(req, "marketing_channel_connected", { target: "instagram" });
+    res.json({ success: true, channel: result.channel });
+  });
+
+  // The TikTok login page to send the owner to
+  router.get("/admin/marketing/channels/tiktok/connect", requireAdmin("owner"), async (req, res) => {
+    const result = posting.tiktokAuthorizeUrl(String(req.admin._id));
+    if (result.error) return res.status(400).json({ success: false, error: result.error });
+    res.json({ success: true, url: result.url });
+  });
+
+  // PUT /admin/marketing/channels/tiktok { mode: inbox|direct, privacyLevel }
+  router.put("/admin/marketing/channels/tiktok", requireAdmin("owner"), async (req, res) => {
+    const result = await posting.setTiktok(req.body || {});
+    if (result.error) return res.status(400).json({ success: false, error: result.error });
+    await audit(req, "marketing_tiktok_settings", { meta: { mode: result.channel.mode, privacyLevel: result.channel.privacyLevel } });
+    res.json({ success: true, channel: result.channel });
+  });
+
+  router.delete("/admin/marketing/channels/:platform", requireAdmin("owner"), async (req, res) => {
+    const result = await posting.disconnect(req.params.platform);
+    if (result.error) return res.status(400).json({ success: false, error: result.error });
+    await audit(req, "marketing_channel_disconnected", { target: req.params.platform });
+    res.json({ success: true });
+  });
+
+  // TikTok sends the owner back here after login. No admin cookie arrives
+  // (SameSite=Strict on a redirect from tiktok.com): the signed state proves
+  // an owner started it in the console.
+  router.get("/marketing/tiktok/callback", async (req, res) => {
+    const result = await posting.finishTiktok({ code: req.query.code, state: req.query.state, error: req.query.error });
+    res.redirect(302, `/console/?tiktok=${result.ok ? "ok" : result.error}#approvals`);
+  });
+
+  // POST /admin/marketing/drafts/:id/publish-now: post an approved draft right away (or retry)
+  router.post("/admin/marketing/drafts/:id/publish-now", requireAdmin("owner"), async (req, res) => {
+    const result = await posting.postNow(req.params.id);
+    if (result.error) return res.status(409).json({ success: false, error: result.error });
+    await audit(req, "ad_publish_now", { target: result.draft.campaign });
+    // Posting takes minutes (the platforms process the video): it runs on in the background
+    posting.runDue().catch((err) => console.error("❌ publish now:", err.message));
+    res.status(202).json({ success: true });
+  });
 
   router.get("/admin/marketing/drafts", requireAdmin("viewer"), async (req, res) => {
     res.json({ success: true, ...(await marketing.list(String(req.query.status || "pending"))) });

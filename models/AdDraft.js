@@ -43,10 +43,33 @@ const adDraftSchema = new mongoose.Schema({
     instagram: { type: Date, default: null },
     tiktok: { type: Date, default: null },
   },
+  // Automatic posting (lib/socialPosting.js): the slot it goes out in, and per
+  // platform where it stands. status: scheduled, posted, inbox (TikTok draft
+  // waiting in the app), failed (retried up to 3 times)
+  scheduledAt: { type: Date, default: null },
+  publish: {
+    instagram: {
+      status: { type: String, default: null },
+      attempts: { type: Number, default: 0 },
+      lastTryAt: { type: Date, default: null },
+      id: { type: String, default: null },
+      url: { type: String, default: null },
+      error: { type: String, default: null },
+    },
+    tiktok: {
+      status: { type: String, default: null },
+      attempts: { type: Number, default: 0 },
+      lastTryAt: { type: Date, default: null },
+      id: { type: String, default: null },
+      url: { type: String, default: null },
+      error: { type: String, default: null },
+    },
+  },
   createdAt: { type: Date, default: Date.now },
 });
 
 adDraftSchema.index({ status: 1, createdAt: -1 });
+adDraftSchema.index({ scheduledAt: 1 });
 adDraftSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model("AdDraft", adDraftSchema);

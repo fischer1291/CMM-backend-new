@@ -979,7 +979,8 @@ function Waitlist({ role }) {
 }
 
 const TEMPLATE_LABELS = { chat: 'Chat', moment: 'Yap Moment', list: 'Liste', hero: 'Hero-Szene' };
-const APPROVAL_FILTERS = { pending: 'Offen', approved: 'Freigegeben', rejected: 'Verworfen', characters: 'Figuren' };
+const APPROVAL_FILTERS = { pending: 'Offen', approved: 'Freigegeben', rejected: 'Verworfen', characters: 'Figuren', channels: 'Kanäle' };
+const PUBLISH_STATUS = { scheduled: 'geplant', posting: 'wird gepostet …', processing: 'wird verarbeitet …', posted: 'gepostet', inbox: 'Entwurf in der TikTok-App', failed: 'fehlgeschlagen' };
 const euro = (n) => (n == null ? '–' : `${n.toFixed(2).replace('.', ',')} €`);
 const PLATFORM_LABELS = { instagram: 'Instagram', tiktok: 'TikTok' };
 
@@ -1045,9 +1046,22 @@ function AdDraftCard({ draft, owner, onChanged }) {
             <div class="inline"><button class="btn danger" disabled=${busy} onClick=${() => run('decision', { action: 'reject', feedback: reason })}>Verwerfen</button><button class="btn ghost" onClick=${() => setRejecting(false)}>Abbrechen</button></div>
           </div>`
         : html`<div class="inline" style="margin-top:12px"><button class="btn" disabled=${busy} onClick=${() => run('decision', { action: 'approve' })}>Freigeben</button><button class="btn ghost" disabled=${busy} onClick=${() => setRejecting(true)}>Verwerfen …</button></div>`) : null}
-      ${['approved', 'posted'].includes(draft.status) ? html`<div class="inline" style="margin-top:12px">
-        ${draft.downloadUrl ? html`<a class="btn" href=${draft.downloadUrl}>MP4 laden</a>` : null}
-        ${owner ? Object.entries(PLATFORM_LABELS).map(([p, label]) => html`<label class="check" style="margin:0"><input type="checkbox" checked=${!!draft.posted[p]} disabled=${busy} onChange=${(e) => run('posted', { platform: p, posted: e.target.checked })} /> auf ${label} gepostet</label>`) : null}
+      ${['approved', 'posted'].includes(draft.status) ? html`<div class="publish">
+        ${draft.scheduledAt ? html`<div class="note">Automatisch posten: ${dateTime(draft.scheduledAt)}</div>` : null}
+        ${Object.entries(PLATFORM_LABELS).map(([p, label]) => {
+          const pub = draft.publish?.[p];
+          if (!pub) return owner ? html`<label class="check" style="margin:4px 0"><input type="checkbox" checked=${!!draft.posted[p]} disabled=${busy} onChange=${(e) => run('posted', { platform: p, posted: e.target.checked })} /> auf ${label} von Hand gepostet</label>` : null;
+          return html`<div class="kv"><span>${label}</span><span>
+            <span class=${`pill ${pub.status === 'posted' ? 'on' : pub.status === 'failed' ? 'warn' : ''}`}>${PUBLISH_STATUS[pub.status] || pub.status}</span>
+            ${pub.url ? html` <a href=${pub.url} target="_blank" rel="noopener">ansehen</a>` : null}
+            ${pub.status === 'inbox' && owner ? html` <label class="check" style="display:inline-flex;margin:0"><input type="checkbox" checked=${!!draft.posted[p]} disabled=${busy} onChange=${(e) => run('posted', { platform: p, posted: e.target.checked })} /> dort veröffentlicht</label>` : null}
+          </span></div>
+          ${pub.error ? html`<div class="note bad" style="margin-bottom:4px">${pub.error}</div>` : null}`;
+        })}
+        <div class="inline" style="margin-top:10px">
+          ${draft.downloadUrl ? html`<a class="btn small ghost" href=${draft.downloadUrl}>MP4 laden</a>` : null}
+          ${owner && Object.values(draft.publish || {}).some((pub) => pub && ['scheduled', 'failed'].includes(pub.status)) ? html`<button class="btn small" disabled=${busy} onClick=${() => run('publish-now')}>Jetzt posten</button>` : null}
+        </div>
       </div>` : null}
     </div>
   </div>`;
@@ -1111,11 +1125,80 @@ function Characters({ owner }) {
   </div>`)}</div>`;
 }
 
+const PRIVACY = { PUBLIC_TO_EVERYONE: 'Öffentlich', FOLLOWER_OF_CREATOR: 'Follower', MUTUAL_FOLLOW_FRIENDS: 'Freunde', SELF_ONLY: 'Nur ich' };
+const TIKTOK_RESULT = { ok: 'TikTok ist verbunden.', invalid_state: 'Die TikTok-Anmeldung ist abgelaufen. Bitte noch einmal verbinden.', tiktok_denied: 'Die Anmeldung bei TikTok wurde abgebrochen.', tiktok_failed: 'TikTok hat die Anmeldung abgelehnt (Details unten).' };
+
+function Channels({ owner }) {
+  const [data, setData] = useState(null);
+  const [token, setToken] = useState('');
+  const [msg, setMsg] = useState(() => {
+    const r = new URLSearchParams(location.search).get('tiktok');
+    return r ? { ok: r === 'ok', text: TIKTOK_RESULT[r] || r } : null;
+  });
+  const load = useCallback(() => api('/marketing/channels').then(setData).catch(() => setData({ error: true })), []);
+  useEffect(() => {
+    load();
+    if (location.search) history.replaceState(null, '', location.pathname + location.hash);
+  }, [load]);
+  if (!data) return html`<p class="note">Lade …</p>`;
+  if (data.error) return html`<div class="card">Die Kanäle konnten nicht geladen werden.</div>`;
+  const act = async (fn, ok) => {
+    setMsg(null);
+    try {
+      await fn();
+      setMsg({ ok: true, text: ok });
+      load();
+    } catch (e) {
+      setMsg({ ok: false, text: e.data?.message || { invalid_token: 'Das sieht nicht wie ein Token aus.', token_rejected: 'Instagram hat den Token abgelehnt.', tiktok_not_configured: 'TIKTOK_CLIENT_KEY und TIKTOK_CLIENT_SECRET fehlen auf Render.' }[e.code] || message(e) });
+    }
+  };
+  const ig = data.instagram;
+  const tt = data.tiktok;
+  const until = (d) => (d ? new Date(d).toLocaleDateString('de-DE') : '–');
+  return html`
+    ${msg ? html`<p class=${msg.ok ? 'flash' : 'error'}>${msg.text}</p>` : null}
+    <div class="ads">
+      <div class="card">
+        <h3 style="margin:0 0 6px">Instagram</h3>
+        ${ig.connected ? html`
+          <${Row} label="Konto">@${ig.username}<//>
+          <${Row} label="Token gültig bis">${until(ig.expiresAt)} (wird automatisch erneuert)<//>
+          ${ig.lastError ? html`<p class="note bad">${ig.lastError}</p>` : null}
+          ${owner ? html`<button class="btn small ghost" style="margin-top:8px" onClick=${() => confirm('Instagram trennen?') && act(() => api('/marketing/channels/instagram', { method: 'DELETE' }), 'Instagram getrennt.')}>Trennen</button>` : null}`
+        : html`<p class="note">Nicht verbunden. Token aus der Meta-App (Instagram API → „Token generieren“) einfügen:</p>
+          ${owner ? html`<div class="inline"><input type="password" placeholder="Langzeit-Token" value=${token} onInput=${(e) => setToken(e.target.value)} /><button class="btn small" onClick=${() => act(() => api('/marketing/channels/instagram', { method: 'POST', body: { token } }).then(() => setToken('')), 'Instagram ist verbunden.')}>Verbinden</button></div>` : null}`}
+      </div>
+      <div class="card">
+        <h3 style="margin:0 0 6px">TikTok</h3>
+        ${!tt.configured ? html`<p class="note">Auf Render fehlen <code>TIKTOK_CLIENT_KEY</code> und <code>TIKTOK_CLIENT_SECRET</code>. In der TikTok-Entwickler-App als Redirect-URI eintragen: <code>${tt.redirectUri}</code></p>`
+        : tt.connected ? html`
+          <${Row} label="Konto">${tt.username || 'verbunden'}<//>
+          <${Row} label="Anmeldung gültig bis">${until(tt.refreshExpiresAt)}<//>
+          ${owner ? html`
+            <label class="field" style="margin-top:8px"><span>Wie posten?</span>
+              <select value=${tt.mode} onChange=${(e) => act(() => api('/marketing/channels/tiktok', { method: 'PUT', body: { mode: e.target.value } }), 'Gespeichert.')}>
+                <option value="inbox">Als Entwurf in die TikTok-App</option>
+                <option value="direct">Direkt veröffentlichen</option>
+              </select></label>
+            <p class="note" style="margin:-6px 0 10px">${tt.mode === 'direct' ? 'Bis TikTok die App geprüft hat, sind direkte Posts nur für dich sichtbar.' : 'Du bekommst eine Benachrichtigung in TikTok und veröffentlichst dort, dann hier abhaken.'}</p>
+            ${tt.mode === 'direct' ? html`<label class="field"><span>Sichtbarkeit</span>
+              <select value=${tt.privacyLevel} onChange=${(e) => act(() => api('/marketing/channels/tiktok', { method: 'PUT', body: { privacyLevel: e.target.value } }), 'Gespeichert.')}>
+                ${Object.entries(PRIVACY).map(([k, label]) => html`<option value=${k}>${label}</option>`)}
+              </select></label>` : null}` : html`<${Row} label="Modus">${tt.mode === 'direct' ? 'direkt' : 'Entwurf'}<//>`}
+          ${tt.lastError ? html`<p class="note bad">${tt.lastError}</p>` : null}
+          ${owner ? html`<button class="btn small ghost" onClick=${() => confirm('TikTok trennen?') && act(() => api('/marketing/channels/tiktok', { method: 'DELETE' }), 'TikTok getrennt.')}>Trennen</button>` : null}`
+        : html`<p class="note">Nicht verbunden.</p>${tt.lastError ? html`<p class="note bad">${tt.lastError}</p>` : null}
+          ${owner ? html`<button class="btn small" onClick=${() => act(async () => { location.href = (await api('/marketing/channels/tiktok/connect')).url; }, 'Weiter zu TikTok …')}>Mit TikTok verbinden</button>` : null}`}
+      </div>
+    </div>
+    <p class="note" style="margin-top:14px">Freigegebene Videos gehen automatisch im nächsten freien Zeitfenster raus (${data.slots.join(' und ')} Uhr, ein Video pro Fenster) auf jedem verbundenen Kanal. KI-Videos werden dabei als KI-generiert gekennzeichnet. „Jetzt posten“ auf der Karte schickt sofort.</p>`;
+}
+
 function Approvals({ role, onCount }) {
   const [filter, setFilter] = useState('pending');
   const [data, setData] = useState(null);
   const load = useCallback(() => {
-    if (filter === 'characters') return;
+    if (filter === 'characters' || filter === 'channels') return;
     api(`/marketing/drafts?status=${filter}`).then((d) => {
       setData(d);
       onCount(d.counts.pending || 0);
@@ -1131,11 +1214,12 @@ function Approvals({ role, onCount }) {
     <${BudgetCard} owner=${role === 'owner'} />
     <div class="now"><div class="tabs">${Object.entries(APPROVAL_FILTERS).map(([k, label]) => html`<button class=${filter === k ? 'on' : ''} onClick=${() => setFilter(k)}>${label}${counts[k] ? html` <span class=${k === 'pending' ? 'count' : 'muted'}>${counts[k]}</span>` : null}</button>`)}</div></div>
     ${filter === 'characters' ? html`<${Characters} owner=${role === 'owner'} />`
+      : filter === 'channels' ? html`<${Channels} owner=${role === 'owner'} />`
       : !data ? html`<p class="note">Lade …</p>`
       : data.error ? html`<div class="card">Die Entwürfe konnten nicht geladen werden.</div>`
       : data.drafts.length === 0 ? html`<div class="card"><p class="note" style="margin:0">${filter === 'pending' ? 'Nichts zu tun. Der Marketing-Agent legt jeden Morgen neue Videos hier ab.' : 'Nichts hier.'}</p></div>`
       : html`<div class="ads">${data.drafts.map((d) => html`<${AdDraftCard} key=${d.id} draft=${d} owner=${role === 'owner'} onChanged=${load} />`)}</div>`}
-    <p class="note" style="margin-top:16px">Stufe 1: Freigegebene Videos lädst du herunter und postest sie selbst, dann hakst du die Plattform ab. Der Grund beim Verwerfen geht an den Agenten zurück. Links in Beschreibungen sind auf Instagram und TikTok nicht klickbar: Die Links pro Video sind für Story-Sticker und Anzeigen gedacht, im Profil bleibt der Bio-Link.</p>
+    ${['channels', 'characters'].includes(filter) ? null : html`<p class="note" style="margin-top:16px">Freigegebene Videos gehen im nächsten Zeitfenster automatisch auf die verbundenen Kanäle (Tab „Kanäle“); ohne Verbindung lädst du sie herunter, postest selbst und hakst ab. Der Grund beim Verwerfen geht an den Agenten zurück. Links in Beschreibungen sind auf Instagram und TikTok nicht klickbar: Die Links pro Video sind für Story-Sticker und Anzeigen gedacht, im Profil bleibt der Bio-Link.</p>`}
   `;
 }
 
