@@ -98,6 +98,12 @@ module.exports = (io) => {
 
     await Report.create({ reporter: me, reported, momentId, reason, note: str(req.body.note, 500) });
     console.warn(`🚩 Report (${reason})${momentId ? " on a moment" : ""}`);
+    require("../lib/adminPush").tell("reports", {
+      title: "Neue Meldung",
+      body: `${{ spam: "Spam", harassment: "Belästigung", inappropriate: "Unangemessen", other: "Sonstiges" }[reason]}${momentId ? " (ein Moment)" : ""}`,
+      url: "#reports",
+      tag: "reports",
+    });
 
     if (momentId) {
       const reporters = await Report.distinct("reporter", { momentId });
