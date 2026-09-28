@@ -916,9 +916,35 @@ function Waitlist({ role }) {
   if (!data) return html`<div class="card note">Lade Warteliste …</div>`;
   if (data.error) return html`<div class="card">Die Warteliste konnte nicht geladen werden.</div>`;
   const launch = data.launch;
+  const visits = data.visits;
   const conversion = data.confirmed + data.pending ? data.confirmed / (data.confirmed + data.pending) : null;
   return html`
     ${!data.mailConfigured ? html`<div class="card" style="border-color:var(--warning)">E-Mail-Versand ist nicht eingerichtet: Auf Render <b>SMTP_URL</b> und <b>MAIL_FROM</b> setzen, sonst kommen weder Bestätigungs- noch Launch-Mails an.</div>` : null}
+    <div class="section" style="margin-top:0">Landing Page</div>
+    <div class="kpis">
+      <${Kpi} label="Besuche heute" value=${num(visits.today)} sub="Aufrufe der Seite, ohne Neuladen" color="var(--cyan)" />
+      <${Kpi} label="Besuche 7 Tage" value=${num(visits.last7Days)} sub="inklusive heute" />
+      <${Kpi} label="Besuche 30 Tage" value=${num(visits.last30Days)} sub="inklusive heute" color="var(--violet)" />
+      <${Kpi} label="Besuch → Anmeldung" value=${pct(visits.last30Days ? visits.signups30Days / visits.last30Days : null)} sub=${`${num(visits.signups30Days)} bestätigte Anmeldungen (30 Tage)`} color="var(--pink)" />
+    </div>
+    <div class="grid2">
+      <${Chart} title="Besuche pro Tag" subtitle="letzte 30 Tage" series=${visits.byDay} keys=${[{ label: 'Besuche', color: 'var(--violet)', value: (d) => d.count }]} />
+      <div class="card scroll">
+        <h3 style="margin:0 0 2px">Kampagnen</h3>
+        <div class="note" style="margin-bottom:6px">letzte 30 Tage · Anmeldungen: bestätigt</div>
+        ${visits.campaigns.length ? html`<table>
+          <thead><tr><th>Quelle · Kampagne</th><th style="text-align:right">Besuche</th><th style="text-align:right">Anmeld.</th><th style="text-align:right">Quote</th></tr></thead>
+          <tbody>${visits.campaigns.map((c) => html`<tr>
+            <td><strong>${c.source}</strong>${c.campaign ? html`<div class="muted" style="font-size:12px;white-space:normal;overflow-wrap:anywhere">${c.campaign}</div>` : null}</td>
+            <td style="text-align:right">${num(c.visits)}</td><td style="text-align:right">${num(c.signups)}</td>
+            <td style="text-align:right">${pct(c.visits ? c.signups / c.visits : null)}</td>
+          </tr>`)}</tbody>
+        </table>` : html`<p class="note" style="margin:0">Noch keine Besuche.</p>`}
+        <p class="note" style="margin:10px 0 0">Quelle aus <code>utm_source</code>, sonst die Plattform, von der der Besuch kam (z. B. Link in der Instagram-Bio), „empfehlung“ oder „direkt“. Gezählt wird nur eine Zahl pro Tag und Quelle, ohne Cookies und ohne IP.</p>
+      </div>
+    </div>
+
+    <div class="section">Warteliste</div>
     <div class="kpis">
       <${Kpi} label="Bestätigt" value=${num(data.confirmed)} sub=${`${num(data.pending)} warten auf Bestätigung`} color="var(--cyan)" />
       <${Kpi} label="Bestätigungsquote" value=${pct(conversion)} sub="bestätigt / eingetragen (7 Tage)" />

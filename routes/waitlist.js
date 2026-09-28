@@ -40,6 +40,17 @@ function publicRoutes() {
     }
   });
 
+  // POST /waitlist/visit { source?, campaign?, ref? }: the landing page was opened
+  // (a counter per day and source, nothing about the visitor)
+  router.post("/waitlist/visit", limiter(120), async (req, res) => {
+    try {
+      await waitlist.countVisit({ source: req.body?.source, campaign: req.body?.campaign, ref: !!req.body?.ref });
+    } catch (err) {
+      console.error("❌ waitlist visit:", err.message);
+    }
+    res.status(204).end();
+  });
+
   // POST /waitlist/confirm { token }: the link in the confirmation mail
   router.post("/waitlist/confirm", limiter(60), async (req, res) => {
     const status = await waitlist.confirm(req.body?.token, req.ip);
