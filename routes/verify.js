@@ -30,6 +30,16 @@ function reviewCodeFor(phone) {
   return reviewPhone && phone === reviewPhone && /^\d{6,10}$/.test(code) ? code : null;
 }
 
+/** Whether the demo login works, for /api/push-health (never the values). */
+function reviewLoginStatus() {
+  const phone = process.env.REVIEW_PHONE || "";
+  const code = process.env.REVIEW_CODE || "";
+  if (!phone && !code) return "off";
+  if (!normalizePhone(phone)) return "invalid_phone";
+  if (!/^\d{6,10}$/.test(code)) return "invalid_code";
+  return "on";
+}
+
 const sameCode = (a, b) =>
   a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
@@ -130,3 +140,4 @@ router.post("/check", perPhone(10), async (req, res) => {
 });
 
 module.exports = router;
+module.exports.reviewLoginStatus = reviewLoginStatus;
