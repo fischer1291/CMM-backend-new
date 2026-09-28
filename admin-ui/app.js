@@ -978,6 +978,101 @@ function Waitlist({ role }) {
   `;
 }
 
+const TEMPLATE_LABELS = { chat: 'Chat', moment: 'Yap Moment', list: 'Liste' };
+const APPROVAL_FILTERS = { pending: 'Offen', approved: 'Freigegeben', rejected: 'Verworfen' };
+const PLATFORM_LABELS = { instagram: 'Instagram', tiktok: 'TikTok' };
+
+function CopyButton({ text, label = 'Kopieren' }) {
+  const [done, setDone] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setDone(true);
+      setTimeout(() => setDone(false), 1500);
+    } catch {}
+  };
+  return html`<button class="btn small ghost" type="button" onClick=${copy}>${done ? 'Kopiert ✓' : label}</button>`;
+}
+
+/** Caption as it goes on the platform: text, then the hashtags. */
+const postText = (draft, platform) => [draft.captions[platform], draft.hashtags.map((h) => `#${h}`).join(' ')].filter(Boolean).join('\n\n');
+
+function AdDraftCard({ draft, owner, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState(null);
+  const run = async (path, body) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/marketing/drafts/${draft.id}/${path}`, { method: 'POST', body });
+      onChanged();
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const poster = draft.videoUrl ? draft.videoUrl.replace('/video/upload/', '/video/upload/so_2/').replace(/\.mp4$/, '.jpg') : null;
+  return html`<div class="card ad">
+    ${draft.videoUrl ? html`<video src=${draft.videoUrl} poster=${poster} controls playsinline preload="none"></video>` : null}
+    <div class="body">
+      <div class="inline" style="margin-bottom:6px">
+        <span class="pill">${TEMPLATE_LABELS[draft.template] || draft.template}</span>
+        ${draft.seconds ? html`<span class="pill">${draft.seconds} s</span>` : null}
+        ${draft.status === 'posted' ? html`<span class="pill on">gepostet</span>` : null}
+        <span class="muted" style="font-size:12px">${dateTime(draft.createdAt)}</span>
+      </div>
+      <h3 style="margin:0 0 4px">${draft.title}</h3>
+      <div class="note" style="margin-bottom:10px"><code>${draft.campaign}</code></div>
+      ${draft.idea ? html`<p style="margin:0 0 12px;color:var(--text-2)">${draft.idea}</p>` : null}
+      ${Object.keys(PLATFORM_LABELS).map((p) => html`<div class="caption">
+        <div class="inline" style="justify-content:space-between"><span class="label" style="margin:0">${PLATFORM_LABELS[p]}</span><${CopyButton} text=${postText(draft, p)} label="Text kopieren" /></div>
+        <p>${postText(draft, p)}</p>
+        <div class="inline"><span class="note" style="flex:1;min-width:0;overflow-wrap:anywhere">${draft.links[p]}</span><${CopyButton} text=${draft.links[p]} label="Link" /></div>
+      </div>`)}
+      ${draft.feedback ? html`<div class="quote">${draft.status === 'rejected' ? 'Verworfen' : 'Notiz'}: ${draft.feedback}</div>` : null}
+      ${error ? html`<p class="error">${error}</p>` : null}
+      ${draft.status === 'pending' && owner ? (rejecting
+        ? html`<div class="actions" style="margin-top:12px">
+            <input class="reason" placeholder="Was passt nicht? Hilft dem Agenten beim nächsten Mal." value=${reason} onInput=${(e) => setReason(e.target.value)} maxlength="500" />
+            <div class="inline"><button class="btn danger" disabled=${busy} onClick=${() => run('decision', { action: 'reject', feedback: reason })}>Verwerfen</button><button class="btn ghost" onClick=${() => setRejecting(false)}>Abbrechen</button></div>
+          </div>`
+        : html`<div class="inline" style="margin-top:12px"><button class="btn" disabled=${busy} onClick=${() => run('decision', { action: 'approve' })}>Freigeben</button><button class="btn ghost" disabled=${busy} onClick=${() => setRejecting(true)}>Verwerfen …</button></div>`) : null}
+      ${['approved', 'posted'].includes(draft.status) ? html`<div class="inline" style="margin-top:12px">
+        ${draft.downloadUrl ? html`<a class="btn" href=${draft.downloadUrl}>MP4 laden</a>` : null}
+        ${owner ? Object.entries(PLATFORM_LABELS).map(([p, label]) => html`<label class="check" style="margin:0"><input type="checkbox" checked=${!!draft.posted[p]} disabled=${busy} onChange=${(e) => run('posted', { platform: p, posted: e.target.checked })} /> auf ${label} gepostet</label>`) : null}
+      </div>` : null}
+    </div>
+  </div>`;
+}
+
+function Approvals({ role, onCount }) {
+  const [filter, setFilter] = useState('pending');
+  const [data, setData] = useState(null);
+  const load = useCallback(() => {
+    api(`/marketing/drafts?status=${filter}`).then((d) => {
+      setData(d);
+      onCount(d.counts.pending || 0);
+    }).catch(() => setData({ drafts: [], counts: {}, error: true }));
+  }, [filter]);
+  useEffect(() => {
+    setData(null);
+    load();
+  }, [load]);
+  const c = data?.counts || {};
+  const counts = { pending: c.pending, approved: (c.approved || 0) + (c.posted || 0), rejected: c.rejected };
+  return html`
+    <div class="now"><div class="tabs">${Object.entries(APPROVAL_FILTERS).map(([k, label]) => html`<button class=${filter === k ? 'on' : ''} onClick=${() => setFilter(k)}>${label}${counts[k] ? html` <span class=${k === 'pending' ? 'count' : 'muted'}>${counts[k]}</span>` : null}</button>`)}</div></div>
+    ${!data ? html`<p class="note">Lade …</p>`
+      : data.error ? html`<div class="card">Die Entwürfe konnten nicht geladen werden.</div>`
+      : data.drafts.length === 0 ? html`<div class="card"><p class="note" style="margin:0">${filter === 'pending' ? 'Nichts zu tun. Der Marketing-Agent legt jeden Morgen neue Videos hier ab.' : 'Nichts hier.'}</p></div>`
+      : html`<div class="ads">${data.drafts.map((d) => html`<${AdDraftCard} key=${d.id} draft=${d} owner=${role === 'owner'} onChanged=${load} />`)}</div>`}
+    <p class="note" style="margin-top:16px">Stufe 1: Freigegebene Videos lädst du herunter und postest sie selbst, dann hakst du die Plattform ab. Der Grund beim Verwerfen geht an den Agenten zurück. Links in Beschreibungen sind auf Instagram und TikTok nicht klickbar: Die Links pro Video sind für Story-Sticker und Anzeigen gedacht, im Profil bleibt der Bio-Link.</p>
+  `;
+}
+
 // The open page lives in the URL hash (#users/<id>, #support/<ticket>, …), so a
 // reload, the home-screen app coming back and the back button keep it.
 const readRoute = () => {
@@ -990,6 +1085,7 @@ function App() {
   const [route, setRoute] = useState(readRoute);
   const [openReports, setOpenReports] = useState(0);
   const [openTickets, setOpenTickets] = useState(0);
+  const [openApprovals, setOpenApprovals] = useState(0);
   const [momentsOf, setMomentsOf] = useState(null);
 
   useEffect(() => {
@@ -1011,6 +1107,11 @@ function App() {
   }, [state.admin]);
 
   useEffect(() => {
+    if (!state.admin) return;
+    api('/marketing/drafts').then((d) => setOpenApprovals(d.counts.pending || 0)).catch(() => {});
+  }, [state.admin]);
+
+  useEffect(() => {
     const onHash = () => setRoute(readRoute());
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
@@ -1029,7 +1130,7 @@ function App() {
   }
 
   const role = state.admin.role;
-  const tabs = ['dashboard', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'app', ...(role === 'owner' ? ['audit'] : [])];
+  const tabs = ['dashboard', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'approvals', 'app', ...(role === 'owner' ? ['audit'] : [])];
   const tab = tabs.includes(route.tab) ? route.tab : 'dashboard';
   const nav = (next, id = null) => {
     const hash = id ? `#${next}/${encodeURIComponent(id)}` : `#${next}`;
@@ -1061,6 +1162,8 @@ function App() {
     body = html`<${Audit} />`;
   } else if (tab === 'waitlist') {
     body = html`<${Waitlist} role=${role} />`;
+  } else if (tab === 'approvals') {
+    body = html`<${Approvals} role=${role} onCount=${setOpenApprovals} />`;
   } else {
     body = html`<${Dashboard} />`;
   }
@@ -1075,6 +1178,7 @@ function App() {
         <button class=${tab === 'moments' ? 'on' : ''} onClick=${() => { setMomentsOf(null); go('moments'); }}>Moments</button>
         <button class=${tab === 'support' ? 'on' : ''} onClick=${() => go('support')}>Support${openTickets ? html` <span class="count">${openTickets}</span>` : null}</button>` : null}
         <button class=${tab === 'waitlist' ? 'on' : ''} onClick=${() => go('waitlist')}>Warteliste</button>
+        <button class=${tab === 'approvals' ? 'on' : ''} onClick=${() => go('approvals')}>Freigabe${openApprovals ? html` <span class="count">${openApprovals}</span>` : null}</button>
         <button class=${tab === 'app' ? 'on' : ''} onClick=${() => go('app')}>App</button>
         ${role === 'owner' ? html`<button class=${tab === 'audit' ? 'on' : ''} onClick=${() => go('audit')}>Protokoll</button>` : null}
       </div>
