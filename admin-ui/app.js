@@ -980,8 +980,8 @@ function Waitlist({ role }) {
 }
 
 const TEMPLATE_LABELS = { chat: 'Chat', moment: 'Yap Moment', list: 'Liste', hero: 'Hero-Szene' };
-const APPROVAL_FILTERS = { pending: 'Offen', approved: 'Freigegeben', rejected: 'Verworfen', characters: 'Figuren', channels: 'Kanäle' };
-const PUBLISH_STATUS = { scheduled: 'geplant', posting: 'wird gepostet …', processing: 'wird verarbeitet …', posted: 'gepostet', inbox: 'Entwurf in der TikTok-App', failed: 'fehlgeschlagen' };
+const APPROVAL_FILTERS = { pending: 'Offen', approved: 'Freigegeben', rejected: 'Verworfen', settings: 'Einstellungen' };
+const PUBLISH_STATUS = { scheduled: 'geplant', posting: 'wird gepostet …', processing: 'wird verarbeitet …', posted: 'gepostet', inbox: 'in der TikTok-App fertig machen', failed: 'fehlgeschlagen' };
 const euro = (n) => (n == null ? '–' : `${n.toFixed(2).replace('.', ',')} €`);
 const PLATFORM_LABELS = { instagram: 'Instagram', tiktok: 'TikTok' };
 
@@ -998,16 +998,48 @@ function CopyButton({ text, label = 'Kopieren' }) {
 }
 
 /** Caption as it goes on the platform: text, then the hashtags. */
-// Not posted yet on some platform, and nothing already under way there (also
+// Not posted yet on a connected platform, and nothing under way there (also
 // videos approved before automatic posting existed, which have no status)
-const canPostNow = (draft) => Object.keys(PLATFORM_LABELS).some((p) => !draft.posted?.[p] && (!draft.publish?.[p] || ['scheduled', 'failed'].includes(draft.publish[p].status)));
+const waiting = (draft, p, connected) => connected[p] && !draft.posted?.[p] && (!draft.publish?.[p] || ['scheduled', 'failed'].includes(draft.publish[p].status));
+const canPostNow = (draft, connected) => Object.keys(PLATFORM_LABELS).some((p) => waiting(draft, p, connected));
+// Something to do or to watch: otherwise an approved video shows as one line
+const needsLook = (draft, connected) => canPostNow(draft, connected) || Object.values(draft.publish || {}).some((pub) => pub && ['posting', 'processing', 'failed', 'inbox'].includes(pub.status) && !(pub.status === 'inbox' && draft.posted?.tiktok));
 const postText = (draft, platform) => [draft.captions[platform], draft.hashtags.map((h) => `#${h}`).join(' ')].filter(Boolean).join('\n\n');
+const shortDate = (d) => new Date(d).toLocaleDateString('de-DE', { day: 'numeric', month: 'numeric' });
 
-function AdDraftCard({ draft, owner, onChanged }) {
+/** Where a platform stands for an approved video, with what is left to do. */
+function PublishRow({ draft, p, owner, busy, connected, run }) {
+  const label = PLATFORM_LABELS[p];
+  const pub = draft.publish?.[p];
+  const done = !!draft.posted?.[p];
+  const mark = (text) => html`<label class="check"><input type="checkbox" checked=${done} disabled=${busy || !owner} onChange=${(e) => run('posted', { platform: p, posted: e.target.checked })} /> ${text}</label>`;
+  let state;
+  if (pub?.status === 'posted' || (done && !pub)) state = html`<span class="pill on">gepostet</span>${pub?.url ? html` <a href=${pub.url} target="_blank" rel="noopener">ansehen</a>` : null}`;
+  else if (pub?.status === 'inbox') state = done ? html`<span class="pill on">veröffentlicht</span>` : html`<span class="pill todo">${PUBLISH_STATUS.inbox}</span>`;
+  else if (pub) state = html`<span class=${`pill ${pub.status === 'failed' ? 'warn' : ''}`}>${PUBLISH_STATUS[pub.status] || pub.status}</span>${pub.status === 'scheduled' && draft.scheduledAt ? html` <span class="muted">${dateTime(draft.scheduledAt)}</span>` : null}`;
+  else if (connected[p]) state = html`<span class="muted">noch nicht gepostet</span>`;
+  else state = owner ? mark('von Hand gepostet') : html`<span class="muted">nicht verbunden</span>`;
+  return html`<div class="pubrow">
+    <div class="kv"><span>${label}</span><span>${state}</span></div>
+    ${pub?.error && pub.status === 'failed' ? html`<div class="note bad">${pub.error}</div>` : null}
+    ${pub?.status === 'inbox' && !done ? html`<div class="todo">
+      <ol>
+        <li>In TikTok die Benachrichtigung öffnen.</li>
+        <li>Text einfügen <${CopyButton} text=${postText(draft, 'tiktok')} label="Text kopieren" /></li>
+        ${draft.ai ? html`<li>Unter „Weitere Optionen“ <b>KI-generierter Inhalt</b> einschalten.</li>` : null}
+        <li>Veröffentlichen, dann hier abhaken.</li>
+      </ol>
+      ${owner ? mark('auf TikTok veröffentlicht') : null}
+    </div>` : null}
+  </div>`;
+}
+
+function AdDraftCard({ draft, owner, connected, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState('');
   const [error, setError] = useState(null);
+  const [open, setOpen] = useState(false);
   const run = async (path, body) => {
     setBusy(true);
     setError(null);
@@ -1020,29 +1052,50 @@ function AdDraftCard({ draft, owner, onChanged }) {
       setBusy(false);
     }
   };
+  const approved = ['approved', 'posted'].includes(draft.status);
+  // Approved and nothing left to do: one line with the links
+  if (approved && !open && !needsLook(draft, connected)) {
+    return html`<div class="card adline" onClick=${() => setOpen(true)}>
+      <div class="adline-title"><b>${draft.title}</b><span class="muted">${shortDate(draft.decidedAt || draft.createdAt)}</span></div>
+      <div class="inline">${Object.entries(PLATFORM_LABELS).map(([p, label]) => {
+        const pub = draft.publish?.[p];
+        if (pub?.url) return html`<a class="pill on" href=${pub.url} target="_blank" rel="noopener" onClick=${(e) => e.stopPropagation()}>${label} ↗</a>`;
+        if (draft.posted?.[p]) return html`<span class="pill on">${label} ✓</span>`;
+        if (pub?.status === 'scheduled') return html`<span class="pill">${label} ${dateTime(draft.scheduledAt)}</span>`;
+        return null;
+      })}</div>
+    </div>`;
+  }
   const poster = draft.videoUrl ? draft.videoUrl.replace('/video/upload/', '/video/upload/so_2/').replace(/\.mp4$/, '.jpg') : null;
+  // The agent's own checks (bad takes, muted sound) stand out from the idea
+  const [idea, checks] = (draft.idea || '').split(/\n\nPrüfung(?: durch Claude)?: /);
   return html`<div class="card ad">
     ${draft.videoUrl ? html`<video src=${draft.videoUrl} poster=${poster} controls playsinline preload="none"></video>` : null}
     <div class="body">
-      <div class="inline" style="margin-bottom:6px">
+      <div class="inline" style="justify-content:space-between;align-items:baseline;margin-bottom:6px">
+        <h3 style="margin:0">${draft.title}</h3>
+        ${approved ? html`<button class="btn small ghost" onClick=${() => setOpen(false)} hidden=${!open}>Einklappen</button>` : null}
+      </div>
+      <div class="inline" style="margin-bottom:8px">
         <span class="pill">${TEMPLATE_LABELS[draft.template] || draft.template}</span>
-        ${draft.ai ? html`<span class="pill warn" title="Beim Posten auf TikTok und Instagram als KI-generiert kennzeichnen">KI-Szene</span>` : null}
+        ${draft.ai ? html`<span class="pill warn" title="Wird beim Posten als KI-generiert gekennzeichnet">KI</span>` : null}
         ${draft.characters?.length ? html`<span class="pill">${draft.characters.join(', ')}</span>` : null}
-        ${draft.costEur != null ? html`<span class="pill">${euro(draft.costEur)}</span>` : null}
         ${draft.seconds ? html`<span class="pill">${draft.seconds} s</span>` : null}
-        ${draft.status === 'posted' ? html`<span class="pill on">gepostet</span>` : null}
+        ${draft.costEur != null ? html`<span class="pill">${euro(draft.costEur)}</span>` : null}
         <span class="muted" style="font-size:12px">${dateTime(draft.createdAt)}</span>
       </div>
-      <h3 style="margin:0 0 4px">${draft.title}</h3>
-      <div class="note" style="margin-bottom:10px"><code>${draft.campaign}</code></div>
-      ${draft.idea ? html`<p style="margin:0 0 12px;color:var(--text-2)">${draft.idea}</p>` : null}
-      ${draft.ai ? html`<p class="note" style="margin:0 0 12px">Enthält realistische KI-Personen: beim Posten auf TikTok „KI-generierter Inhalt“ und auf Instagram „KI-Info“ einschalten.</p>` : null}
-      ${Object.keys(PLATFORM_LABELS).map((p) => html`<div class="caption">
-        <div class="inline" style="justify-content:space-between"><span class="label" style="margin:0">${PLATFORM_LABELS[p]}</span><${CopyButton} text=${postText(draft, p)} label="Text kopieren" /></div>
-        <p>${postText(draft, p)}</p>
-        <div class="inline"><span class="note" style="flex:1;min-width:0;overflow-wrap:anywhere">${draft.links[p]}</span><${CopyButton} text=${draft.links[p]} label="Link" /></div>
-      </div>`)}
+      ${idea ? html`<p style="margin:0 0 8px;color:var(--text-2)">${idea}</p>` : null}
+      ${checks ? html`<p class="note warn" style="margin:0 0 8px">⚠︎ ${checks}</p>` : null}
       ${draft.feedback ? html`<div class="quote">${draft.status === 'rejected' ? 'Verworfen' : 'Notiz'}: ${draft.feedback}</div>` : null}
+      <details class="texts">
+        <summary><span class="label" style="margin:0">Texte und Hashtags</span><span class="muted">${draft.hashtags.map((h) => `#${h}`).join(' ')}</span></summary>
+        ${Object.keys(PLATFORM_LABELS).map((p) => html`<div class="caption">
+          <div class="inline" style="justify-content:space-between"><span class="label" style="margin:0">${PLATFORM_LABELS[p]}</span><${CopyButton} text=${postText(draft, p)} label="Text kopieren" /></div>
+          <p>${postText(draft, p)}</p>
+          <div class="inline"><span class="note" style="flex:1;min-width:0;overflow-wrap:anywhere">${draft.links[p]}</span><${CopyButton} text=${draft.links[p]} label="Link" /></div>
+        </div>`)}
+        <p class="note" style="margin:0">Links in Captions sind nicht klickbar; die Links pro Video sind für Story-Sticker und Anzeigen.</p>
+      </details>
       ${error ? html`<p class="error">${error}</p>` : null}
       ${draft.status === 'pending' && owner ? (rejecting
         ? html`<div class="actions" style="margin-top:12px">
@@ -1050,27 +1103,27 @@ function AdDraftCard({ draft, owner, onChanged }) {
             <div class="inline"><button class="btn danger" disabled=${busy} onClick=${() => run('decision', { action: 'reject', feedback: reason })}>Verwerfen</button><button class="btn ghost" onClick=${() => setRejecting(false)}>Abbrechen</button></div>
           </div>`
         : html`<div class="inline" style="margin-top:12px"><button class="btn" disabled=${busy} onClick=${() => run('decision', { action: 'approve' })}>Freigeben</button><button class="btn ghost" disabled=${busy} onClick=${() => setRejecting(true)}>Verwerfen …</button></div>`) : null}
-      ${['approved', 'posted'].includes(draft.status) ? html`<div class="publish">
-        ${draft.scheduledAt ? html`<div class="note">Automatisch posten: ${dateTime(draft.scheduledAt)}</div>` : null}
-        ${Object.entries(PLATFORM_LABELS).map(([p, label]) => {
-          const pub = draft.publish?.[p];
-          if (!pub) return owner ? html`<label class="check" style="margin:4px 0"><input type="checkbox" checked=${!!draft.posted[p]} disabled=${busy} onChange=${(e) => run('posted', { platform: p, posted: e.target.checked })} /> auf ${label} von Hand gepostet</label>` : null;
-          return html`<div class="kv"><span>${label}</span><span>
-            <span class=${`pill ${pub.status === 'posted' ? 'on' : pub.status === 'failed' ? 'warn' : ''}`}>${PUBLISH_STATUS[pub.status] || pub.status}</span>
-            ${pub.url ? html` <a href=${pub.url} target="_blank" rel="noopener">ansehen</a>` : null}
-            ${pub.status === 'inbox' && owner ? html` <label class="check" style="display:inline-flex;margin:0"><input type="checkbox" checked=${!!draft.posted[p]} disabled=${busy} onChange=${(e) => run('posted', { platform: p, posted: e.target.checked })} /> dort veröffentlicht</label>` : null}
-          </span></div>
-          ${pub.error ? html`<div class="note bad" style="margin-bottom:4px">${pub.error}</div>` : null}`;
-        })}
+      ${approved ? html`<div class="publish">
+        ${Object.keys(PLATFORM_LABELS).map((p) => html`<${PublishRow} draft=${draft} p=${p} owner=${owner} busy=${busy} connected=${connected} run=${run} />`)}
         <div class="inline" style="margin-top:10px">
+          ${owner && canPostNow(draft, connected) ? html`<button class="btn small" disabled=${busy} onClick=${() => run('publish-now')}>Jetzt posten</button>` : null}
           ${draft.downloadUrl ? html`<a class="btn small ghost" href=${draft.downloadUrl}>MP4 laden</a>` : null}
-          ${owner && canPostNow(draft) ? html`<button class="btn small" disabled=${busy} onClick=${() => run('publish-now')}>Jetzt posten</button>` : null}
         </div>
       </div>` : null}
     </div>
   </div>`;
 }
 
+/** One line above the drafts; the details and the setting are under Einstellungen. */
+function BudgetLine({ onOpen }) {
+  const [b, setB] = useState(null);
+  useEffect(() => { api('/marketing/budget').then((d) => setB(d.budget)).catch(() => {}); }, []);
+  if (!b) return null;
+  const tight = b.spentTodayEur >= b.dailyEur * 0.8 || b.spentWeekEur >= b.weeklyEur * 0.8;
+  return html`<button class=${`budgetline ${tight ? 'tight' : ''}`} onClick=${onOpen}>
+    Budget heute <b>${euro(b.spentTodayEur)}</b> / ${euro(b.dailyEur)} · Woche <b>${euro(b.spentWeekEur)}</b> / ${euro(b.weeklyEur)}
+  </button>`;
+}
 
 function BudgetCard({ owner }) {
   const [data, setData] = useState(null);
@@ -1184,7 +1237,7 @@ function Channels({ owner }) {
                 <option value="inbox">Als Entwurf in die TikTok-App</option>
                 <option value="direct">Direkt veröffentlichen</option>
               </select></label>
-            <p class="note" style="margin:-6px 0 10px">${tt.mode === 'direct' ? 'Bis TikTok die App geprüft hat, sind direkte Posts nur für dich sichtbar.' : 'Du bekommst eine Benachrichtigung in TikTok und veröffentlichst dort, dann hier abhaken.'}</p>
+            <p class="note" style="margin:-6px 0 10px">${tt.mode === 'direct' ? 'Mit Text und KI-Kennzeichnung. Solange TikTok die App prüft (auch im Sandbox-Modus), sind direkte Posts nur für dich sichtbar.' : 'Das Video landet als Entwurf in TikTok. Dort Text einfügen, bei KI-Videos „KI-generierter Inhalt“ einschalten, veröffentlichen und hier abhaken; die Karte sagt dir die Schritte.'}</p>
             ${tt.mode === 'direct' ? html`<label class="field"><span>Sichtbarkeit</span>
               <select value=${tt.privacyLevel} onChange=${(e) => act(() => api('/marketing/channels/tiktok', { method: 'PUT', body: { privacyLevel: e.target.value } }), 'Gespeichert.')}>
                 ${Object.entries(PRIVACY).map(([k, label]) => html`<option value=${k}>${label}</option>`)}
@@ -1195,14 +1248,16 @@ function Channels({ owner }) {
           ${owner ? html`<button class="btn small" onClick=${() => act(async () => { location.href = (await api('/marketing/channels/tiktok/connect')).url; }, 'Weiter zu TikTok …')}>Mit TikTok verbinden</button>` : null}`}
       </div>
     </div>
-    <p class="note" style="margin-top:14px">Freigegebene Videos gehen automatisch im nächsten freien Zeitfenster raus (${data.slots.join(' und ')} Uhr, ein Video pro Fenster) auf jedem verbundenen Kanal. KI-Videos werden dabei als KI-generiert gekennzeichnet. „Jetzt posten“ auf der Karte schickt sofort.</p>`;
+    <p class="note" style="margin-top:14px">Freigegebene Videos gehen automatisch im nächsten freien Zeitfenster raus (${data.slots.join(' und ')} Uhr, ein Video pro Fenster) auf jedem verbundenen Kanal. KI-Videos kennzeichnet das Backend dabei selbst, außer bei TikTok-Entwürfen. „Jetzt posten“ auf der Karte schickt sofort.</p>`;
 }
 
 function Approvals({ role, onCount }) {
+  const owner = role === 'owner';
   const [filter, setFilter] = useState('pending');
   const [data, setData] = useState(null);
+  const [connected, setConnected] = useState({});
   const load = useCallback(() => {
-    if (filter === 'characters' || filter === 'channels') return;
+    if (filter === 'settings') return;
     api(`/marketing/drafts?status=${filter}`).then((d) => {
       setData(d);
       onCount(d.counts.pending || 0);
@@ -1212,18 +1267,29 @@ function Approvals({ role, onCount }) {
     setData(null);
     load();
   }, [load]);
+  useEffect(() => {
+    api('/marketing/channels').then((d) => setConnected({ instagram: !!d.instagram?.connected, tiktok: !!d.tiktok?.connected })).catch(() => {});
+  }, [filter]);
   const c = data?.counts || {};
   const counts = { pending: c.pending, approved: (c.approved || 0) + (c.posted || 0), rejected: c.rejected };
+  const drafts = data?.drafts || [];
+  // Approved: what still needs something first, the finished ones as lines below
+  const sorted = filter === 'approved' ? [...drafts.filter((d) => needsLook(d, connected)), ...drafts.filter((d) => !needsLook(d, connected))] : drafts;
   return html`
-    <${BudgetCard} owner=${role === 'owner'} />
-    <div class="now"><div class="tabs">${Object.entries(APPROVAL_FILTERS).map(([k, label]) => html`<button class=${filter === k ? 'on' : ''} onClick=${() => setFilter(k)}>${label}${counts[k] ? html` <span class=${k === 'pending' ? 'count' : 'muted'}>${counts[k]}</span>` : null}</button>`)}</div></div>
-    ${filter === 'characters' ? html`<${Characters} owner=${role === 'owner'} />`
-      : filter === 'channels' ? html`<${Channels} owner=${role === 'owner'} />`
-      : !data ? html`<p class="note">Lade …</p>`
-      : data.error ? html`<div class="card">Die Entwürfe konnten nicht geladen werden.</div>`
-      : data.drafts.length === 0 ? html`<div class="card"><p class="note" style="margin:0">${filter === 'pending' ? 'Nichts zu tun. Der Marketing-Agent legt jeden Morgen neue Videos hier ab.' : 'Nichts hier.'}</p></div>`
-      : html`<div class="ads">${data.drafts.map((d) => html`<${AdDraftCard} key=${d.id} draft=${d} owner=${role === 'owner'} onChanged=${load} />`)}</div>`}
-    ${['channels', 'characters'].includes(filter) ? null : html`<p class="note" style="margin-top:16px">Freigegebene Videos gehen im nächsten Zeitfenster automatisch auf die verbundenen Kanäle (Tab „Kanäle“); ohne Verbindung lädst du sie herunter, postest selbst und hakst ab. Der Grund beim Verwerfen geht an den Agenten zurück. Links in Beschreibungen sind auf Instagram und TikTok nicht klickbar: Die Links pro Video sind für Story-Sticker und Anzeigen gedacht, im Profil bleibt der Bio-Link.</p>`}
+    <div class="now"><div class="tabs subtabs">${Object.entries(APPROVAL_FILTERS).map(([k, label]) => html`<button class=${filter === k ? 'on' : ''} onClick=${() => setFilter(k)}>${label}${counts[k] ? html` <span class=${k === 'pending' ? 'count' : 'muted'}>${counts[k]}</span>` : null}</button>`)}</div></div>
+    ${filter === 'settings' ? html`
+      <h2 class="section">Budget</h2>
+      <${BudgetCard} owner=${owner} />
+      <h2 class="section">Kanäle</h2>
+      <${Channels} owner=${owner} />
+      <h2 class="section">Figuren</h2>
+      <${Characters} owner=${owner} />`
+    : html`
+      <${BudgetLine} onOpen=${() => setFilter('settings')} />
+      ${!data ? html`<p class="note">Lade …</p>`
+        : data.error ? html`<div class="card">Die Entwürfe konnten nicht geladen werden.</div>`
+        : drafts.length === 0 ? html`<div class="card"><p class="note" style="margin:0">${filter === 'pending' ? 'Nichts zu tun. Der Marketing-Agent legt jeden Morgen neue Videos hier ab.' : 'Nichts hier.'}</p></div>`
+        : html`<div class="ads">${sorted.map((d) => html`<${AdDraftCard} key=${d.id} draft=${d} owner=${owner} connected=${connected} onChanged=${load} />`)}</div>`}`}
   `;
 }
 
