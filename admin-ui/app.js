@@ -1061,7 +1061,8 @@ function MailStatus({ mail, owner, onChanged }) {
       <${Row} label="Server">${mail.server ? `${mail.server.host}:${mail.server.port}${mail.server.secure ? ' (SSL)' : ''}, Nutzer ${mail.server.user || '–'}` : 'SMTP_URL nicht lesbar'}<//>
       <${Row} label="Absender">${mail.from}<//>
       <${Row} label="Zuletzt gesendet">${mail.lastOkAt ? dateTime(mail.lastOkAt) : '– (seit dem letzten Neustart)'}<//>
-      ${mail.lastError ? html`<${Row} label="Letzter Fehler">${dateTime(mail.lastError.at)}<//><p class="note bad" style="margin:4px 0 0;overflow-wrap:anywhere">${mail.lastError.message}</p>` : null}`}
+      ${mail.lastError ? html`<${Row} label="Letzter Fehler">${dateTime(mail.lastError.at)}<//><p class="note bad" style="margin:4px 0 0;overflow-wrap:anywhere">${mail.lastError.message}</p>` : null}
+      ${mail.lastRejected ? html`<p class="note" style="margin:6px 0 0;overflow-wrap:anywhere">Zuletzt abgelehnte Adresse (${dateTime(mail.lastRejected.at)}): ${mail.lastRejected.message}. Das liegt an der Adresse, nicht am Versand: Sie wird nicht eingetragen.</p>` : null}`}
     ${mail.waitingForMail ? html`<p class="note warn" style="margin:8px 0 0">${num(mail.waitingForMail)} ${mail.waitingForMail === 1 ? 'Anmeldung wartet' : 'Anmeldungen warten'} auf die Bestätigungsmail. Sie geht automatisch raus (alle 10 Minuten ein Versuch), sobald der Versand klappt.</p>` : null}
     ${result ? html`<p class=${result.error ? 'error' : 'flash'} style="margin:8px 0 0">${result.error || result.text}</p>` : null}
     ${owner && mail.configured ? html`<div class="inline" style="margin-top:10px">

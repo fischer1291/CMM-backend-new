@@ -224,10 +224,34 @@ test("sign-up while the mail provider fails: kept, the owner hears, the mail fol
   assert.equal((await request(ctx.app).post("/admin/mail/check").set(admin(cookie)).expect(200)).body.ok, true);
 
   // Still failing: nothing sent, still waiting
-  assert.deepEqual(await resendMissing(), { sent: 0, failed: true, waiting: 1 });
+  assert.deepEqual(await resendMissing(), { sent: 0, dropped: 0, failed: true, waiting: 1 });
   // Provider works again: the mail goes out once
   fakes.failMailTo = null;
-  assert.deepEqual(await resendMissing(), { sent: 1, failed: false, waiting: 0 });
+  assert.deepEqual(await resendMissing(), { sent: 1, dropped: 0, failed: false, waiting: 0 });
   assert.deepEqual(fakes.mails.map((m) => m.to), ["pia@example.com"]);
-  assert.deepEqual(await resendMissing(), { sent: 0, failed: false, waiting: 0 });
+  assert.deepEqual(await resendMissing(), { sent: 0, dropped: 0, failed: false, waiting: 0 });
+});
+
+test("addresses that can't receive mail: refused at sign-up, dropped by the resend job without blocking it", async () => {
+  const WaitlistEntry = require("../models/WaitlistEntry");
+  const { resendMissing } = require("../lib/waitlist");
+  const mailer = require("../lib/mailer");
+  // A domain without mail (DNS): refused before anything is stored
+  const typo = await request(ctx.app).post("/waitlist").send({ email: "lea@nomail.test" }).expect(400);
+  assert.equal(typo.body.error, "undeliverable");
+  // The server refuses the recipient: refused, nothing kept, no alarm
+  fakes.rejectMailTo = "gone@example.com";
+  const gone = await request(ctx.app).post("/waitlist").send({ email: "gone@example.com" }).expect(400);
+  assert.equal(gone.body.error, "undeliverable");
+  assert.equal(await WaitlistEntry.countDocuments({ email: "gone@example.com" }), 0);
+  assert.match(mailer.status().lastRejected.message, /556/);
+
+  // Waiting for their mail: a dead address first, then a real one
+  await WaitlistEntry.create({ email: "dead@example.com", code: "DEAD2345", token: "d".repeat(48), createdAt: new Date(Date.now() - 60_000) });
+  await WaitlistEntry.create({ email: "real@example.com", code: "REAL2345", token: "r".repeat(48) });
+  fakes.rejectMailTo = "dead@example.com";
+  fakes.mails.length = 0;
+  assert.deepEqual(await resendMissing(), { sent: 1, dropped: 1, failed: false, waiting: 0 });
+  assert.deepEqual(fakes.mails.map((m) => m.to), ["real@example.com"]);
+  assert.equal(await WaitlistEntry.countDocuments({ email: "dead@example.com" }), 0);
 });
