@@ -139,3 +139,26 @@ test("admin push: a support message from the app arrives as a push", async () =>
   assert.equal(sent[0].payload.body, "Anrufe klingeln nicht");
   assert.equal(sent[0].payload.url, `#support/${opened.body.ticket.id}`);
 });
+
+test("today: numbers so far next to last week, and what is waiting (by role)", async () => {
+  const cookie = await ownerCookie();
+  const LandingVisit = require("../models/LandingVisit");
+  const WaitlistEntry = require("../models/WaitlistEntry");
+  const { localParts, shiftDateKey } = require("../lib/localTime");
+  const day = localParts(new Date(), "Europe/Berlin").dateKey;
+  await LandingVisit.create({ day, source: "tiktok", campaign: "", visits: 7 });
+  await LandingVisit.create({ day: shiftDateKey(day, -7), source: "direkt", campaign: "", visits: 3 });
+  await WaitlistEntry.create({ email: "a@example.com", code: "AAAA2222", token: "t".repeat(48), status: "confirmed", confirmedAt: new Date() });
+  await AdDraft.create({ campaign: "yap-0929-c", title: "C", template: "chat", status: "pending" });
+
+  const data = (await request(ctx.app).get("/admin/today").set(admin(cookie)).expect(200)).body;
+  assert.equal(data.day, day);
+  assert.equal(data.today.visits, 7);
+  assert.equal(data.lastWeekDay.visits, 3);
+  assert.equal(data.today.waitlist, 1);
+  assert.equal(typeof data.today.newUsers, "number");
+  assert.deepEqual(data.todo, { approvals: 1, support: 0, reports: 0 });
+
+  await Admin.updateOne({ email: EMAIL }, { role: "viewer" });
+  assert.equal((await request(ctx.app).get("/admin/today").set(admin(cookie)).expect(200)).body.todo, null);
+});
