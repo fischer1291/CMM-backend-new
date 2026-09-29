@@ -1034,10 +1034,64 @@ function PublishRow({ draft, p, owner, busy, connected, run }) {
   </div>`;
 }
 
+// Quick reasons for a rejection; they go back to the agent with the rest
+const REJECT_REASONS = ['Hook zu schwach', 'Text zu lang', 'Wirkt zu werblich', 'Person passt nicht', 'Bild- oder Videofehler', 'Thema passt nicht'];
+const TEXT_ERRORS = {
+  too_many_hashtags: 'Höchstens 5 Hashtags (Grenze von Instagram).',
+  invalid_hashtag: 'Hashtags nur aus Buchstaben, Ziffern und _.',
+  empty_caption: 'Beide Texte brauchen Inhalt.',
+  already_posting: 'Schon unterwegs oder gepostet: die Texte bleiben so.',
+  not_editable: 'Dieses Video lässt sich nicht mehr bearbeiten.',
+};
+// Texts can change until the video is on its way
+const editable = (draft) => ['pending', 'approved'].includes(draft.status) && !Object.keys(PLATFORM_LABELS).some((p) => draft.posted?.[p] || ['posting', 'processing', 'posted', 'inbox'].includes(draft.publish?.[p]?.status));
+
+/** Captions and hashtags, changed before posting. */
+function TextEditor({ draft, onSaved, onCancel }) {
+  const [ig, setIg] = useState(draft.captions.instagram);
+  const [tt, setTt] = useState(draft.captions.tiktok);
+  const [tags, setTags] = useState(draft.hashtags.map((h) => `#${h}`).join(' '));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { draft: saved } = await api(`/marketing/drafts/${draft.id}/texts`, { method: 'PUT', body: { captions: { instagram: ig, tiktok: tt }, hashtags: tags } });
+      onSaved(saved);
+    } catch (e) {
+      setError(TEXT_ERRORS[e.code] || message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return html`<div class="texteditor">
+    <label class="field"><span>Instagram</span><textarea rows="4" maxlength="2200" value=${ig} onInput=${(e) => setIg(e.target.value)}></textarea></label>
+    <label class="field"><span>TikTok</span><textarea rows="3" maxlength="2200" value=${tt} onInput=${(e) => setTt(e.target.value)}></textarea></label>
+    <label class="field"><span>Hashtags (höchstens 5)</span><input value=${tags} onInput=${(e) => setTags(e.target.value)} autocapitalize="off" autocorrect="off" /></label>
+    ${error ? html`<p class="error">${error}</p>` : null}
+    <div class="inline"><button class="btn small" disabled=${busy} onClick=${save}>Speichern</button><button class="btn small ghost" disabled=${busy} onClick=${onCancel}>Abbrechen</button></div>
+  </div>`;
+}
+
+/** Why not: tap reasons, optionally add a sentence. */
+function RejectPicker({ busy, onReject, onCancel }) {
+  const [picked, setPicked] = useState([]);
+  const [note, setNote] = useState('');
+  const toggle = (r) => setPicked(picked.includes(r) ? picked.filter((x) => x !== r) : [...picked, r]);
+  const feedback = [picked.join(', '), note.trim()].filter(Boolean).join('. ');
+  return html`<div class="rejectpicker">
+    <div class="label">Was passt nicht?</div>
+    <div class="chips">${REJECT_REASONS.map((r) => html`<button type="button" class=${`chip ${picked.includes(r) ? 'on' : ''}`} onClick=${() => toggle(r)}>${r}</button>`)}</div>
+    <input class="reason" placeholder="Noch etwas? (optional, hilft dem Agenten)" value=${note} onInput=${(e) => setNote(e.target.value)} maxlength="400" />
+    <div class="inline"><button class="btn danger" disabled=${busy} onClick=${() => onReject(feedback)}>Verwerfen</button><button class="btn ghost" disabled=${busy} onClick=${onCancel}>Abbrechen</button></div>
+  </div>`;
+}
+
 function AdDraftCard({ draft, owner, connected, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
-  const [reason, setReason] = useState('');
+  const [editing, setEditing] = useState(false);
   const [error, setError] = useState(null);
   const [open, setOpen] = useState(false);
   const run = async (path, body) => {
@@ -1095,13 +1149,14 @@ function AdDraftCard({ draft, owner, connected, onChanged }) {
           <div class="inline"><span class="note" style="flex:1;min-width:0;overflow-wrap:anywhere">${draft.links[p]}</span><${CopyButton} text=${draft.links[p]} label="Link" /></div>
         </div>`)}
         <p class="note" style="margin:0">Links in Captions sind nicht klickbar; die Links pro Video sind für Story-Sticker und Anzeigen.</p>
+        ${owner && editable(draft) ? (editing
+          ? html`<${TextEditor} draft=${draft} onSaved=${() => { setEditing(false); onChanged(); }} onCancel=${() => setEditing(false)} />`
+          : html`<button class="btn small ghost" style="margin-top:8px" onClick=${() => setEditing(true)}>Texte bearbeiten</button>`) : null}
+        ${draft.edited ? html`<p class="note" style="margin:8px 0 0">Von Hand angepasst (${draft.edited.by}).</p>` : null}
       </details>
       ${error ? html`<p class="error">${error}</p>` : null}
       ${draft.status === 'pending' && owner ? (rejecting
-        ? html`<div class="actions" style="margin-top:12px">
-            <input class="reason" placeholder="Was passt nicht? Hilft dem Agenten beim nächsten Mal." value=${reason} onInput=${(e) => setReason(e.target.value)} maxlength="500" />
-            <div class="inline"><button class="btn danger" disabled=${busy} onClick=${() => run('decision', { action: 'reject', feedback: reason })}>Verwerfen</button><button class="btn ghost" onClick=${() => setRejecting(false)}>Abbrechen</button></div>
-          </div>`
+        ? html`<${RejectPicker} busy=${busy} onReject=${(feedback) => run('decision', { action: 'reject', feedback })} onCancel=${() => setRejecting(false)} />`
         : html`<div class="inline" style="margin-top:12px"><button class="btn" disabled=${busy} onClick=${() => run('decision', { action: 'approve' })}>Freigeben</button><button class="btn ghost" disabled=${busy} onClick=${() => setRejecting(true)}>Verwerfen …</button></div>`) : null}
       ${approved ? html`<div class="publish">
         ${Object.keys(PLATFORM_LABELS).map((p) => html`<${PublishRow} draft=${draft} p=${p} owner=${owner} busy=${busy} connected=${connected} run=${run} />`)}
@@ -1251,11 +1306,111 @@ function Channels({ owner }) {
     <p class="note" style="margin-top:14px">Freigegebene Videos gehen automatisch im nächsten freien Zeitfenster raus (${data.slots.join(' und ')} Uhr, ein Video pro Fenster) auf jedem verbundenen Kanal. KI-Videos kennzeichnet das Backend dabei selbst, außer bei TikTok-Entwürfen. „Jetzt posten“ auf der Karte schickt sofort.</p>`;
 }
 
+/**
+ * The pending videos one by one, made for the phone: the video big, the
+ * decision in thumb reach, then straight to the next one.
+ */
+function FocusReview({ drafts, owner, onChanged, onList }) {
+  const [done, setDone] = useState([]);
+  const [skipped, setSkipped] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [error, setError] = useState(null);
+  const [local, setLocal] = useState({}); // texts saved here, before the list reloads
+  const left = drafts.filter((d) => !done.includes(d.id));
+  // Skipped ones come last
+  const queue = [...left.filter((d) => !skipped.includes(d.id)), ...left.filter((d) => skipped.includes(d.id))];
+  const current = queue[0] && { ...queue[0], ...(local[queue[0].id] || {}) };
+  // Decided ones drop out of the list when it reloads: count them separately
+  const total = done.length + left.length;
+  const position = done.length + 1;
+
+  const decide = async (action, feedback) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/marketing/drafts/${current.id}/decision`, { method: 'POST', body: { action, feedback } });
+      setDone([...done, current.id]);
+      setRejecting(false);
+      setEditing(false);
+      window.scrollTo(0, 0);
+      onChanged();
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const skip = () => {
+    setSkipped([...skipped.filter((id) => id !== current.id), current.id]);
+    setRejecting(false);
+    setEditing(false);
+    window.scrollTo(0, 0);
+  };
+
+  if (!current) {
+    return html`<div class="card focus-done">
+      <div style="font-size:44px">🎉</div>
+      <h3 style="margin:8px 0 4px">${done.length ? 'Alles durch' : 'Nichts zu tun'}</h3>
+      <p class="note" style="margin:0 0 14px">${done.length ? 'Freigegebene Videos gehen im nächsten Zeitfenster automatisch raus.' : 'Gerade wartet nichts. Der Marketing-Agent legt jeden Morgen neue Videos hier ab.'}</p>
+      <button class="btn ghost" onClick=${onList}>Zur Liste</button>
+    </div>`;
+  }
+  const poster = current.videoUrl ? current.videoUrl.replace('/video/upload/', '/video/upload/so_2/').replace(/\.mp4$/, '.jpg') : null;
+  const [idea, checks] = (current.idea || '').split(/\n\nPrüfung(?: durch Claude)?: /);
+  return html`<div class="focus">
+    <div class="focus-head">
+      <span class="muted">${position} von ${total}</span>
+      <button class="btn small ghost" onClick=${onList}>Als Liste</button>
+    </div>
+    ${current.videoUrl ? html`<video key=${current.id} class="focus-video" src=${current.videoUrl} poster=${poster} controls playsinline preload="metadata"></video>` : null}
+    <h3 style="margin:12px 0 6px">${current.title}</h3>
+    <div class="inline" style="margin-bottom:8px">
+      <span class="pill">${TEMPLATE_LABELS[current.template] || current.template}</span>
+      ${current.ai ? html`<span class="pill warn">KI</span>` : null}
+      ${current.seconds ? html`<span class="pill">${current.seconds} s</span>` : null}
+      ${current.costEur != null ? html`<span class="pill">${euro(current.costEur)}</span>` : null}
+    </div>
+    ${checks ? html`<p class="note warn" style="margin:0 0 8px">⚠︎ ${checks}</p>` : null}
+    ${idea ? html`<p class="note" style="margin:0 0 10px">${idea}</p>` : null}
+    ${editing
+      ? html`<${TextEditor} draft=${current} onSaved=${(saved) => { setLocal({ ...local, [saved.id]: { captions: saved.captions, hashtags: saved.hashtags } }); setEditing(false); onChanged(); }} onCancel=${() => setEditing(false)} />`
+      : html`<div class="caption focus-caption" onClick=${() => owner && setEditing(true)}>
+          <div class="inline" style="justify-content:space-between"><span class="label" style="margin:0">Instagram</span>${owner ? html`<span class="note">Tippen zum Bearbeiten</span>` : null}</div>
+          <p>${postText(current, 'instagram')}</p>
+        </div>`}
+    ${error ? html`<p class="error">${error}</p>` : null}
+    ${owner ? html`<div class="focus-actions">
+      ${rejecting
+        ? html`<${RejectPicker} busy=${busy} onReject=${(feedback) => decide('reject', feedback)} onCancel=${() => setRejecting(false)} />`
+        : html`<div class="focus-buttons">
+            <button class="btn ghost big" disabled=${busy} onClick=${() => setRejecting(true)}>Nein</button>
+            <button class="btn ghost" disabled=${busy || queue.length < 2} onClick=${skip} title="Später">Später</button>
+            <button class="btn big" disabled=${busy} onClick=${() => decide('approve')}>Posten</button>
+          </div>`}
+    </div>` : null}
+  </div>`;
+}
+
 function Approvals({ role, onCount }) {
   const owner = role === 'owner';
   const [filter, setFilter] = useState('pending');
   const [data, setData] = useState(null);
   const [connected, setConnected] = useState({});
+  // One by one on the phone, as a list on bigger screens; the choice is kept
+  const [focus, setFocus] = useState(() => {
+    try {
+      const saved = localStorage.getItem('yap-focus');
+      if (saved) return saved === '1';
+    } catch {}
+    return window.matchMedia('(max-width: 600px)').matches;
+  });
+  const setFocusKept = (on) => {
+    setFocus(on);
+    try { localStorage.setItem('yap-focus', on ? '1' : '0'); } catch {}
+    window.scrollTo(0, 0);
+  };
   const load = useCallback(() => {
     if (filter === 'settings') return;
     api(`/marketing/drafts?status=${filter}`).then((d) => {
@@ -1288,8 +1443,10 @@ function Approvals({ role, onCount }) {
       <${BudgetLine} onOpen=${() => setFilter('settings')} />
       ${!data ? html`<p class="note">Lade …</p>`
         : data.error ? html`<div class="card">Die Entwürfe konnten nicht geladen werden.</div>`
+        : filter === 'pending' && focus ? html`<${FocusReview} drafts=${drafts} owner=${owner} onChanged=${load} onList=${() => setFocusKept(false)} />`
         : drafts.length === 0 ? html`<div class="card"><p class="note" style="margin:0">${filter === 'pending' ? 'Nichts zu tun. Der Marketing-Agent legt jeden Morgen neue Videos hier ab.' : 'Nichts hier.'}</p></div>`
-        : html`<div class="ads">${sorted.map((d) => html`<${AdDraftCard} key=${d.id} draft=${d} owner=${owner} connected=${connected} onChanged=${load} />`)}</div>`}`}
+        : html`${filter === 'pending' && drafts.length > 1 ? html`<div class="inline" style="justify-content:flex-end;margin-bottom:10px"><button class="btn small ghost" onClick=${() => setFocusKept(true)}>Nacheinander prüfen</button></div>` : null}
+          <div class="ads">${sorted.map((d) => html`<${AdDraftCard} key=${d.id} draft=${d} owner=${owner} connected=${connected} onChanged=${load} />`)}</div>`}`}
   `;
 }
 

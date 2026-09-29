@@ -143,3 +143,35 @@ test("console: viewers may look but not decide", async () => {
   await request(ctx.app).get("/admin/marketing/drafts").set(admin(viewerCookie)).expect(200);
   await request(ctx.app).post(`/admin/marketing/drafts/${draft.id}/decision`).set(admin(viewerCookie)).send({ action: "approve" }).expect(403);
 });
+
+test("console: owners rewrite captions and hashtags before posting; the agent sees theirs and its own", async () => {
+  const cookie = await ownerCookie();
+  const { id } = await draftWithVideo();
+  const url = `/admin/marketing/drafts/${id}/texts`;
+  await request(ctx.app).put(url).set(admin(cookie)).send({ hashtags: "#wannayap #zu viele #a #b #c #d" }).expect(400);
+  await request(ctx.app).put(url).set(admin(cookie)).send({ hashtags: ["ok", "nicht ok!"] }).expect(400);
+  await request(ctx.app).put(url).set(admin(cookie)).send({ captions: { instagram: "" } }).expect(400);
+  const before = await AdDraft.findById(id).lean();
+
+  const edited = (await request(ctx.app)
+    .put(url)
+    .set(admin(cookie))
+    .send({ captions: { instagram: "Neu: ruf einfach an. Link in Bio." }, hashtags: "#WannaYap, #ersti  semesterstart" })
+    .expect(200)).body.draft;
+  assert.equal(edited.captions.instagram, "Neu: ruf einfach an. Link in Bio.");
+  assert.equal(edited.captions.tiktok, before.captions.tiktok, "untouched text stays");
+  assert.deepEqual(edited.hashtags, ["wannayap", "ersti", "semesterstart"]);
+  assert.equal(edited.edited.by, "owner@example.com");
+
+  // A second edit keeps the agent's original
+  await request(ctx.app).put(url).set(admin(cookie)).send({ captions: { tiktok: "kurz und neu" } }).expect(200);
+  const ctxRes = await request(ctx.app).get("/marketing/context").set(AGENT).expect(200);
+  const seen = ctxRes.body.drafts.find((d) => d.title === DRAFT.title).edited;
+  assert.equal(seen.before.captions.instagram, before.captions.instagram);
+  assert.deepEqual(seen.before.hashtags, before.hashtags);
+  assert.equal(seen.captions.tiktok, "kurz und neu");
+
+  // Once it is out, the texts stay
+  await AdDraft.updateOne({ _id: id }, { status: "approved", "publish.instagram.status": "posted" });
+  await request(ctx.app).put(url).set(admin(cookie)).send({ captions: { tiktok: "zu spät" } }).expect(409);
+});

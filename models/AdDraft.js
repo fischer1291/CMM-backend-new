@@ -39,6 +39,14 @@ const adDraftSchema = new mongoose.Schema({
   decidedBy: { type: String, default: null },
   decidedAt: { type: Date, default: null },
   feedback: { type: String, default: null },
+  // Texts changed in the console before posting: who and when, and the
+  // agent's original captions and hashtags (it learns from the difference)
+  edited: {
+    at: { type: Date, default: null },
+    by: { type: String, default: null },
+    captions: { instagram: String, tiktok: String },
+    hashtags: { type: [String], default: undefined },
+  },
   posted: {
     instagram: { type: Date, default: null },
     tiktok: { type: Date, default: null },

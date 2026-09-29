@@ -209,6 +209,14 @@ function adminRoutes() {
   });
 
   // POST /admin/marketing/drafts/:id/posted { platform: instagram|tiktok, posted: true|false }
+  // PUT /admin/marketing/drafts/:id/texts { captions: { instagram, tiktok }, hashtags }
+  router.put("/admin/marketing/drafts/:id/texts", requireAdmin("owner"), async (req, res) => {
+    const result = await marketing.editTexts(req.params.id, req.body, req.admin.email);
+    if (result.error) return res.status(result.error === "not_editable" || result.error === "already_posting" ? 409 : 400).json({ success: false, error: result.error });
+    await audit(req, "ad_texts_edited", { target: result.draft.campaign });
+    res.json({ success: true, draft: result.draft });
+  });
+
   router.post("/admin/marketing/drafts/:id/posted", requireAdmin("owner"), async (req, res) => {
     const result = await marketing.markPosted(req.params.id, req.body?.platform, req.body?.posted !== false);
     if (result.error) return res.status(result.error === "invalid_platform" ? 400 : 409).json({ success: false, error: result.error });
