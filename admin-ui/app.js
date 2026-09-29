@@ -996,6 +996,47 @@ function PlusPanel({ role }) {
 
 // --- App -------------------------------------------------------------------------
 
+// The way from visit to sign-up, and where it breaks off
+const FUNNEL_STEPS = [
+  ['visits', 'Besuche', 'haben die Seite geöffnet'],
+  ['engaged', 'Gelesen', '15 s geblieben oder weiter nach unten gescrollt'],
+  ['formStarted', 'Formular angefangen', 'ins E-Mail-Feld getippt'],
+  ['submitted', 'Abgeschickt', 'Anmeldung gesendet'],
+  ['confirmed', 'Bestätigt', 'Link in der Mail geklickt'],
+];
+
+/** Where most people drop off, in plain words. */
+function funnelHint(f, mailConfigured) {
+  if (!f.visits) return 'Noch keine Besuche. Erst Traffic, dann lässt sich der Weg auswerten.';
+  const rate = (a, b) => (b ? a / b : 0);
+  if (f.submitted && !f.confirmed) return mailConfigured
+    ? 'Anmeldungen kommen an, aber niemand bestätigt: Landet die Bestätigungsmail im Spam? Einmal selbst eintragen und prüfen (auch Absender, SPF/DKIM).'
+    : 'Anmeldungen kommen an, aber der Mail-Versand ist nicht eingerichtet: ohne Bestätigungsmail keine Bestätigung.';
+  if (f.visits >= 20 && rate(f.engaged, f.visits) < 0.3) return 'Die meisten springen sofort ab: Passt die Seite zu dem, was die Anzeige verspricht? Der erste Bildschirm muss es in 3 Sekunden klarmachen.';
+  if (f.engaged >= 10 && rate(f.formStarted, f.engaged) < 0.15) return 'Gelesen wird, aber kaum jemand fängt an, sich einzutragen: Warum jetzt eintragen? Den Vorteil (Launch-Link, Abzeichen, Plus-Monat) und das Formular weiter nach oben.';
+  if (f.formStarted >= 5 && rate(f.submitted, f.formStarted) < 0.5) return 'Viele fangen an und brechen ab: Formular und Einwilligungstext vereinfachen, Fehlermeldungen prüfen.';
+  if (f.submitted >= 5 && rate(f.confirmed, f.submitted) < 0.5) return 'Viele bestätigen die Mail nicht: Betreff und Absender prüfen, Spam-Ordner, und nach dem Absenden deutlicher sagen, dass eine Mail kommt.';
+  return null;
+}
+
+function Funnel({ funnel, mailConfigured }) {
+  const top = funnel.visits || 0;
+  const hint = funnelHint(funnel, mailConfigured);
+  return html`<div class="card funnel" style="margin-bottom:12px">
+    <h3 style="margin:0 0 2px">Vom Besuch zur Anmeldung</h3>
+    <div class="note" style="margin-bottom:10px">letzte 30 Tage · „Gelesen“ und „Formular“ zählen erst seit dem 29.09.2026</div>
+    ${FUNNEL_STEPS.map(([key, label, sub], i) => {
+      const n = funnel[key] || 0;
+      const prev = i ? funnel[FUNNEL_STEPS[i - 1][0]] || 0 : null;
+      return html`<div class="fstep">
+        <div class="fhead"><span><b>${label}</b> <span class="muted">${sub}</span></span><span><b>${num(n)}</b>${prev !== null ? html` <span class="muted">${pct(prev ? n / prev : null)}</span>` : null}</span></div>
+        <div class="bar"><i style=${`width:${top ? Math.max(2, (n / top) * 100) : 0}%`}></i></div>
+      </div>`;
+    })}
+    ${hint ? html`<p class="note warn" style="margin:10px 0 0">💡 ${hint}</p>` : null}
+  </div>`;
+}
+
 function Waitlist({ role }) {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -1034,16 +1075,17 @@ function Waitlist({ role }) {
       <${Kpi} label="Besuche 30 Tage" value=${num(visits.last30Days)} sub="inklusive heute" color="var(--violet)" />
       <${Kpi} label="Besuch → Anmeldung" value=${pct(visits.last30Days ? visits.signups30Days / visits.last30Days : null)} sub=${`${num(visits.signups30Days)} bestätigte Anmeldungen (30 Tage)`} color="var(--pink)" />
     </div>
+    ${visits.funnel ? html`<${Funnel} funnel=${visits.funnel} mailConfigured=${data.mailConfigured} />` : null}
     <div class="grid2">
       <${Chart} title="Besuche pro Tag" subtitle="letzte 30 Tage" series=${visits.byDay} keys=${[{ label: 'Besuche', color: 'var(--violet)', value: (d) => d.count }]} />
       <div class="card scroll">
         <h3 style="margin:0 0 2px">Kampagnen</h3>
         <div class="note" style="margin-bottom:6px">letzte 30 Tage · Anmeldungen: bestätigt</div>
         ${visits.campaigns.length ? html`<table>
-          <thead><tr><th>Quelle · Kampagne</th><th style="text-align:right">Besuche</th><th style="text-align:right">Anmeld.</th><th style="text-align:right">Quote</th></tr></thead>
+          <thead><tr><th>Quelle · Kampagne</th><th style="text-align:right">Besuche</th><th style="text-align:right" title="15 s geblieben oder gescrollt">Gelesen</th><th style="text-align:right" title="ins E-Mail-Feld getippt">Formular</th><th style="text-align:right">Gesendet</th><th style="text-align:right">Bestätigt</th><th style="text-align:right">Quote</th></tr></thead>
           <tbody>${visits.campaigns.map((c) => html`<tr>
             <td><strong>${c.source}</strong>${c.campaign ? html`<div class="muted" style="font-size:12px;white-space:normal;overflow-wrap:anywhere">${c.campaign}</div>` : null}</td>
-            <td style="text-align:right">${num(c.visits)}</td><td style="text-align:right">${num(c.signups)}</td>
+            <td style="text-align:right">${num(c.visits)}</td><td style="text-align:right">${num(c.engaged)}</td><td style="text-align:right">${num(c.formStarted)}</td><td style="text-align:right">${num(c.submitted)}</td><td style="text-align:right">${num(c.signups)}</td>
             <td style="text-align:right">${pct(c.visits ? c.signups / c.visits : null)}</td>
           </tr>`)}</tbody>
         </table>` : html`<p class="note" style="margin:0">Noch keine Besuche.</p>`}

@@ -244,3 +244,12 @@ img.ref.chosen { border-color: var(--cyan); }
   .today-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .today .tile .value { font-size: 24px; }
 }
+
+/* Vom Besuch zur Anmeldung */
+.funnel .fstep { margin: 8px 0; }
+.funnel .fhead { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; }
+.funnel .fhead .muted { font-size: 12px; }
+.funnel .bar { height: 8px; border-radius: 4px; background: var(--surface-strong); overflow: hidden; margin-top: 4px; }
+.funnel .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--cyan), var(--violet), var(--pink)); }
+.card .note.warn { color: var(--warning); }
+.funnel .fhead > span:last-child { white-space: nowrap; }

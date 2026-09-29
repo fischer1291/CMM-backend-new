@@ -51,6 +51,19 @@ function publicRoutes() {
     res.status(204).end();
   });
 
+  // POST /waitlist/event { step: "engaged" | "form", source?, campaign?, ref? }:
+  // a step towards a sign-up on the landing page (counters, like visits)
+  router.post("/waitlist/event", limiter(120), async (req, res) => {
+    const step = req.body?.step;
+    if (!["engaged", "form"].includes(step)) return res.status(400).json({ success: false, error: "invalid_step" });
+    try {
+      await waitlist.countStep(step, { source: req.body?.source, campaign: req.body?.campaign, ref: !!req.body?.ref });
+    } catch (err) {
+      console.error("❌ waitlist event:", err.message);
+    }
+    res.status(204).end();
+  });
+
   // POST /waitlist/confirm { token }: the link in the confirmation mail
   router.post("/waitlist/confirm", limiter(60), async (req, res) => {
     const status = await waitlist.confirm(req.body?.token, req.ip);
