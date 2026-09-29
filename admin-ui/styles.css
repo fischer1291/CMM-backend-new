@@ -228,3 +228,19 @@ img.ref.chosen { border-color: var(--cyan); }
 .rejectpicker .reason { width: 100%; margin-bottom: 10px; padding: 10px 12px; border-radius: 12px; background: var(--bg-elevated); border: 1px solid var(--border-strong); color: var(--text); font: inherit; font-size: 15px; }
 .texteditor { margin-top: 8px; }
 .texteditor textarea, .texteditor input { width: 100%; padding: 10px 12px; border-radius: 12px; background: var(--bg-elevated); border: 1px solid var(--border-strong); color: var(--text); font: inherit; font-size: 15px; resize: vertical; }
+
+/* Heute (Übersicht) */
+.today { margin-bottom: 12px; }
+.today-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.today .tile { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 14px; padding: 12px; min-width: 0; }
+.today .tile .value { font-size: 28px; font-weight: 700; letter-spacing: -0.6px; margin: 2px 0; }
+.today .tile .sub { font-size: 12px; line-height: 1.5; }
+.delta { font-weight: 600; color: var(--text-2); }
+.delta.up { color: var(--cyan); }
+.delta.down { color: var(--pink); }
+.todo-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.todo-row .pill { border: 0; cursor: pointer; font: inherit; font-size: 13px; padding: 6px 12px; }
+@media (max-width: 600px) {
+  .today-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .today .tile .value { font-size: 24px; }
+}

@@ -214,6 +214,20 @@ module.exports = (io) => {
 
   // --- Numbers ---------------------------------------------------------------
 
+  // Today so far next to the same weekday last week, and what is waiting
+  router.get("/admin/today", requireAdmin("viewer"), async (req, res) => {
+    try {
+      const data = await require("../lib/today").todayNumbers();
+      // Viewers see numbers, not the queues
+      if (req.admin.role === "viewer") data.todo = null;
+      else if (req.admin.role !== "owner") data.todo.approvals = null;
+      res.json({ success: true, ...data });
+    } catch (err) {
+      console.error("❌ admin today:", err.message);
+      res.status(500).json({ success: false });
+    }
+  });
+
   router.get("/admin/metrics", requireAdmin("viewer"), async (req, res) => {
     const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 7), 180);
     try {

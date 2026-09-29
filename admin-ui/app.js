@@ -216,7 +216,43 @@ function AppErrors() {
   </div>`;
 }
 
-function Dashboard() {
+/** Today so far, next to the whole same weekday last week, and what is waiting. */
+function Today({ onGo }) {
+  const [data, setData] = useState(null);
+  const load = useCallback(() => api('/today').then(setData).catch(() => {}), []);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, [load]);
+  if (!data) return null;
+  const t = data.today;
+  const w = data.lastWeekDay;
+  const delta = (a, b) => {
+    const d = a - b;
+    return d > 0 ? html`<span class="delta up">▲ ${num(d)}</span>` : d < 0 ? html`<span class="delta down">▼ ${num(-d)}</span>` : html`<span class="delta">±0</span>`;
+  };
+  const tile = (label, key, sub) => html`<div class="tile"><div class="label">${label}</div><div class="value">${num(t[key])}</div><div class="sub">${delta(t[key], w[key])} <span class="muted">Vorwoche ${num(w[key])}</span>${sub ? html`<br />${sub}` : null}</div></div>`;
+  const todo = data.todo
+    ? [['approvals', 'Freigabe', 'approvals'], ['support', 'Support', 'support'], ['reports', 'Meldungen', 'reports']].filter(([k]) => data.todo[k] !== null && data.todo[k] !== undefined)
+    : [];
+  return html`<div class="card today">
+    <div class="inline" style="justify-content:space-between;margin-bottom:8px">
+      <div class="label" style="margin:0">Heute</div>
+      <span class="note">bis jetzt, verglichen mit dem ganzen ${shortDay(data.lastWeek)}</span>
+    </div>
+    ${todo.length ? html`<div class="todo-row">${todo.map(([k, label, tab]) => html`<button class=${`pill ${data.todo[k] ? 'warn' : ''}`} onClick=${() => onGo(tab)}>${label}: ${num(data.todo[k])}</button>`)}</div>` : null}
+    <div class="today-grid">
+      ${tile('Neue Nutzer', 'newUsers')}
+      ${tile('Aktiv', 'active')}
+      ${tile('Gespräche', 'talks', html`<span class="muted">${num(t.talkMinutes)} Min.</span>`)}
+      ${tile('Website', 'visits')}
+      ${tile('Warteliste', 'waitlist')}
+    </div>
+  </div>`;
+}
+
+function Dashboard({ onGo }) {
   const [days, setDays] = useState(30);
   const [data, setData] = useState(null);
   const [error, setError] = useState(false);
@@ -243,6 +279,7 @@ function Dashboard() {
   const now = data.now;
 
   return html`
+    <${Today} onGo=${onGo} />
     <div class="now">
       <span class="pill">Jetzt erreichbar: ${num(now.availableNow)}</span>
       <span class="pill">Offene Runden: ${num(now.activeRooms)}</span>
@@ -1655,7 +1692,7 @@ function App() {
   } else if (tab === 'notify') {
     body = html`<${Notify} />`;
   } else {
-    body = html`<${Dashboard} />`;
+    body = html`<${Dashboard} onGo=${go} />`;
   }
 
   return html`<div class="wrap">
