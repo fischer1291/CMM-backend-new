@@ -86,12 +86,78 @@ function Kpi({ label, value, sub, color }) {
 
 // --- Sign-in -------------------------------------------------------------------
 
+// Passkeys (Face ID / Touch ID): the backend speaks base64url, the browser ArrayBuffers
+const hasPasskeys = () => typeof window.PublicKeyCredential === 'function' && !!navigator.credentials;
+const fromB64u = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4)), (c) => c.charCodeAt(0)).buffer;
+const toB64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const PASSKEY_KEPT = 'yap-passkey';
+const keep = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+const kept = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+
+async function passkeyCreate(options) {
+  const cred = await navigator.credentials.create({
+    publicKey: {
+      ...options,
+      challenge: fromB64u(options.challenge),
+      user: { ...options.user, id: fromB64u(options.user.id) },
+      excludeCredentials: (options.excludeCredentials || []).map((c) => ({ ...c, id: fromB64u(c.id) })),
+    },
+  });
+  return {
+    id: cred.id,
+    rawId: toB64u(cred.rawId),
+    type: cred.type,
+    response: {
+      clientDataJSON: toB64u(cred.response.clientDataJSON),
+      attestationObject: toB64u(cred.response.attestationObject),
+      transports: cred.response.getTransports ? cred.response.getTransports() : [],
+    },
+    clientExtensionResults: cred.getClientExtensionResults(),
+    authenticatorAttachment: cred.authenticatorAttachment || undefined,
+  };
+}
+
+async function passkeyGet(options) {
+  const cred = await navigator.credentials.get({ publicKey: { ...options, challenge: fromB64u(options.challenge), allowCredentials: [] } });
+  return {
+    id: cred.id,
+    rawId: toB64u(cred.rawId),
+    type: cred.type,
+    response: {
+      clientDataJSON: toB64u(cred.response.clientDataJSON),
+      authenticatorData: toB64u(cred.response.authenticatorData),
+      signature: toB64u(cred.response.signature),
+      userHandle: cred.response.userHandle ? toB64u(cred.response.userHandle) : null,
+    },
+    clientExtensionResults: cred.getClientExtensionResults(),
+  };
+}
+// Cancelled by the person: no error to show
+const cancelled = (err) => err && (err.name === 'NotAllowedError' || err.name === 'AbortError');
+
 function Login({ onDone }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  // Signed in with Face ID before on this device: that first, the form on request
+  const [withPassword, setWithPassword] = useState(() => !(hasPasskeys() && kept(PASSKEY_KEPT) === '1'));
+  const withPasskey = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { options } = await api('/auth/passkey/options', { method: 'POST' });
+      const response = await passkeyGet(options);
+      const { admin } = await api('/auth/passkey/login', { method: 'POST', body: { response } });
+      keep(PASSKEY_KEPT, '1');
+      onDone(admin);
+    } catch (err) {
+      if (!cancelled(err)) setError(err.code === 'locked' ? ERRORS.locked : 'Face ID hat nicht geklappt. Ist auf diesem Gerät ein Passkey für die Konsole eingerichtet?');
+    } finally {
+      setBusy(false);
+    }
+  };
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true);
@@ -109,12 +175,15 @@ function Login({ onDone }) {
   return html`<div class="center"><form class="card auth" onSubmit=${submit}>
     <${Brand} />
     <h1>Anmelden</h1>
-    <p>Mit Passwort und dem Code aus deiner Authenticator-App.</p>
     ${error ? html`<p class="error">${error}</p>` : null}
-    <${Field} label="E-Mail" type="email" value=${email} onInput=${setEmail} autocomplete="username" autofocus />
-    <${Field} label="Passwort" type="password" value=${password} onInput=${setPassword} autocomplete="current-password" />
-    <${Field} label="Code" value=${code} onInput=${(v) => setCode(v.replace(/\D/g, '').slice(0, 6))} autocomplete="one-time-code" inputmode="numeric" className="code" />
-    <button class="btn" style="width:100%" disabled=${busy || code.length !== 6}>Anmelden</button>
+    ${hasPasskeys() ? html`<button type="button" class=${`btn ${withPassword ? 'ghost' : ''}`} style="width:100%;margin-bottom:12px" disabled=${busy} onClick=${withPasskey}>Mit Face ID anmelden</button>` : null}
+    ${withPassword ? html`
+      <p>Mit Passwort und dem Code aus deiner Authenticator-App.</p>
+      <${Field} label="E-Mail" type="email" value=${email} onInput=${setEmail} autocomplete="username" autofocus />
+      <${Field} label="Passwort" type="password" value=${password} onInput=${setPassword} autocomplete="current-password" />
+      <${Field} label="Code" value=${code} onInput=${(v) => setCode(v.replace(/\D/g, '').slice(0, 6))} autocomplete="one-time-code" inputmode="numeric" className="code" />
+      <button class="btn" style="width:100%" disabled=${busy || code.length !== 6}>Anmelden</button>`
+    : html`<button type="button" class="btn small ghost" style="width:100%" onClick=${() => setWithPassword(true)}>Mit Passwort und Code anmelden</button>`}
   </form></div>`;
 }
 
@@ -1487,6 +1556,62 @@ function Approvals({ role, onCount }) {
   `;
 }
 
+// --- Anmeldung mit Face ID (lib/adminPasskeys.js) ----------------------------------------
+
+const PASSKEY_ERRORS = {
+  invalid_code: 'Der Code stimmt nicht. Nimm den aktuellen aus der Authenticator-App.',
+  passkey_exists: 'Dieser Passkey ist schon eingerichtet.',
+  passkey_too_many: 'Höchstens 10 Passkeys.',
+  passkey_expired: 'Zu lange gewartet. Bitte noch einmal.',
+  passkey_invalid: 'Das Gerät hat keinen gültigen Passkey geliefert (Face ID oder Code nötig).',
+};
+
+function Passkeys() {
+  const [list, setList] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const load = useCallback(() => api('/passkeys').then((d) => setList(d.passkeys)).catch(() => setList([])), []);
+  useEffect(() => { load(); }, [load]);
+  if (!list) return null;
+  const add = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const { options } = await api('/passkeys/options', { method: 'POST', body: { code } });
+      const response = await passkeyCreate(options);
+      const d = await api('/passkeys', { method: 'POST', body: { response } });
+      setList(d.passkeys);
+      keep(PASSKEY_KEPT, '1');
+      setAdding(false);
+      setCode('');
+      setMsg({ ok: true, text: 'Face ID ist eingerichtet. Beim nächsten Anmelden reicht ein Blick.' });
+    } catch (e) {
+      if (!cancelled(e)) setMsg({ ok: false, text: PASSKEY_ERRORS[e.code] || message(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (id) => {
+    if (!confirm('Diesen Passkey entfernen? Mit ihm kann sich dann niemand mehr anmelden.')) return;
+    const d = await api(`/passkeys/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => null);
+    if (d) setList(d.passkeys);
+  };
+  return html`<div class="card" style="margin-bottom:12px">
+    <h3 style="margin:0 0 6px">Anmeldung mit Face ID</h3>
+    ${msg ? html`<p class=${msg.ok ? 'flash' : 'error'}>${msg.text}</p>` : null}
+    <p class="note" style="margin:0 0 10px">Ein Passkey ersetzt Passwort und Code: Face ID oder Touch ID genügt. Er wird mit deinem iCloud-Schlüsselbund auf deine Apple-Geräte übertragen.</p>
+    ${list.map((p) => html`<${Row} label=${p.name || 'Passkey'}>seit ${date(p.createdAt)}${p.lastUsedAt ? `, zuletzt ${dateTime(p.lastUsedAt)}` : ''} <button class="btn small ghost" onClick=${() => remove(p.id)}>Entfernen</button><//>`)}
+    ${!hasPasskeys() ? html`<p class="note" style="margin:0">Dieser Browser kann keine Passkeys.</p>`
+      : adding ? html`<div style="margin-top:8px">
+          <${Field} label="Code aus der Authenticator-App" value=${code} onInput=${(v) => setCode(v.replace(/\D/g, '').slice(0, 6))} autocomplete="one-time-code" inputmode="numeric" className="code" />
+          <div class="inline"><button class="btn small" disabled=${busy || code.length !== 6} onClick=${add}>Weiter mit Face ID</button><button class="btn small ghost" disabled=${busy} onClick=${() => setAdding(false)}>Abbrechen</button></div>
+        </div>`
+      : html`<button class="btn small" style="margin-top:8px" onClick=${() => setAdding(true)}>${list.length ? 'Weiteres Gerät einrichten' : 'Face ID einrichten'}</button>`}
+  </div>`;
+}
+
 // --- Mitteilungen: Web Push on this device (lib/adminPush.js, sw.js) -------------------
 
 const NOTIFY_LABELS = {
@@ -1690,7 +1815,7 @@ function App() {
   } else if (tab === 'approvals') {
     body = html`<${Approvals} role=${role} onCount=${setOpenApprovals} />`;
   } else if (tab === 'notify') {
-    body = html`<${Notify} />`;
+    body = html`<${Passkeys} /><${Notify} />`;
   } else {
     body = html`<${Dashboard} onGo=${go} />`;
   }
@@ -1711,7 +1836,7 @@ function App() {
       </div>
       <span class="spacer"></span>
       <span class="who">${state.admin.email}</span>
-      <button class=${`btn small ghost bell ${tab === 'notify' ? 'on' : ''}`} title="Mitteilungen" aria-label="Mitteilungen" onClick=${() => go('notify')}>🔔</button>
+      <button class=${`btn small ghost bell ${tab === 'notify' ? 'on' : ''}`} title="Einstellungen: Mitteilungen und Face ID" aria-label="Einstellungen" onClick=${() => go('notify')}>⚙︎</button>
       <button class="btn small ghost" onClick=${logout}>Abmelden</button>
     </div>
     ${body}

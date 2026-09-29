@@ -148,6 +148,58 @@ module.exports = (io) => {
     res.json({ success: true, admin: me(admin) });
   });
 
+  // --- Passkeys: Face ID / Touch ID instead of password and code (lib/adminPasskeys.js)
+  const passkeys = require("../lib/adminPasskeys");
+  const PASSKEY_ERRORS = { expired: 400, invalid: 400, unknown: 401, exists: 409, too_many: 409, locked: 429 };
+
+  router.post("/admin/auth/passkey/options", async (req, res) => {
+    res.json({ success: true, options: await passkeys.loginOptions() });
+  });
+
+  router.post("/admin/auth/passkey/login", async (req, res) => {
+    const result = await passkeys.login(req.body?.response);
+    if (result.error) {
+      await audit(req, "login_failed", { meta: { error: `passkey_${result.error}` } });
+      return res.status(PASSKEY_ERRORS[result.error] || 400).json({ success: false, error: result.error === "locked" ? "locked" : "passkey_failed" });
+    }
+    const token = signSession(result.admin);
+    if (!token) return res.status(500).json({ success: false, error: "no_secret" });
+    setSessionCookie(res, token);
+    await audit(req, "login_passkey", { admin: result.admin.email });
+    res.json({ success: true, admin: me(result.admin) });
+  });
+
+  router.get("/admin/passkeys", requireAdmin(), (req, res) => {
+    res.json({ success: true, passkeys: passkeys.list(req.admin), rpId: passkeys.rp().rpID });
+  });
+
+  // POST /admin/passkeys/options { code }: adding one needs a fresh code from the authenticator app
+  router.post("/admin/passkeys/options", requireAdmin(), authLimit, async (req, res) => {
+    const admin = await Admin.findById(req.admin._id);
+    const step = checkTotp(admin.totpSecret, req.body?.code);
+    if (step === null || step <= admin.totpLastStep) {
+      await audit(req, "passkey_code_failed");
+      return res.status(401).json({ success: false, error: "invalid_code" });
+    }
+    admin.totpLastStep = step;
+    await admin.save();
+    res.json({ success: true, options: await passkeys.registrationOptions(admin) });
+  });
+
+  // POST /admin/passkeys { response }: what navigator.credentials.create returned
+  router.post("/admin/passkeys", requireAdmin(), async (req, res) => {
+    const result = await passkeys.register(req.admin, req.body?.response, req.get("user-agent"));
+    if (result.error) return res.status(PASSKEY_ERRORS[result.error] || 400).json({ success: false, error: `passkey_${result.error}` });
+    await audit(req, "passkey_added");
+    res.json({ success: true, passkeys: passkeys.list(result.admin) });
+  });
+
+  router.delete("/admin/passkeys/:id", requireAdmin(), async (req, res) => {
+    if (!(await passkeys.remove(req.admin, req.params.id))) return res.status(404).json({ success: false, error: "not_found" });
+    await audit(req, "passkey_removed");
+    res.json({ success: true, passkeys: passkeys.list(await Admin.findById(req.admin._id)) });
+  });
+
   router.post("/admin/auth/logout", requireAdmin(), async (req, res) => {
     clearSessionCookie(res);
     await audit(req, "logout");

@@ -27,9 +27,25 @@ const adminSchema = new mongoose.Schema({
     daily: { type: Boolean, default: true },
     dailyHour: { type: Number, default: 20, min: 0, max: 23 },
   },
+  // Passkeys (Face ID / Touch ID) for signing in without password and code
+  // (lib/adminPasskeys.js). Each one is a key pair on a device; only the
+  // public key is here.
+  passkeys: [
+    {
+      credentialId: { type: String, required: true },
+      publicKey: { type: String, required: true }, // COSE, base64url
+      counter: { type: Number, default: 0 },
+      transports: { type: [String], default: [] },
+      name: { type: String, default: "" },
+      createdAt: { type: Date, default: Date.now },
+      lastUsedAt: { type: Date, default: null },
+    },
+  ],
   // Day (Europe/Berlin) of the last daily numbers push
   dailyPushFor: { type: String, default: null },
   createdAt: { type: Date, default: Date.now },
 });
+
+adminSchema.index({ "passkeys.credentialId": 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model("Admin", adminSchema);
