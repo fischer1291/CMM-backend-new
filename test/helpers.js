@@ -129,6 +129,8 @@ async function reset() {
   await require("../models/Circle").syncIndexes();
   await require("../models/Room").syncIndexes();
   await require("../models/Admin").syncIndexes();
+  // Unique campaign names: the agent relies on the 409 for a taken one
+  await require("../models/AdDraft").syncIndexes();
   await require("../models/ActiveDay").syncIndexes();
   await require("../models/MetricsDaily").syncIndexes();
   require("../lib/metrics").resetActivityCache();

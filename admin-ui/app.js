@@ -1198,6 +1198,23 @@ const canPostNow = (draft, connected) => Object.keys(PLATFORM_LABELS).some((p) =
 // Something to do or to watch: otherwise an approved video shows as one line
 const needsLook = (draft, connected) => canPostNow(draft, connected) || Object.values(draft.publish || {}).some((pub) => pub && ['posting', 'processing', 'failed', 'inbox'].includes(pub.status) && !(pub.status === 'inbox' && draft.posted?.tiktok));
 const postText = (draft, platform) => [draft.captions[platform], draft.hashtags.map((h) => `#${h}`).join(' ')].filter(Boolean).join('\n\n');
+// The agent's own music (CMM marketing/music.js)
+const MUSIC_LABELS = { lofi: 'Lo-Fi', house: 'House', pop: 'Pop', trap: 'Trap / Hip-Hop', afro: 'Afro', acoustic: 'Akustik' };
+const musicPill = (draft) => (draft.music?.style ? html`<span class="pill" title="Musik im Video">♪ ${MUSIC_LABELS[draft.music.style] || draft.music.style}</span>` : null);
+// A spoken line in a hero video: then the original sound stays, just quieter
+const hasVoice = (draft) => (draft.content?.shots || []).some((s) => s.line);
+
+/** The trending sound the agent suggests, to add in the TikTok app. */
+function SoundTip({ draft, compact }) {
+  const s = draft.sound;
+  if (!s) return null;
+  return html`<div class="note" style="margin:0 0 8px">
+    <b>Sound-Tipp für TikTok:</b> „${s.title}“${s.artist ? ` · ${s.artist}` : ''}
+    ${s.commercial ? html` <span class="pill on" title="Laut Recherche in der kommerziellen Musikbibliothek: für Unternehmenskonten erlaubt">kommerziell frei</span>` : html` <span class="pill warn" title="Nicht als kommerziell freigegeben belegt: in TikTok prüfen, ob er für Unternehmenskonten verfügbar ist">prüfen</span>`}
+    ${!compact && s.why ? html`<div>${s.why}</div>` : null}
+  </div>`;
+}
+
 const shortDate = (d) => new Date(d).toLocaleDateString('de-DE', { day: 'numeric', month: 'numeric' });
 
 /** Where a platform stands for an approved video, with what is left to do. */
@@ -1219,6 +1236,7 @@ function PublishRow({ draft, p, owner, busy, connected, run }) {
       <ol>
         <li>In TikTok die Benachrichtigung öffnen.</li>
         <li>Text einfügen <${CopyButton} text=${postText(draft, 'tiktok')} label="Text kopieren" /></li>
+        ${draft.sound ? html`<li>Unter „Sounds“ <b>${draft.sound.title}</b> suchen und hinzufügen, dann unter „Lautstärke“ den Originalton ${hasVoice(draft) ? 'leiser stellen (der Satz im Video soll zu hören bleiben)' : 'ausschalten'}.</li>` : null}
         ${draft.ai ? html`<li>Unter „Weitere Optionen“ <b>KI-generierter Inhalt</b> einschalten.</li>` : null}
         <li>Veröffentlichen, dann hier abhaken.</li>
       </ol>
@@ -1326,6 +1344,7 @@ function AdDraftCard({ draft, owner, connected, onChanged }) {
       <div class="inline" style="margin-bottom:8px">
         <span class="pill">${TEMPLATE_LABELS[draft.template] || draft.template}</span>
         ${draft.ai ? html`<span class="pill warn" title="Wird beim Posten als KI-generiert gekennzeichnet">KI</span>` : null}
+        ${musicPill(draft)}
         ${draft.characters?.length ? html`<span class="pill">${draft.characters.join(', ')}</span>` : null}
         ${draft.seconds ? html`<span class="pill">${draft.seconds} s</span>` : null}
         ${draft.costEur != null ? html`<span class="pill">${euro(draft.costEur)}</span>` : null}
@@ -1333,6 +1352,7 @@ function AdDraftCard({ draft, owner, connected, onChanged }) {
       </div>
       ${idea ? html`<p style="margin:0 0 8px;color:var(--text-2)">${idea}</p>` : null}
       ${checks ? html`<p class="note warn" style="margin:0 0 8px">⚠︎ ${checks}</p>` : null}
+      <${SoundTip} draft=${draft} />
       ${draft.feedback ? html`<div class="quote">${draft.status === 'rejected' ? 'Verworfen' : 'Notiz'}: ${draft.feedback}</div>` : null}
       <details class="texts">
         <summary><span class="label" style="margin:0">Texte und Hashtags</span><span class="muted">${draft.hashtags.map((h) => `#${h}`).join(' ')}</span></summary>
@@ -1562,11 +1582,13 @@ function FocusReview({ drafts, owner, onChanged, onList }) {
     <div class="inline" style="margin-bottom:8px">
       <span class="pill">${TEMPLATE_LABELS[current.template] || current.template}</span>
       ${current.ai ? html`<span class="pill warn">KI</span>` : null}
+      ${musicPill(current)}
       ${current.seconds ? html`<span class="pill">${current.seconds} s</span>` : null}
       ${current.costEur != null ? html`<span class="pill">${euro(current.costEur)}</span>` : null}
     </div>
     ${checks ? html`<p class="note warn" style="margin:0 0 8px">⚠︎ ${checks}</p>` : null}
     ${idea ? html`<p class="note" style="margin:0 0 10px">${idea}</p>` : null}
+    <${SoundTip} draft=${current} compact />
     ${editing
       ? html`<${TextEditor} draft=${current} onSaved=${(saved) => { setLocal({ ...local, [saved.id]: { captions: saved.captions, hashtags: saved.hashtags } }); setEditing(false); onChanged(); }} onCancel=${() => setEditing(false)} />`
       : html`<div class="caption focus-caption" onClick=${() => owner && setEditing(true)}>

@@ -29,6 +29,18 @@ const adDraftSchema = new mongoose.Schema({
     tiktok: { type: String, default: "" },
   },
   hashtags: { type: [String], default: [] },
+  // The music in the video (style of the agent's own music) and a sound that
+  // is trending on TikTok, to add in the app when the video waits there
+  music: {
+    style: { type: String, default: null },
+  },
+  sound: {
+    title: { type: String, default: null },
+    artist: { type: String, default: null },
+    // In TikTok's Commercial Music Library, i.e. allowed for a business account
+    commercial: { type: Boolean, default: false },
+    why: { type: String, default: null },
+  },
   model: { type: String, default: null },
   video: {
     url: { type: String, default: null },
