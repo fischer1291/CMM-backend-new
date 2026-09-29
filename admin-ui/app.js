@@ -1090,6 +1090,10 @@ function Waitlist({ role }) {
           </tr>`)}</tbody>
         </table>` : html`<p class="note" style="margin:0">Noch keine Besuche.</p>`}
         <p class="note" style="margin:10px 0 0">Quelle aus <code>utm_source</code>, sonst die Plattform, von der der Besuch kam (z. B. Link in der Instagram-Bio), „empfehlung“ oder „direkt“. Gezählt wird nur eine Zahl pro Tag und Quelle, ohne Cookies und ohne IP.</p>
+        <div class="nocount">
+          <p class="note" style="margin:0 0 8px"><b>Eigene Besuche nicht mitzählen:</b> diesen Link einmal in jedem Browser öffnen, mit dem du die Seite ansiehst (Safari, Chrome, auch im Instagram- oder TikTok-Browser über „Link kopieren“ und dort einfügen). Neu laden zählt ohnehin nicht.</p>
+          <div class="inline"><a class="btn small ghost" href="https://wannayap.app/?nichtzaehlen=1" target="_blank" rel="noopener">Diesen Browser nicht mitzählen</a><${CopyButton} text="https://wannayap.app/?nichtzaehlen=1" label="Link kopieren" /></div>
+        </div>
       </div>
     </div>
 
