@@ -19,6 +19,7 @@ const fakes = {
   // Mails "sent" via lib/mailer.js
   mails: [],
   failMailTo: null,
+  rejectMailTo: null,
 };
 
 const originalLoad = Module._load;
@@ -65,6 +66,10 @@ Module._load = function (request, parent, isMain) {
       createTransport: () => ({
         sendMail: async (mail) => {
           if (fakes.failMailTo && mail.to === fakes.failMailTo) throw new Error("smtp_rejected");
+          // The server refuses the recipient (e.g. a domain that takes no mail)
+          if (fakes.rejectMailTo && mail.to === fakes.rejectMailTo) {
+            throw Object.assign(new Error("Can't send mail - all recipients were rejected: 556 domain does not accept mail"), { code: "EENVELOPE", command: "RCPT TO", responseCode: 556, response: "556 domain does not accept mail" });
+          }
           fakes.mails.push(mail);
           return { messageId: `m-${fakes.mails.length}` };
         },
@@ -139,6 +144,7 @@ async function reset() {
   fakes.voipPushes.length = 0;
   fakes.mails.length = 0;
   fakes.failMailTo = null;
+  fakes.rejectMailTo = null;
   fakes.receipts = {};
 }
 
