@@ -206,3 +206,28 @@ test("landing page visits: counted per source and campaign, next to the sign-ups
   assert.equal(row("direkt").visits, 2);
   assert.equal(visits.campaigns[0].source, "tiktok");
 });
+
+test("sign-up while the mail provider fails: kept, the owner hears, the mail follows later", async () => {
+  const WaitlistEntry = require("../models/WaitlistEntry");
+  const { resendMissing } = require("../lib/waitlist");
+  fakes.failMailTo = "pia@example.com";
+  const res = await request(ctx.app).post("/waitlist").send({ email: "pia@example.com", source: "tiktok" }).expect(200);
+  assert.equal(res.body.mailDelayed, true);
+  const entry = await WaitlistEntry.findOne({ email: "pia@example.com" });
+  assert.equal(entry.status, "pending");
+  assert.equal(entry.confirmMailAt, null);
+
+  const cookie = await adminCookie();
+  const data = (await request(ctx.app).get("/admin/waitlist").set(admin(cookie)).expect(200)).body;
+  assert.equal(data.mail.waitingForMail, 1);
+  assert.match(data.mail.lastError.message, /smtp_rejected/);
+  assert.equal((await request(ctx.app).post("/admin/mail/check").set(admin(cookie)).expect(200)).body.ok, true);
+
+  // Still failing: nothing sent, still waiting
+  assert.deepEqual(await resendMissing(), { sent: 0, failed: true, waiting: 1 });
+  // Provider works again: the mail goes out once
+  fakes.failMailTo = null;
+  assert.deepEqual(await resendMissing(), { sent: 1, failed: false, waiting: 0 });
+  assert.deepEqual(fakes.mails.map((m) => m.to), ["pia@example.com"]);
+  assert.deepEqual(await resendMissing(), { sent: 0, failed: false, waiting: 0 });
+});

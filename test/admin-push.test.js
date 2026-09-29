@@ -56,7 +56,7 @@ test("admin push: VAPID key, subscribe an iPhone, test push, unsubscribe", async
   const cookie = await ownerCookie();
   const state = (await request(ctx.app).get("/admin/push").set(admin(cookie)).expect(200)).body;
   assert.match(state.publicKey, /^[A-Za-z0-9_-]{80,}$/);
-  assert.deepEqual(state.kinds, ["approvals", "posting", "support", "reports", "daily"]);
+  assert.deepEqual(state.kinds, ["approvals", "posting", "support", "reports", "daily", "alerts"]);
   assert.equal(state.notify.dailyHour, 20);
   assert.equal(state.devices.length, 0);
   // Same key on the next call

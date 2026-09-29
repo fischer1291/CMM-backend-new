@@ -132,6 +132,13 @@ async function main() {
       .catch((err) => console.error("❌ token refresh:", err.message));
   }, 60 * 60 * 1000);
 
+  // Confirmation mails that failed (mail provider down): send them now
+  setInterval(() => {
+    asJobLeader("waitlist-resend", () => require("./lib/waitlist").resendMissing())
+      .then((r) => r?.sent && console.log(`✉️  ${r.sent} Bestätigungsmail(s) nachgeschickt`))
+      .catch((err) => console.error("❌ waitlist resend:", err.message));
+  }, 10 * 60 * 1000);
+
   // The day's numbers as a push to the console, at each admin's hour (lib/adminPush.js)
   const adminPush = require("./lib/adminPush");
   setInterval(() => {
