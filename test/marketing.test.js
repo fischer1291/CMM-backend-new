@@ -60,6 +60,33 @@ async function draftWithVideo(overrides = {}) {
   return created.body.draft;
 }
 
+test("agent: music style and TikTok sound tip are kept, shown and go back into its context", async () => {
+  const draft = await draftWithVideo({
+    music: { style: "house" },
+    sound: { title: "  Espresso (sped up) ", artist: "Beispiel", commercial: true, why: "hell, Sommer", extra: "<b>x</b>" },
+  });
+  assert.deepEqual(draft.music, { style: "house" });
+  assert.deepEqual(draft.sound, { title: "Espresso (sped up)", artist: "Beispiel", commercial: true, why: "hell, Sommer" });
+
+  // Nothing odd gets in: unknown shapes are dropped, an empty title means no tip
+  const plain = await draftWithVideo({ campaign: "yap-0928-ohne-sound", music: { style: "House Music!" }, sound: { title: " ", commercial: "yes" } });
+  assert.equal(plain.music, null);
+  assert.equal(plain.sound, null);
+  const odd = await draftWithVideo({ campaign: "yap-0928-komisch", music: "trap", sound: "Espresso" });
+  assert.equal(odd.music, null);
+  assert.equal(odd.sound, null);
+
+  const cookie = await ownerCookie();
+  const listed = (await request(ctx.app).get("/admin/marketing/drafts").set(admin(cookie)).expect(200)).body.drafts;
+  assert.equal(listed.find((d) => d.id === draft.id).sound.title, "Espresso (sped up)");
+
+  const context = (await request(ctx.app).get("/marketing/context").set(AGENT).expect(200)).body;
+  const mine = context.drafts.find((d) => d.campaign === DRAFT.campaign);
+  assert.deepEqual(mine.music, { style: "house" });
+  assert.equal(mine.sound.commercial, true);
+  assert.equal(context.drafts.find((d) => d.campaign === "yap-0928-ohne-sound").sound, null);
+});
+
 test("agent: needs its key, creates drafts, uploads the video once", async () => {
   await request(ctx.app).get("/marketing/context").expect(401);
   await request(ctx.app).get("/marketing/context").set({ Authorization: "Bearer wrong" }).expect(401);
