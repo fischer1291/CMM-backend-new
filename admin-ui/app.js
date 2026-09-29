@@ -1037,6 +1037,46 @@ function Funnel({ funnel, mailConfigured }) {
   </div>`;
 }
 
+/** Where the mails go out, whether it works, and the provider's answer when not. */
+function MailStatus({ mail, owner, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const run = async (fn) => {
+    setBusy(true);
+    setResult(null);
+    try {
+      setResult(await fn());
+      onChanged();
+    } catch (e) {
+      setResult({ error: e.data?.reason || message(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const failing = !mail.configured || (mail.lastError && (!mail.lastOkAt || new Date(mail.lastError.at) > new Date(mail.lastOkAt)));
+  return html`<div class="card" style=${`margin-bottom:12px;${failing ? 'border-color:var(--warning)' : ''}`}>
+    <div class="inline" style="justify-content:space-between"><h3 style="margin:0">E-Mail-Versand</h3>
+      <span class=${`pill ${failing ? 'warn' : 'on'}`}>${!mail.configured ? 'nicht eingerichtet' : failing ? 'Fehler' : mail.lastOkAt ? 'läuft' : 'noch nichts gesendet'}</span></div>
+    ${!mail.configured ? html`<p class="note">Auf Render fehlt <b>SMTP_URL</b> (und <b>MAIL_FROM</b>): ohne sie kommen weder Bestätigungs- noch Launch-Mails an.</p>` : html`
+      <${Row} label="Server">${mail.server ? `${mail.server.host}:${mail.server.port}${mail.server.secure ? ' (SSL)' : ''}, Nutzer ${mail.server.user || '–'}` : 'SMTP_URL nicht lesbar'}<//>
+      <${Row} label="Absender">${mail.from}<//>
+      <${Row} label="Zuletzt gesendet">${mail.lastOkAt ? dateTime(mail.lastOkAt) : '– (seit dem letzten Neustart)'}<//>
+      ${mail.lastError ? html`<${Row} label="Letzter Fehler">${dateTime(mail.lastError.at)}<//><p class="note bad" style="margin:4px 0 0;overflow-wrap:anywhere">${mail.lastError.message}</p>` : null}`}
+    ${mail.waitingForMail ? html`<p class="note warn" style="margin:8px 0 0">${num(mail.waitingForMail)} ${mail.waitingForMail === 1 ? 'Anmeldung wartet' : 'Anmeldungen warten'} auf die Bestätigungsmail. Sie geht automatisch raus (alle 10 Minuten ein Versuch), sobald der Versand klappt.</p>` : null}
+    ${result ? html`<p class=${result.error ? 'error' : 'flash'} style="margin:8px 0 0">${result.error || result.text}</p>` : null}
+    ${owner && mail.configured ? html`<div class="inline" style="margin-top:10px">
+      <button class="btn small ghost" disabled=${busy} onClick=${() => run(async () => { const r = await api('/mail/check', { method: 'POST' }); return r.ok ? { text: 'Anmeldung beim Mail-Server klappt.' } : { error: `Der Mail-Server lehnt ab: ${r.error}` }; })}>Verbindung prüfen</button>
+      <button class="btn small ghost" disabled=${busy} onClick=${() => { const e = prompt('Testmail an:'); if (e) run(async () => { await api('/waitlist/test-mail', { method: 'POST', body: { email: e } }); return { text: `Testmail an ${e} verschickt.` }; }); }}>Testmail senden</button>
+    </div>` : null}
+    ${failing && mail.configured ? html`<details style="margin-top:10px"><summary class="note" style="cursor:pointer">Häufige Ursachen</summary><ul class="note" style="margin:6px 0 0;padding-left:18px">
+      <li><b>Absender nicht bestätigt:</b> Die Adresse aus MAIL_FROM (bzw. die Domain wannayap.app) muss beim Mail-Anbieter als Absender verifiziert sein, samt SPF- und DKIM-Einträgen.</li>
+      <li><b>Zugangsdaten:</b> Beim Anbieter gibt es einen eigenen SMTP-Schlüssel, nicht das Login-Passwort. Sonderzeichen im Passwort müssen in SMTP_URL URL-kodiert sein (z. B. @ als %40).</li>
+      <li><b>Port:</b> smtps:// mit 465 oder smtp:// mit 587, nicht gemischt.</li>
+      <li><b>Konto gesperrt oder Kontingent erreicht:</b> Im Dashboard des Anbieters nachsehen.</li>
+    </ul></details>` : null}
+  </div>`;
+}
+
 function Waitlist({ role }) {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -1067,7 +1107,7 @@ function Waitlist({ role }) {
   const visits = data.visits;
   const conversion = data.confirmed + data.pending ? data.confirmed / (data.confirmed + data.pending) : null;
   return html`
-    ${!data.mailConfigured ? html`<div class="card" style="border-color:var(--warning)">E-Mail-Versand ist nicht eingerichtet: Auf Render <b>SMTP_URL</b> und <b>MAIL_FROM</b> setzen, sonst kommen weder Bestätigungs- noch Launch-Mails an.</div>` : null}
+    ${data.mail ? html`<${MailStatus} mail=${data.mail} owner=${role === 'owner'} onChanged=${load} />` : null}
     <div class="section" style="margin-top:0">Landing Page</div>
     <div class="kpis">
       <${Kpi} label="Besuche heute" value=${num(visits.today)} sub="Aufrufe der Seite, ohne Neuladen" color="var(--cyan)" />
@@ -1666,6 +1706,7 @@ const NOTIFY_LABELS = {
   support: ['Support', 'Neue Anfragen und Antworten aus der App'],
   reports: ['Meldungen', 'Wenn jemand in der App etwas meldet'],
   daily: ['Tageszahlen', 'Neue Nutzer, aktive Nutzer, Gespräche, Website, Warteliste'],
+  alerts: ['Störungen', 'Wenn etwas kaputt ist, z. B. Bestätigungsmails nicht rausgehen'],
 };
 const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);

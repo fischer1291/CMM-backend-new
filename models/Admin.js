@@ -25,6 +25,7 @@ const adminSchema = new mongoose.Schema({
     support: { type: Boolean, default: true },
     reports: { type: Boolean, default: true },
     daily: { type: Boolean, default: true },
+    alerts: { type: Boolean, default: true },
     dailyHour: { type: Number, default: 20, min: 0, max: 23 },
   },
   // Passkeys (Face ID / Touch ID) for signing in without password and code

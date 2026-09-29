@@ -220,7 +220,7 @@ module.exports = (io) => {
 
   // --- Push to the console on the phone (lib/adminPush.js) ----------------------
   const adminPush = require("../lib/adminPush");
-  const NOTIFY_KEYS = ["approvals", "posting", "support", "reports", "daily"];
+  const NOTIFY_KEYS = ["approvals", "posting", "support", "reports", "daily", "alerts"];
   const pushView = async (admin) => ({
     publicKey: (await adminPush.vapid()).publicKey,
     // Only what this role gets at all
@@ -320,7 +320,8 @@ module.exports = (io) => {
   // --- Waitlist (lib/waitlist.js) ----------------------------------------------
 
   router.get("/admin/waitlist", requireAdmin("viewer"), async (req, res) => {
-    res.json({ success: true, mailConfigured: mailer.configured(), goal: waitlist.REFERRAL_GOAL, ...(await waitlist.overview()) });
+    const waitingForMail = await WaitlistEntry.countDocuments({ status: "pending", confirmMailAt: null });
+    res.json({ success: true, mailConfigured: mailer.configured(), mail: { ...mailer.status(), waitingForMail }, goal: waitlist.REFERRAL_GOAL, ...(await waitlist.overview()) });
   });
 
   // Confirmed addresses as CSV, e.g. for a newsletter tool. Owner only, audited.
@@ -337,6 +338,12 @@ module.exports = (io) => {
     res.send(`\uFEFF${rows.map((r) => r.map(cell).join(";")).join("\n")}`);
   });
 
+  // Can the backend sign in at the SMTP server? Owner only, nothing is sent.
+  router.post("/admin/mail/check", requireAdmin("owner"), async (req, res) => {
+    const result = await mailer.check();
+    res.json({ success: true, ...result, mail: mailer.status() });
+  });
+
   // The launch mail to one address first. Owner only.
   router.post("/admin/waitlist/test-mail", requireAdmin("owner"), async (req, res) => {
     try {
@@ -345,7 +352,7 @@ module.exports = (io) => {
       await audit(req, "waitlist_test_mail");
       res.json({ success: true });
     } catch (err) {
-      res.status(503).json({ success: false, error: err.message === "mail_not_configured" ? "mail_not_configured" : "send_failed" });
+      res.status(503).json({ success: false, error: err.message === "mail_not_configured" ? "mail_not_configured" : "send_failed", reason: err.reason || null });
     }
   });
 

@@ -33,7 +33,8 @@ function publicRoutes() {
         ip: req.ip,
       });
       if (result.error) return res.status(400).json({ success: false, error: result.error });
-      res.json({ success: true });
+      // The mail failed but the sign-up is kept: it goes out as soon as it can
+      res.json({ success: true, ...(result.mailDelayed ? { mailDelayed: true } : {}) });
     } catch (err) {
       console.error("❌ waitlist signup:", err.message);
       res.status(err.message === "mail_not_configured" ? 503 : 500).json({ success: false, error: "unavailable" });
