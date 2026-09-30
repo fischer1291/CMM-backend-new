@@ -217,6 +217,14 @@ function adminRoutes() {
     res.json({ success: true, draft: result.draft });
   });
 
+  // POST /admin/marketing/drafts/:id/skip { platform }: not posted there after all
+  router.post("/admin/marketing/drafts/:id/skip", requireAdmin("owner"), async (req, res) => {
+    const result = await marketing.skipPlatform(req.params.id, req.body?.platform);
+    if (result.error) return res.status(result.error === "invalid_platform" ? 400 : 409).json({ success: false, error: result.error });
+    await audit(req, "ad_platform_skipped", { target: result.draft.campaign, platform: req.body.platform });
+    res.json({ success: true, draft: result.draft });
+  });
+
   router.post("/admin/marketing/drafts/:id/posted", requireAdmin("owner"), async (req, res) => {
     const result = await marketing.markPosted(req.params.id, req.body?.platform, req.body?.posted !== false);
     if (result.error) return res.status(result.error === "invalid_platform" ? 400 : 409).json({ success: false, error: result.error });

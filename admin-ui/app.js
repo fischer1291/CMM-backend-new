@@ -1173,8 +1173,8 @@ function Waitlist({ role }) {
 }
 
 const TEMPLATE_LABELS = { chat: 'Chat', moment: 'Yap Moment', list: 'Liste', hero: 'Hero-Szene' };
-const APPROVAL_FILTERS = { pending: 'Offen', approved: 'Freigegeben', rejected: 'Verworfen', settings: 'Einstellungen' };
-const PUBLISH_STATUS = { scheduled: 'geplant', posting: 'wird gepostet …', processing: 'wird verarbeitet …', posted: 'gepostet', inbox: 'in der TikTok-App fertig machen', failed: 'fehlgeschlagen' };
+const APPROVAL_FILTERS = { pending: 'Offen', approved: 'Freigegeben', posted: 'Gepostet', rejected: 'Verworfen' };
+const PUBLISH_STATUS = { scheduled: 'geplant', posting: 'wird gepostet …', processing: 'wird verarbeitet …', posted: 'gepostet', inbox: 'in der TikTok-App fertig machen', failed: 'fehlgeschlagen', skipped: 'ausgelassen' };
 const euro = (n) => (n == null ? '–' : `${n.toFixed(2).replace('.', ',')} €`);
 const PLATFORM_LABELS = { instagram: 'Instagram', tiktok: 'TikTok' };
 
@@ -1226,12 +1226,14 @@ function PublishRow({ draft, p, owner, busy, connected, run }) {
   let state;
   if (pub?.status === 'posted' || (done && !pub)) state = html`<span class="pill on">gepostet</span>${pub?.url ? html` <a href=${pub.url} target="_blank" rel="noopener">ansehen</a>` : null}`;
   else if (pub?.status === 'inbox') state = done ? html`<span class="pill on">veröffentlicht</span>` : html`<span class="pill todo">${PUBLISH_STATUS.inbox}</span>`;
+  else if (pub?.status === 'skipped') state = html`<span class="muted">ausgelassen</span>`;
   else if (pub) state = html`<span class=${`pill ${pub.status === 'failed' ? 'warn' : ''}`}>${PUBLISH_STATUS[pub.status] || pub.status}</span>${pub.status === 'scheduled' && draft.scheduledAt ? html` <span class="muted">${dateTime(draft.scheduledAt)}</span>` : null}`;
   else if (connected[p]) state = html`<span class="muted">noch nicht gepostet</span>`;
   else state = owner ? mark('von Hand gepostet') : html`<span class="muted">nicht verbunden</span>`;
   return html`<div class="pubrow">
     <div class="kv"><span>${label}</span><span>${state}</span></div>
     ${pub?.error && pub.status === 'failed' ? html`<div class="note bad">${pub.error}</div>` : null}
+    ${owner && pub?.status === 'failed' && !done ? html`<div class="inline" style="margin:4px 0 6px">${mark('doch gepostet')}<button class="btn small ghost" disabled=${busy} onClick=${() => run('skip', { platform: p })}>Auf ${label} auslassen</button></div>` : null}
     ${pub?.status === 'inbox' && !done ? html`<div class="todo">
       <ol>
         <li>In TikTok die Benachrichtigung öffnen.</li>
@@ -1240,7 +1242,7 @@ function PublishRow({ draft, p, owner, busy, connected, run }) {
         ${draft.ai ? html`<li>Unter „Weitere Optionen“ <b>KI-generierter Inhalt</b> einschalten.</li>` : null}
         <li>Veröffentlichen, dann hier abhaken.</li>
       </ol>
-      ${owner ? mark('auf TikTok veröffentlicht') : null}
+      <div class="inline">${owner ? mark('auf TikTok veröffentlicht') : null}${owner ? html`<button class="btn small ghost" disabled=${busy} onClick=${() => run('skip', { platform: p })}>Nicht auf TikTok</button>` : null}</div>
     </div>` : null}
   </div>`;
 }
@@ -1299,12 +1301,16 @@ function RejectPicker({ busy, onReject, onCancel }) {
   </div>`;
 }
 
-function AdDraftCard({ draft, owner, connected, onChanged }) {
+/**
+ * One draft. compact (Freigegeben): a small preview instead of the big video and
+ * no idea text, what is left to do comes first. onClose: opened from a list.
+ */
+function AdDraftCard({ draft, owner, connected, onChanged, compact, onClose }) {
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState(null);
-  const [open, setOpen] = useState(false);
+  const [playing, setPlaying] = useState(false);
   const run = async (path, body) => {
     setBusy(true);
     setError(null);
@@ -1318,28 +1324,18 @@ function AdDraftCard({ draft, owner, connected, onChanged }) {
     }
   };
   const approved = ['approved', 'posted'].includes(draft.status);
-  // Approved and nothing left to do: one line with the links
-  if (approved && !open && !needsLook(draft, connected)) {
-    return html`<div class="card adline" onClick=${() => setOpen(true)}>
-      <div class="adline-title"><b>${draft.title}</b><span class="muted">${shortDate(draft.decidedAt || draft.createdAt)}</span></div>
-      <div class="inline">${Object.entries(PLATFORM_LABELS).map(([p, label]) => {
-        const pub = draft.publish?.[p];
-        if (pub?.url) return html`<a class="pill on" href=${pub.url} target="_blank" rel="noopener" onClick=${(e) => e.stopPropagation()}>${label} ↗</a>`;
-        if (draft.posted?.[p]) return html`<span class="pill on">${label} ✓</span>`;
-        if (pub?.status === 'scheduled') return html`<span class="pill">${label} ${dateTime(draft.scheduledAt)}</span>`;
-        return null;
-      })}</div>
-    </div>`;
-  }
   const poster = draft.videoUrl ? draft.videoUrl.replace('/video/upload/', '/video/upload/so_2/').replace(/\.mp4$/, '.jpg') : null;
   // The agent's own checks (bad takes, muted sound) stand out from the idea
   const [idea, checks] = (draft.idea || '').split(/\n\nPrüfung(?: durch Claude)?: /);
-  return html`<div class="card ad">
-    ${draft.videoUrl ? html`<video src=${draft.videoUrl} poster=${poster} controls playsinline preload="none"></video>` : null}
+  const video = !draft.videoUrl ? null
+    : compact && !playing ? html`<button class="thumb" onClick=${() => setPlaying(true)} title="Video abspielen"><img src=${poster} alt="" loading="lazy" /><span>▶</span></button>`
+    : html`<video src=${draft.videoUrl} poster=${poster} controls playsinline preload=${playing ? 'auto' : 'none'} autoplay=${playing}></video>`;
+  return html`<div class=${`card ad ${compact && !playing ? 'compact' : ''}`}>
+    ${video}
     <div class="body">
       <div class="inline" style="justify-content:space-between;align-items:baseline;margin-bottom:6px">
         <h3 style="margin:0">${draft.title}</h3>
-        ${approved ? html`<button class="btn small ghost" onClick=${() => setOpen(false)} hidden=${!open}>Einklappen</button>` : null}
+        ${onClose ? html`<button class="btn small ghost" onClick=${onClose}>Schließen</button>` : null}
       </div>
       <div class="inline" style="margin-bottom:8px">
         <span class="pill">${TEMPLATE_LABELS[draft.template] || draft.template}</span>
@@ -1350,9 +1346,9 @@ function AdDraftCard({ draft, owner, connected, onChanged }) {
         ${draft.costEur != null ? html`<span class="pill">${euro(draft.costEur)}</span>` : null}
         <span class="muted" style="font-size:12px">${dateTime(draft.createdAt)}</span>
       </div>
-      ${idea ? html`<p style="margin:0 0 8px;color:var(--text-2)">${idea}</p>` : null}
-      ${checks ? html`<p class="note warn" style="margin:0 0 8px">⚠︎ ${checks}</p>` : null}
-      <${SoundTip} draft=${draft} />
+      ${idea && !compact ? html`<p style="margin:0 0 8px;color:var(--text-2)">${idea}</p>` : null}
+      ${checks && !compact ? html`<p class="note warn" style="margin:0 0 8px">⚠︎ ${checks}</p>` : null}
+      ${compact ? null : html`<${SoundTip} draft=${draft} />`}
       ${draft.feedback ? html`<div class="quote">${draft.status === 'rejected' ? 'Verworfen' : 'Notiz'}: ${draft.feedback}</div>` : null}
       <details class="texts">
         <summary><span class="label" style="margin:0">Texte und Hashtags</span><span class="muted">${draft.hashtags.map((h) => `#${h}`).join(' ')}</span></summary>
@@ -1382,6 +1378,40 @@ function AdDraftCard({ draft, owner, connected, onChanged }) {
   </div>`;
 }
 
+/** Where a posted video went: a link per platform, or a tick when posted by hand. */
+function PlatformPills({ draft }) {
+  return Object.entries(PLATFORM_LABELS).map(([p, label]) => {
+    const pub = draft.publish?.[p];
+    if (pub?.url) return html`<a class="pill on" href=${pub.url} target="_blank" rel="noopener" onClick=${(e) => e.stopPropagation()}>${label} ↗</a>`;
+    if (draft.posted?.[p]) return html`<span class="pill on">${label} ✓</span>`;
+    if (pub?.status === 'skipped') return html`<span class="pill muted-pill">${label} ausgelassen</span>`;
+    return null;
+  });
+}
+
+/** Gepostet and Verworfen: one line per video; a tap opens the whole card. */
+function DraftList({ drafts, tab, owner, connected, onChanged }) {
+  const [open, setOpen] = useState(null);
+  return html`<div class="card list-card">${drafts.map((d) => {
+    if (open === d.id) {
+      return html`<div class="list-open"><${AdDraftCard} draft=${d} owner=${owner} connected=${connected} onChanged=${onChanged} onClose=${() => setOpen(null)} /></div>`;
+    }
+    const poster = d.videoUrl ? d.videoUrl.replace('/video/upload/', '/video/upload/so_2,w_120/').replace(/\.mp4$/, '.jpg') : null;
+    return html`<button class="draftrow" onClick=${() => setOpen(d.id)}>
+      ${poster ? html`<img src=${poster} alt="" loading="lazy" />` : html`<span class="noimg"></span>`}
+      <span class="draftrow-main">
+        <b>${d.title}</b>
+        <span class="muted">${tab === 'posted' ? `gepostet ${shortDate(d.postedAt || d.decidedAt)}` : `verworfen ${shortDate(d.decidedAt || d.createdAt)}`} · ${TEMPLATE_LABELS[d.template] || d.template}${d.music?.style ? ` · ♪ ${MUSIC_LABELS[d.music.style] || d.music.style}` : ''}</span>
+        ${tab === 'rejected' && d.feedback ? html`<span class="reason">„${d.feedback}“</span>` : null}
+      </span>
+      ${tab === 'posted' ? html`<span class="draftrow-side">
+        <span class="inline"><${PlatformPills} draft=${d} /></span>
+        ${d.visits?.visits ? html`<span class="muted">${d.visits.visits} ${d.visits.visits === 1 ? 'Besuch' : 'Besuche'}${d.visits.submitted ? ` · ${d.visits.submitted} Anmeldung${d.visits.submitted === 1 ? '' : 'en'}` : ''}</span>` : null}
+      </span>` : null}
+    </button>`;
+  })}</div>`;
+}
+
 /** One line above the drafts; the details and the setting are under Einstellungen. */
 function BudgetLine({ onOpen }) {
   const [b, setB] = useState(null);
@@ -1389,7 +1419,8 @@ function BudgetLine({ onOpen }) {
   if (!b) return null;
   const tight = b.spentTodayEur >= b.dailyEur * 0.8 || b.spentWeekEur >= b.weeklyEur * 0.8;
   return html`<button class=${`budgetline ${tight ? 'tight' : ''}`} onClick=${onOpen}>
-    Budget heute <b>${euro(b.spentTodayEur)}</b> / ${euro(b.dailyEur)} · Woche <b>${euro(b.spentWeekEur)}</b> / ${euro(b.weeklyEur)}
+    <span>Budget heute <b>${euro(b.spentTodayEur)}</b> / ${euro(b.dailyEur)} · Woche <b>${euro(b.spentWeekEur)}</b> / ${euro(b.weeklyEur)}</span>
+    <span class="more">Einstellungen ›</span>
   </button>`;
 }
 
@@ -1640,28 +1671,37 @@ function Approvals({ role, onCount }) {
   useEffect(() => {
     api('/marketing/channels').then((d) => setConnected({ instagram: !!d.instagram?.connected, tiktok: !!d.tiktok?.connected })).catch(() => {});
   }, [filter]);
-  const c = data?.counts || {};
-  const counts = { pending: c.pending, approved: (c.approved || 0) + (c.posted || 0), rejected: c.rejected };
+  const counts = data?.counts || {};
   const drafts = data?.drafts || [];
-  // Approved: what still needs something first, the finished ones as lines below
+  // Freigegeben: what needs a person first, then what waits for its slot
   const sorted = filter === 'approved' ? [...drafts.filter((d) => needsLook(d, connected)), ...drafts.filter((d) => !needsLook(d, connected))] : drafts;
-  return html`
-    <div class="now"><div class="tabs subtabs">${Object.entries(APPROVAL_FILTERS).map(([k, label]) => html`<button class=${filter === k ? 'on' : ''} onClick=${() => setFilter(k)}>${label}${counts[k] ? html` <span class=${k === 'pending' ? 'count' : 'muted'}>${counts[k]}</span>` : null}</button>`)}</div></div>
-    ${filter === 'settings' ? html`
+  const EMPTY = {
+    pending: 'Nichts zu tun. Der Marketing-Agent legt jeden Morgen neue Videos hier ab.',
+    approved: 'Alles draußen. Freigegebene Videos warten hier auf ihr Zeitfenster oder darauf, dass du etwas erledigst.',
+    posted: 'Noch nichts gepostet.',
+    rejected: 'Nichts verworfen.',
+  };
+  if (filter === 'settings') {
+    return html`
+      <button class="btn small ghost" style="margin-bottom:12px" onClick=${() => setFilter('pending')}>‹ Zurück zu den Videos</button>
       <h2 class="section">Budget</h2>
       <${BudgetCard} owner=${owner} />
       <h2 class="section">Kanäle</h2>
       <${Channels} owner=${owner} />
       <h2 class="section">Figuren</h2>
-      <${Characters} owner=${owner} />`
-    : html`
-      <${BudgetLine} onOpen=${() => setFilter('settings')} />
-      ${!data ? html`<p class="note">Lade …</p>`
-        : data.error ? html`<div class="card">Die Entwürfe konnten nicht geladen werden.</div>`
-        : filter === 'pending' && focus ? html`<${FocusReview} drafts=${drafts} owner=${owner} onChanged=${load} onList=${() => setFocusKept(false)} />`
-        : drafts.length === 0 ? html`<div class="card"><p class="note" style="margin:0">${filter === 'pending' ? 'Nichts zu tun. Der Marketing-Agent legt jeden Morgen neue Videos hier ab.' : 'Nichts hier.'}</p></div>`
-        : html`${filter === 'pending' && drafts.length > 1 ? html`<div class="inline" style="justify-content:flex-end;margin-bottom:10px"><button class="btn small ghost" onClick=${() => setFocusKept(true)}>Nacheinander prüfen</button></div>` : null}
-          <div class="ads">${sorted.map((d) => html`<${AdDraftCard} key=${d.id} draft=${d} owner=${owner} connected=${connected} onChanged=${load} />`)}</div>`}`}
+      <${Characters} owner=${owner} />`;
+  }
+  return html`
+    <div class="now"><div class="tabs subtabs">${Object.entries(APPROVAL_FILTERS).map(([k, label]) => html`<button class=${filter === k ? 'on' : ''} onClick=${() => setFilter(k)}>${label}${counts[k] ? html` <span class=${k === 'pending' ? 'count' : 'muted'}>${counts[k]}</span>` : null}</button>`)}</div></div>
+    <${BudgetLine} onOpen=${() => setFilter('settings')} />
+    ${!data ? html`<p class="note">Lade …</p>`
+      : data.error ? html`<div class="card">Die Entwürfe konnten nicht geladen werden.</div>`
+      : filter === 'pending' && focus ? html`<${FocusReview} drafts=${drafts} owner=${owner} onChanged=${load} onList=${() => setFocusKept(false)} />`
+      : drafts.length === 0 ? html`<div class="card"><p class="note" style="margin:0">${EMPTY[filter]}</p></div>`
+      : filter === 'posted' || filter === 'rejected' ? html`<${DraftList} drafts=${drafts} tab=${filter} owner=${owner} connected=${connected} onChanged=${load} />`
+      : html`${filter === 'pending' && drafts.length > 1 ? html`<div class="inline" style="justify-content:flex-end;margin-bottom:10px"><button class="btn small ghost" onClick=${() => setFocusKept(true)}>Nacheinander prüfen</button></div>` : null}
+        ${filter === 'approved' ? html`<p class="note" style="margin:0 0 10px">Sobald ein Video überall draußen ist, wandert es nach „Gepostet“.</p>` : null}
+        <div class="ads">${sorted.map((d) => html`<${AdDraftCard} key=${d.id} draft=${d} owner=${owner} connected=${connected} onChanged=${load} compact=${filter === 'approved'} />`)}</div>`}
   `;
 }
 

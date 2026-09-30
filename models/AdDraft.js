@@ -65,7 +65,8 @@ const adDraftSchema = new mongoose.Schema({
   },
   // Automatic posting (lib/socialPosting.js): the slot it goes out in, and per
   // platform where it stands. status: scheduled, posted, inbox (TikTok draft
-  // waiting in the app), failed (retried up to 3 times)
+  // waiting in the app), failed (retried up to 3 times), skipped (left out by
+  // a person)
   scheduledAt: { type: Date, default: null },
   publish: {
     instagram: {

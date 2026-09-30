@@ -187,9 +187,39 @@ input.num { width: 70px; padding: 5px 8px; border-radius: 8px; background: var(-
 .adline-title { display: flex; gap: 10px; align-items: baseline; min-width: 0; }
 .adline-title b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .adline a.pill { text-decoration: none; }
-.budgetline { display: block; width: 100%; margin: 0 0 12px; padding: 8px 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.budgetline { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; width: 100%; margin: 0 0 12px; padding: 8px 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
 .budgetline b { color: var(--text); }
 .budgetline.tight { border-color: var(--warning); }
+.budgetline .more { color: var(--cyan); white-space: nowrap; }
+/* Freigegeben: small preview, what is left to do next to it */
+.ad.compact { flex-direction: row; gap: 14px; }
+.thumb { position: relative; flex: 0 0 auto; width: 120px; aspect-ratio: 9 / 16; padding: 0; border: 0; border-radius: 12px; overflow: hidden; background: #000; cursor: pointer; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb span { position: absolute; inset: 0; display: grid; place-items: center; font-size: 22px; color: #fff; text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6); }
+@media (max-width: 600px) {
+  .ad.compact { flex-direction: row; }
+  .ad.compact .thumb { width: 84px; }
+}
+/* Gepostet, Verworfen: one line per video */
+.list-card { padding: 4px 0; }
+.draftrow { display: flex; gap: 12px; align-items: center; width: 100%; padding: 10px 14px; border: 0; border-bottom: 1px solid var(--border); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.draftrow:last-child { border-bottom: 0; }
+.draftrow:hover { background: var(--surface); }
+.draftrow img, .draftrow .noimg { flex: 0 0 auto; width: 40px; aspect-ratio: 9 / 16; object-fit: cover; border-radius: 6px; background: #000; }
+.draftrow-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.draftrow-main b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.draftrow-main .muted { font-size: 13px; }
+.draftrow .reason { font-size: 13px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.draftrow-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 13px; }
+.draftrow-side .pill { text-decoration: none; }
+.list-open { padding: 8px; border-bottom: 1px solid var(--border); }
+.list-open .card { margin: 0; }
+.pill.muted-pill { color: var(--muted); }
+@media (max-width: 600px) {
+  .draftrow { flex-wrap: wrap; }
+  .draftrow-side { flex-direction: row; flex-wrap: wrap; align-items: center; width: 100%; padding-left: 52px; gap: 6px 10px; }
+  .draftrow-side .inline { flex-wrap: nowrap; }
+}
 @media (max-width: 600px) {
   .now .subtabs { display: grid; grid-template-columns: repeat(4, 1fr); border-radius: 18px; }
   .now .subtabs button { padding: 8px 2px; font-size: 13px; border-radius: 14px; }
