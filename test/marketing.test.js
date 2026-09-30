@@ -87,6 +87,20 @@ test("agent: music style and TikTok sound tip are kept, shown and go back into i
   assert.equal(context.drafts.find((d) => d.campaign === "yap-0928-ohne-sound").sound, null);
 });
 
+test("agent: story drafts are accepted and hero episodes come back on their own", async () => {
+  const story = await draftWithVideo({ campaign: "yap-0930-story", template: "story", content: { blocks: [{ type: "text", text: "Hook" }] }, seconds: 27.5 });
+  assert.equal(story.template, "story");
+  await draftWithVideo({ campaign: "yap-0930-anna-1", template: "hero", kind: "hero", episode: "Anna packt.", content: { series: "anna", shots: [] } });
+  // More app videos than the recent list holds: the episode stays in `heroes`
+  for (let i = 0; i < 41; i++) await draftWithVideo({ campaign: `yap-0930-app-${i}` });
+  const context = (await request(ctx.app).get("/marketing/context").set(AGENT).expect(200)).body;
+  assert.equal(context.drafts.length, 40);
+  assert.ok(!context.drafts.some((d) => d.kind === "hero"));
+  assert.deepEqual(context.heroes.map((d) => d.campaign), ["yap-0930-anna-1"]);
+  assert.equal(context.heroes[0].content.series, "anna");
+  assert.equal(context.heroes[0].episode, "Anna packt.");
+});
+
 test("agent: needs its key, creates drafts, uploads the video once", async () => {
   await request(ctx.app).get("/marketing/context").expect(401);
   await request(ctx.app).get("/marketing/context").set({ Authorization: "Bearer wrong" }).expect(401);
