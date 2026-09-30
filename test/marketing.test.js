@@ -147,9 +147,17 @@ test("console: owners approve or reject, the agent sees decisions and reasons, p
   assert.equal((await posted("tiktok", false).expect(200)).body.draft.status, "approved");
   await posted("instagram").expect(200);
 
+  // Out on Instagram and nothing left to do: it moves from Freigegeben to Gepostet
   const approved = (await request(ctx.app).get("/admin/marketing/drafts?status=approved").set(admin(cookie)).expect(200)).body;
-  assert.deepEqual(approved.drafts.map((d) => d.campaign), ["yap-0928-oma-sonntag"]);
-  assert.ok(approved.drafts[0].posted.instagram);
+  assert.deepEqual(approved.drafts, []);
+  const done = (await request(ctx.app).get("/admin/marketing/drafts?status=posted").set(admin(cookie)).expect(200)).body;
+  assert.deepEqual(done.drafts.map((d) => d.campaign), ["yap-0928-oma-sonntag"]);
+  assert.equal(done.drafts[0].stage, "posted");
+  assert.ok(done.drafts[0].postedAt);
+  assert.deepEqual(done.drafts[0].visits, { visits: 0, submitted: 0 });
+  assert.equal(done.counts.approved, 0);
+  assert.equal(done.counts.posted, 1);
+  assert.equal(done.counts.rejected, 1);
 
   const context = (await request(ctx.app).get("/marketing/context").set(AGENT).expect(200)).body;
   assert.equal(context.visits.byDay.length, 30);
@@ -158,6 +166,52 @@ test("console: owners approve or reject, the agent sees decisions and reasons, p
   assert.equal(rejected.feedback, "Zu viel Text, keiner liest vier Zeilen");
   assert.ok(!context.drafts.some((d) => d.campaign === "yap-0928-halb"));
   assert.equal(await AdDraft.countDocuments({ status: "rendering" }), 1);
+});
+
+test("console tabs: a video stays under Freigegeben until every platform is out, left out or never meant", () => {
+  const d = (publish, posted = {}) => ({ status: "approved", publish, posted });
+  const at = new Date();
+  // Waiting for its slot, nothing out yet
+  assert.equal(marketing.stage(d({ instagram: { status: "scheduled" }, tiktok: { status: "scheduled" } })), "approved");
+  // Out on Instagram, the TikTok draft still waits in the app
+  assert.equal(marketing.stage({ ...d({ instagram: { status: "posted" }, tiktok: { status: "inbox" } }, { instagram: at }), status: "posted" }), "approved");
+  // ... and published there by hand: done
+  assert.equal(marketing.stage({ ...d({ instagram: { status: "posted" }, tiktok: { status: "inbox" } }, { instagram: at, tiktok: at }), status: "posted" }), "posted");
+  // Out on Instagram, TikTok failed: still to look at; left out: done
+  assert.equal(marketing.stage({ ...d({ instagram: { status: "posted" }, tiktok: { status: "failed" } }, { instagram: at }), status: "posted" }), "approved");
+  assert.equal(marketing.stage({ ...d({ instagram: { status: "posted" }, tiktok: { status: "skipped" } }, { instagram: at }), status: "posted" }), "posted");
+  // Approved without channels and not posted by hand yet: still to do
+  assert.equal(marketing.stage(d({ instagram: {}, tiktok: {} })), "approved");
+  // Out on Instagram before TikTok was connected: done, not brought back
+  assert.equal(marketing.stage({ ...d({ instagram: { status: "posted" }, tiktok: { status: null } }, { instagram: at }), status: "posted" }), "posted");
+  assert.equal(marketing.stage({ status: "pending" }), "pending");
+  assert.equal(marketing.stage({ status: "rejected" }), "rejected");
+});
+
+test("console: leave a platform out; posted videos list their visits", async () => {
+  const cookie = await ownerCookie();
+  const draft = await draftWithVideo();
+  await request(ctx.app).post(`/admin/marketing/drafts/${draft.id}/skip`).set(admin(cookie)).send({ platform: "tiktok" }).expect(409);
+  await request(ctx.app).post(`/admin/marketing/drafts/${draft.id}/decision`).set(admin(cookie)).send({ action: "approve" }).expect(200);
+  await AdDraft.updateOne({ _id: draft.id }, { "publish.instagram.status": "posted", "posted.instagram": new Date(), "publish.tiktok.status": "failed", "publish.tiktok.error": "spam_risk", status: "posted" });
+  const tabs = async (tab) => (await request(ctx.app).get(`/admin/marketing/drafts?status=${tab}`).set(admin(cookie)).expect(200)).body;
+  assert.deepEqual((await tabs("approved")).drafts.map((d) => d.id), [draft.id]);
+
+  await request(ctx.app).post(`/admin/marketing/drafts/${draft.id}/skip`).set(admin(cookie)).send({ platform: "youtube" }).expect(400);
+  await request(ctx.app).post(`/admin/marketing/drafts/${draft.id}/skip`).set(admin(cookie)).send({ platform: "instagram" }).expect(409);
+  const skipped = (await request(ctx.app).post(`/admin/marketing/drafts/${draft.id}/skip`).set(admin(cookie)).send({ platform: "tiktok" }).expect(200)).body.draft;
+  assert.equal(skipped.publish.tiktok.status, "skipped");
+  assert.equal(skipped.stage, "posted");
+
+  const LandingVisit = require("../models/LandingVisit");
+  await LandingVisit.create({ day: "2026-09-29", source: "instagram", campaign: DRAFT.campaign, visits: 7, submitted: 1 });
+  await LandingVisit.create({ day: "2026-09-30", source: "tiktok", campaign: DRAFT.campaign, visits: 3 });
+  const posted = await tabs("posted");
+  assert.deepEqual(posted.drafts.map((d) => d.id), [draft.id]);
+  assert.deepEqual(posted.drafts[0].visits, { visits: 10, submitted: 1 });
+  assert.equal(posted.counts.approved, 0);
+  assert.equal(posted.counts.posted, 1);
+  assert.deepEqual((await tabs("approved")).drafts, []);
 });
 
 test("console: viewers may look but not decide", async () => {
