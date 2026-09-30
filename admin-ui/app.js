@@ -1172,7 +1172,7 @@ function Waitlist({ role }) {
   `;
 }
 
-const TEMPLATE_LABELS = { chat: 'Chat', moment: 'Yap Moment', list: 'Liste', hero: 'Hero-Szene' };
+const TEMPLATE_LABELS = { chat: 'Chat', moment: 'Yap Moment', list: 'Liste', story: 'Story', hero: 'Hero-Folge' };
 const APPROVAL_FILTERS = { pending: 'Offen', approved: 'Freigegeben', posted: 'Gepostet', rejected: 'Verworfen' };
 const PUBLISH_STATUS = { scheduled: 'geplant', posting: 'wird gepostet …', processing: 'wird verarbeitet …', posted: 'gepostet', inbox: 'in der TikTok-App fertig machen', failed: 'fehlgeschlagen', skipped: 'ausgelassen' };
 const euro = (n) => (n == null ? '–' : `${n.toFixed(2).replace('.', ',')} €`);
