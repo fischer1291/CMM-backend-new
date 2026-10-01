@@ -1,0 +1,136 @@
+# Weekly encrypted dump of the production database, so losing the cluster or
+# the provider costs at most a week of data, not the company (plan 1.9 in
+# CMM/docs/SCALE-PLAN.md). mongodump → age (public key only; the private key
+# lives in the password manager, never here) → S3-compatible bucket (Backblaze
+# B2 or Cloudflare R2). Nothing leaves the runner unencrypted and nothing is
+# kept as a workflow artifact. Restore: README "Backup", CMM/docs/RUNBOOK.md.
+name: DB-Backup
+run-name: DB-Backup ${{ github.event_name == 'schedule' && 'wöchentlich' || 'von Hand' }}
+
+on:
+  schedule:
+    # Sundays 03:17 UTC; an odd minute keeps us off the crowded full hour
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+env:
+  # Pinned so a run is reproducible; bump by hand after checking the release notes
+  MONGO_TOOLS_VERSION: 100.13.0
+  AGE_VERSION: v1.3.1
+  # Dumps kept in the bucket (one per week); older ones are deleted after each upload
+  KEEP: 8
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Secrets vorhanden?
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          BACKUP_AGE_PUBLIC_KEY: ${{ secrets.BACKUP_AGE_PUBLIC_KEY }}
+          BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+          BACKUP_S3_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+        run: |
+          missing=""
+          for name in MONGODB_URI BACKUP_AGE_PUBLIC_KEY BACKUP_S3_ENDPOINT BACKUP_S3_BUCKET BACKUP_S3_ACCESS_KEY_ID BACKUP_S3_SECRET_ACCESS_KEY; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Secret(s) fehlen:$missing (GitHub → Settings → Secrets and variables → Actions). Siehe README, Abschnitt Backup."
+            exit 1
+          fi
+          case "$BACKUP_AGE_PUBLIC_KEY" in
+            age1*) ;;
+            *) echo "::error::BACKUP_AGE_PUBLIC_KEY ist kein öffentlicher age-Schlüssel (er beginnt mit age1). Der private Schlüssel (AGE-SECRET-KEY-1…) gehört nie zu GitHub."; exit 1 ;;
+          esac
+          case "$BACKUP_S3_ENDPOINT" in
+            https://*) ;;
+            *) echo "::error::BACKUP_S3_ENDPOINT muss mit https:// beginnen, z. B. https://s3.eu-central-003.backblazeb2.com oder https://<account>.r2.cloudflarestorage.com"; exit 1 ;;
+          esac
+
+      # The .deb from MongoDB's download server (ubuntu-latest is 24.04; the
+      # package is plain Go binaries and works on newer Ubuntu too) and the age
+      # release tarball from GitHub. No checkout: nothing from the repo is needed.
+      # shell: bash adds pipefail, so a failed curl in curl | tar fails the step.
+      - name: mongodump und age installieren
+        shell: bash
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/mongodb-database-tools.deb" \
+            "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2404-x86_64-$MONGO_TOOLS_VERSION.deb"
+          sudo dpkg -i "$RUNNER_TEMP/mongodb-database-tools.deb"
+          curl -fsSL "https://github.com/FiloSottile/age/releases/download/$AGE_VERSION/age-$AGE_VERSION-linux-amd64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP"
+          sudo install "$RUNNER_TEMP/age/age" /usr/local/bin/age
+          mongodump --version | head -n 1
+          age --version
+
+      # The plain archive exists only between mongodump and age and is removed
+      # on every exit of this step, also a failed one.
+      - name: Dump und Verschlüsselung
+        id: dump
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          BACKUP_AGE_PUBLIC_KEY: ${{ secrets.BACKUP_AGE_PUBLIC_KEY }}
+        run: |
+          cd "$RUNNER_TEMP"
+          trap 'rm -f dump.archive.gz' EXIT
+          name="$(date -u +%Y-%m-%d).archive.gz.age"
+          mongodump --uri "$MONGODB_URI" --archive=dump.archive.gz --gzip
+          size=$(stat -c %s dump.archive.gz)
+          if [ "$size" -lt 1024 ]; then
+            echo "::error::Der Dump ist nur $size Bytes groß. Zeigt MONGODB_URI auf die richtige Datenbank?"
+            exit 1
+          fi
+          age -r "$BACKUP_AGE_PUBLIC_KEY" -o "$name" dump.archive.gz
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "Dump verschlüsselt: $name ($(du -h "$name" | cut -f1))"
+
+      # The AWS CLI is preinstalled on ubuntu-latest. The region is part of
+      # the B2 endpoint host and "auto" for R2; the two checksum variables keep
+      # newer CLIs from sending request checksums that B2 and R2 reject.
+      # shell: bash adds pipefail: a failed "aws s3 ls" (key without list
+      # right) fails the step instead of silently skipping the cleanup.
+      - name: Upload in den Bucket und alte Dumps löschen
+        shell: bash
+        env:
+          NAME: ${{ steps.dump.outputs.name }}
+          BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: |
+          case "$BACKUP_S3_ENDPOINT" in
+            https://s3.*.backblazeb2.com*) region="${BACKUP_S3_ENDPOINT#https://s3.}"; region="${region%%.*}" ;;
+            *) region=auto ;;
+          esac
+          export AWS_DEFAULT_REGION="$region"
+          prefix="s3://$BACKUP_S3_BUCKET/mongo/"
+          aws s3 cp "$RUNNER_TEMP/$NAME" "$prefix$NAME" --endpoint-url "$BACKUP_S3_ENDPOINT" --no-progress
+          rm -f "$RUNNER_TEMP/$NAME"
+          # Only dated dump files count; oldest first, everything beyond KEEP goes
+          aws s3 ls "$prefix" --endpoint-url "$BACKUP_S3_ENDPOINT" \
+            | awk '$4 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\.archive\.gz\.age$/ { print $4 }' \
+            | sort > "$RUNNER_TEMP/dumps.txt"
+          head -n -"$KEEP" "$RUNNER_TEMP/dumps.txt" | while read -r old; do
+            echo "Lösche alten Dump $old"
+            aws s3 rm "$prefix$old" --endpoint-url "$BACKUP_S3_ENDPOINT"
+          done
+          {
+            echo "Hochgeladen: \`mongo/$NAME\`"
+            echo
+            echo "Dumps im Bucket: $(wc -l < "$RUNNER_TEMP/dumps.txt") vor dem Aufräumen, höchstens $KEEP danach (neuester zuerst):"
+            echo
+            tail -n "$KEEP" "$RUNNER_TEMP/dumps.txt" | sort -r | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"

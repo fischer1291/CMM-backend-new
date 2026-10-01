@@ -1,4 +1,7 @@
 // Test harness: real app + in-memory MongoDB; Twilio, APNs and Expo are faked.
+// With TEST_MONGODB_URI set (the restore drill, README "Backup") the suite runs
+// against that cluster instead, in a database of its own that it drops at the
+// end; the restored data next to it is never touched.
 const Module = require("module");
 
 process.env.NODE_ENV = "test";
@@ -103,9 +106,23 @@ const User = require("../models/User");
 let mongo;
 let ctx;
 
+// Every database the suite drops carries this prefix; reset() refuses any other
+const TEST_DB_PREFIX = "wannayap-test";
+
+/** The same cluster, another database: "mongodb+srv://u:p@host/prod?x=1" → ".../<name>?x=1". */
+function withDatabase(uri, name) {
+  const m = /^(mongodb(?:\+srv)?:\/\/[^/?]+)(?:\/[^?]*)?(\?.*)?$/.exec(String(uri));
+  if (!m) throw new Error(`not a MongoDB URI: ${uri}`);
+  return `${m[1]}/${name}${m[2] || ""}`;
+}
+
 async function setup() {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  if (process.env.TEST_MONGODB_URI) {
+    await mongoose.connect(withDatabase(process.env.TEST_MONGODB_URI, `${TEST_DB_PREFIX}-${process.pid}`));
+  } else {
+    mongo = await MongoMemoryServer.create();
+    await mongoose.connect(mongo.getUri(TEST_DB_PREFIX));
+  }
   // Short ring timeout so the missed-call path is testable
   ctx = createApp({ ringTimeoutMs: 1500 });
   await new Promise((resolve) => ctx.server.listen(0, resolve));
@@ -116,12 +133,19 @@ async function setup() {
 async function teardown() {
   ctx.io.close();
   await new Promise((resolve) => ctx.server.close(resolve));
+  if (!mongo) await dropTestDatabase();
   await mongoose.disconnect();
-  await mongo.stop();
+  if (mongo) await mongo.stop();
+}
+
+async function dropTestDatabase() {
+  const { databaseName } = mongoose.connection.db;
+  if (!databaseName.startsWith(TEST_DB_PREFIX)) throw new Error(`refusing to drop database ${databaseName}`);
+  await mongoose.connection.db.dropDatabase();
 }
 
 async function reset() {
-  await mongoose.connection.db.dropDatabase();
+  await dropTestDatabase();
   await User.syncIndexes();
   await require("../models/Call").syncIndexes();
   await require("../models/Talk").syncIndexes();
@@ -188,4 +212,4 @@ async function shareAll() {
 const befriend = (...phones) =>
   Promise.all(phones.map((p) => User.updateOne({ phone: p }, { $addToSet: { contacts: { $each: phones.filter((q) => q !== p) } } })));
 
-module.exports = { setup, teardown, reset, fakes, talked, shareAll, befriend };
+module.exports = { setup, teardown, reset, fakes, talked, shareAll, befriend, withDatabase };

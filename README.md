@@ -140,6 +140,57 @@ Set up once, by hand (nothing in the repo does this):
       (≈ 20–30 $/month) only with an entry in `AppConfig.fixedCosts`
       (`CMM/docs/SCALE-PLAN.md`, 1.2 and 1.10).
 
+## Backup
+
+`.github/workflows/db-backup.yml` dumps the production database every Sunday
+03:17 UTC (and on "Run workflow"): `mongodump --archive --gzip`, encrypted
+with [age](https://github.com/FiloSottile/age) against the public key, then
+`aws s3 cp` to `s3://<bucket>/mongo/<YYYY-MM-DD>.archive.gz.age` at an
+S3-compatible endpoint (Backblaze B2 or Cloudflare R2, free tier). The
+newest 8 dumps stay in the bucket, older ones are deleted after each upload.
+The plain archive never leaves the runner and is deleted right after
+encryption; the run fails with an `::error::` naming the missing secret when
+one is not set. GitHub mails the owner when a scheduled run fails; the alert
+"last dump older than 8 days" comes with plan 1.10.
+
+GitHub secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Purpose |
+|---|---|
+| `MONGODB_URI` | Connection string of the production cluster; a user with read access to the database is enough. It must name the database (`…mongodb.net/wannayap?…`), so only that database is dumped and restored, not `admin` and everything else on the cluster |
+| `BACKUP_AGE_PUBLIC_KEY` | The public half of the age key pair (`age1…`), from `age-keygen -o backup-key.txt` |
+| `BACKUP_S3_ENDPOINT` | `https://s3.<region>.backblazeb2.com` or `https://<account>.r2.cloudflarestorage.com` |
+| `BACKUP_S3_BUCKET` | Bucket name (private, no public access) |
+| `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY` | A key limited to that bucket with read, write and delete |
+
+Atlas → Network Access must allow GitHub-hosted runners, which have no fixed
+IPs: either `0.0.0.0/0` (what Render needs anyway unless its static outbound
+IPs are listed) or a temporary entry before a manual run. Otherwise
+`mongodump` fails with a server selection timeout, not with a clear message;
+the secrets check cannot catch this. The schedule runs on `main` only (merge
+first; the first Sunday run comes after the merge), and GitHub pauses it after
+60 days without a commit, re-enable it under Actions.
+
+The private key (`AGE-SECRET-KEY-1…` in `backup-key.txt`) is never in this
+repo and never at GitHub: it lives in the password manager only, with
+emergency access for the second owner (plan 1.8). Without it every dump is
+noise; with it every dump is plain text.
+
+Restore into a temporary cluster (never into production; the drill with
+dates and checks is in the app repo, `CMM/docs/RUNBOOK.md`):
+
+```bash
+aws s3 cp --endpoint-url "$BACKUP_S3_ENDPOINT" s3://<bucket>/mongo/<YYYY-MM-DD>.archive.gz.age .
+age -d -i backup-key.txt -o dump.archive.gz <YYYY-MM-DD>.archive.gz.age
+mongorestore --uri "<temporary cluster>" --archive=dump.archive.gz --gzip --drop
+```
+
+Then `TEST_MONGODB_URI="<temporary cluster>" npm test`: the suite runs
+against that cluster in a database of its own (`wannayap-test-<pid>`, created
+and dropped by the run) and proves that this code version works with it; the
+restored data next to it stays untouched. `test/helpers.js` refuses to drop
+any database without that prefix.
+
 ## Subscriptions (Wanna yap+)
 
 RevenueCat posts every subscription event to `POST /webhooks/revenuecat`
@@ -186,3 +237,4 @@ needs `REVENUECAT_API_KEY`.
 | `REVENUECAT_API_KEY` | no | RevenueCat secret API key (v1) for `GET /v1/subscribers/{id}`: `POST /me/plus/sync` after a purchase in the app, and a TRANSFER whose source we don't know. Without it sync answers 501 and such a transfer grants Plus without end date (logged) |
 | `POST_SLOTS` | no | When approved ad videos go out, Europe/Berlin, default `12:00,18:00` (one video per slot) |
 | `PORT` | no | Set by Render |
+| `TEST_MONGODB_URI` | no | Tests only: `npm test` runs against this cluster (in its own `wannayap-test-<pid>` database) instead of the in-memory MongoDB; used in the restore drill, see Backup |
