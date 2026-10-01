@@ -22,6 +22,10 @@ npm start       # needs the environment below
 | `lib/push.js` | Expo and VoIP (APNs) push |
 | `lib/agora.js` | Agora RTC tokens |
 
+What is still missing on the way to a profitable, scalable company (processes,
+automation, alerts, finance, compliance) is planned in the app repo:
+`CMM/docs/SCALE-PLAN.md`. Many of its items name files in this repo.
+
 ## Authentication
 
 `POST /verify/check` returns a JWT after SMS verification. Clients send it as
