@@ -16,6 +16,9 @@ const landingVisitSchema = new mongoose.Schema({
   engaged: { type: Number, default: 0 },
   formStarted: { type: Number, default: 0 },
   submitted: { type: Number, default: 0 },
+  // Tapped a store button (live mode and pre-order): the first step of the
+  // other way off the page, visit → store → download → registration
+  storeClicks: { type: Number, default: 0 },
 });
 
 landingVisitSchema.index({ day: 1, source: 1, campaign: 1 }, { unique: true });

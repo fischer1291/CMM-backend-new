@@ -1044,6 +1044,10 @@ function Funnel({ funnel, mailConfigured }) {
         <div class="bar"><i style=${`width:${top ? Math.max(2, (n / top) * 100) : 0}%`}></i></div>
       </div>`;
     })}
+    <div class="fstep" style="margin-top:14px">
+      <div class="fhead"><span><b>Store-Klicks</b> <span class="muted">der andere Weg: auf einen Store-Button getippt (Download und Registrierung folgen später)</span></span><span><b>${num(funnel.storeClicks || 0)}</b> <span class="muted">${pct(top ? (funnel.storeClicks || 0) / top : null)}</span></span></div>
+      <div class="bar"><i style=${`width:${top ? Math.max(2, ((funnel.storeClicks || 0) / top) * 100) : 0}%`}></i></div>
+    </div>
     ${hint ? html`<p class="note warn" style="margin:10px 0 0">💡 ${hint}</p>` : null}
   </div>`;
 }
@@ -1126,6 +1130,7 @@ function Waitlist({ role }) {
       <${Kpi} label="Besuche 7 Tage" value=${num(visits.last7Days)} sub="inklusive heute" />
       <${Kpi} label="Besuche 30 Tage" value=${num(visits.last30Days)} sub="inklusive heute" color="var(--violet)" />
       <${Kpi} label="Besuch → Anmeldung" value=${pct(visits.last30Days ? visits.signups30Days / visits.last30Days : null)} sub=${`${num(visits.signups30Days)} bestätigte Anmeldungen (30 Tage)`} color="var(--pink)" />
+      <${Kpi} label="Besuch → Store-Klick" value=${pct(visits.last30Days ? (visits.storeClicks30Days || 0) / visits.last30Days : null)} sub=${`${num(visits.storeClicks30Days || 0)} Store-Klicks (30 Tage)`} color="var(--cyan)" />
     </div>
     ${visits.funnel ? html`<${Funnel} funnel=${visits.funnel} mailConfigured=${data.mailConfigured} />` : null}
     <div class="grid2">
@@ -1134,11 +1139,12 @@ function Waitlist({ role }) {
         <h3 style="margin:0 0 2px">Kampagnen</h3>
         <div class="note" style="margin-bottom:6px">letzte 30 Tage · Anmeldungen: bestätigt</div>
         ${visits.campaigns.length ? html`<table>
-          <thead><tr><th>Quelle · Kampagne</th><th style="text-align:right">Besuche</th><th style="text-align:right" title="15 s geblieben oder gescrollt">Gelesen</th><th style="text-align:right" title="ins E-Mail-Feld getippt">Formular</th><th style="text-align:right">Gesendet</th><th style="text-align:right">Bestätigt</th><th style="text-align:right">Quote</th></tr></thead>
+          <thead><tr><th>Quelle · Kampagne</th><th style="text-align:right">Besuche</th><th style="text-align:right" title="15 s geblieben oder gescrollt">Gelesen</th><th style="text-align:right" title="ins E-Mail-Feld getippt">Formular</th><th style="text-align:right">Gesendet</th><th style="text-align:right">Bestätigt</th><th style="text-align:right">Quote</th><th style="text-align:right" title="auf einen Store-Button getippt, und der Anteil der Besuche">Store-Klicks</th></tr></thead>
           <tbody>${visits.campaigns.map((c) => html`<tr>
             <td><strong>${c.source}</strong>${c.campaign ? html`<div class="muted" style="font-size:12px;white-space:normal;overflow-wrap:anywhere">${c.campaign}</div>` : null}</td>
             <td style="text-align:right">${num(c.visits)}</td><td style="text-align:right">${num(c.engaged)}</td><td style="text-align:right">${num(c.formStarted)}</td><td style="text-align:right">${num(c.submitted)}</td><td style="text-align:right">${num(c.signups)}</td>
             <td style="text-align:right">${pct(c.visits ? c.signups / c.visits : null)}</td>
+            <td style="text-align:right">${num(c.storeClicks || 0)} <span class="muted">${pct(c.storeRate)}</span></td>
           </tr>`)}</tbody>
         </table>` : html`<p class="note" style="margin:0">Noch keine Besuche.</p>`}
         <p class="note" style="margin:10px 0 0">Quelle aus <code>utm_source</code>, sonst die Plattform, von der der Besuch kam (z. B. Link in der Instagram-Bio), „empfehlung“ oder „direkt“. Gezählt wird nur eine Zahl pro Tag und Quelle, ohne Cookies und ohne IP.</p>
