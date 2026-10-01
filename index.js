@@ -58,6 +58,9 @@ async function main() {
   if (agoraCredentials().usingLegacyCertificate) {
     console.error("❌ AGORA_APP_CERTIFICATE not set: calls will fail (no RTC tokens)");
   }
+  if (process.env.AUTH_REQUIRED !== "true") {
+    console.error("❌ AUTH_REQUIRED is not 'true': token-less requests may act as any phone number (legacy mode, see README)");
+  }
 
   const { server, io, calls } = createApp();
 

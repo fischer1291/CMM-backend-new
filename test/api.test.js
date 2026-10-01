@@ -2,7 +2,7 @@ const { test, before, after, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const request = require("supertest");
 const { io: connect } = require("socket.io-client");
-const { setup, teardown, reset, fakes, talked } = require("./helpers");
+const { setup, teardown, reset, fakes, talked, befriend } = require("./helpers");
 const User = require("../models/User");
 const Call = require("../models/Call");
 const CallMoment = require("../models/CallMoment");
@@ -210,6 +210,7 @@ const once = (socket, event, ms = 5000) =>
 test("socket: calls use the token's phone, create a Call and reach the callee", async () => {
   const anna = await login(ANNA, "Anna");
   const ben = await login(BEN);
+  await befriend(ANNA, BEN);
   const caller = await socketFor(anna);
   const callee = await socketFor(ben);
   try {
@@ -262,6 +263,7 @@ test("legacy: the currently released app (no token) keeps working", async () => 
   await request(ctx.app).post("/verify/start").send({ phone: ANNA }).expect(200);
   await request(ctx.app).post("/verify/check").send({ phone: ANNA, code: fakes.approvedCode }).expect(200);
   await request(ctx.app).post("/auth/register").send({ phone: BEN, pushToken: "ExponentPushToken[b]" }).expect(200);
+  await befriend(ANNA, BEN);
 
   await request(ctx.app).post("/me/update").send({ phone: ANNA, name: "Anna" }).expect(200);
   const me = await request(ctx.app).get(`/me?phone=${encodeURIComponent(ANNA)}`).expect(200);
@@ -313,6 +315,7 @@ test("legacy: the currently released app (no token) keeps working", async () => 
 async function twoUsers() {
   const anna = await login(ANNA, "Anna");
   const ben = await login(BEN, "Ben");
+  await befriend(ANNA, BEN);
   const caller = await socketFor(anna);
   const callee = await socketFor(ben);
   return { anna, ben, caller, callee, close: () => (caller.close(), callee.close()) };
@@ -405,6 +408,7 @@ test("calls: accepting after the caller cancelled makes the callee hang up", asy
 test("calls: a cancelled call is replayed to a device that connects right after", async () => {
   const anna = await login(ANNA, "Anna");
   const ben = await login(BEN);
+  await befriend(ANNA, BEN);
   // Ben is offline but reachable by push (e.g. woken by VoIP)
   await User.updateOne({ phone: BEN }, { pushToken: "ExponentPushToken[ben]" });
   const caller = await socketFor(anna);
@@ -432,6 +436,7 @@ test("calls: a cancelled call is replayed to a device that connects right after"
 test("calls: unreachable callee (offline, no push token) fails immediately", async () => {
   const anna = await login(ANNA);
   await login(BEN);
+  await befriend(ANNA, BEN);
   await User.updateOne({ phone: BEN }, { $unset: { pushToken: 1, voipToken: 1 } });
   const caller = await socketFor(anna);
   try {
@@ -469,6 +474,7 @@ test("calls: declining over HTTP works without a socket (lock screen, app just w
   const anna = await login(ANNA, "Anna");
   const ben = await login(BEN, "Ben");
   const carl = await login(CARL, "Carl");
+  await befriend(ANNA, BEN);
   // Ben is only reachable by push: no socket connected
   await User.updateOne({ phone: BEN }, { pushToken: "ExponentPushToken[ben]" });
   const caller = await socketFor(anna);

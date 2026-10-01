@@ -136,6 +136,7 @@ async function reset() {
   require("../lib/metrics").resetActivityCache();
   require("../lib/accessGate").reset();
   require("../lib/appConfig").resetAppCache();
+  require("../lib/appConfig").resetFlagsCache();
   await require("../models/SupportTicket").syncIndexes();
   await require("../models/AppConfig").syncIndexes();
   await require("../models/BannedNumber").syncIndexes();
@@ -174,4 +175,8 @@ async function shareAll() {
   await require("../models/CallMoment").updateMany({ status: "pending" }, { status: "shared", sharedAt: new Date() });
 }
 
-module.exports = { setup, teardown, reset, fakes, talked, shareAll };
+/** Everyone here has the others' numbers: they may call each other (lib/relations.js isConnected). */
+const befriend = (...phones) =>
+  Promise.all(phones.map((p) => User.updateOne({ phone: p }, { $addToSet: { contacts: { $each: phones.filter((q) => q !== p) } } })));
+
+module.exports = { setup, teardown, reset, fakes, talked, shareAll, befriend };

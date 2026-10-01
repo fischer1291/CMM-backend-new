@@ -35,6 +35,10 @@ const userSchema = new mongoose.Schema({
   // Registered users found in this user's address book (E.164). Used to limit
   // status updates and the CallMoments feed to people who know each other.
   contacts: { type: [String], default: [], index: true },
+  // People connected through an invite (lib/invites.js), E.164. Kept apart
+  // from the address book matches so an address book sync never drops them:
+  // /contacts/match merges them back into `contacts` every time.
+  connections: { type: [String], default: [] },
 
   // How the current availability started: manual | session | schedule
   availableSource: { type: String, default: null },

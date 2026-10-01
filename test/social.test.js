@@ -142,6 +142,7 @@ test("invites: the invited person is connected on sign-up; inviters hear it once
 test("audio calls: the call, socket event and call push say it's audio only", async () => {
   const anna = await login(ANNA, "Anna");
   const ben = await login(BEN, "Ben");
+  await befriend(ANNA, BEN);
   const caller = await socketFor(anna);
   const callee = await socketFor(ben);
   try {

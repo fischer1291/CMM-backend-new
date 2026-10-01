@@ -72,8 +72,8 @@ module.exports = (io) => {
   async function block(me, other) {
     await Block.updateOne({ blocker: me, blocked: other }, { $setOnInsert: { createdAt: new Date() } }, { upsert: true });
     // Shared circles stay; members who blocked each other just don't see each other there
-    const pull = { contacts: other, "statsSharing.sharedWith": other };
-    const pullMe = { contacts: me, "statsSharing.sharedWith": me };
+    const pull = { contacts: other, connections: other, "statsSharing.sharedWith": other };
+    const pullMe = { contacts: me, connections: me, "statsSharing.sharedWith": me };
     await Promise.all([User.updateOne({ phone: me }, { $pull: pull }), User.updateOne({ phone: other }, { $pull: pullMe })]);
     // Both apps drop the other one from the contact list right away
     io.to(`user:${me}`).emit("contactRemoved", { phone: other });

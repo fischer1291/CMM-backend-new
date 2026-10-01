@@ -33,8 +33,37 @@ automation, alerts, finance, compliance) is planned in the app repo:
 handshake. An authenticated request always acts as the phone in its token.
 
 Rollout: while `AUTH_REQUIRED` is not `true`, requests **without** a token are
-still accepted (older app versions). Once all clients send tokens, set
-`AUTH_REQUIRED=true`.
+still accepted (older app versions) and a token-less client may act as any
+phone number it claims. Once all clients send tokens, set `AUTH_REQUIRED=true`.
+Check the production value with `GET /api/push-health`: `"authRequired":true`
+means the flag is on; `false` means set it on Render now. `index.js` logs an
+error line at start while it is off. The legacy code paths (`lib/auth.js`,
+`socket.js`, `/rtcToken`, `phones` in `/contacts/match`) are removed once
+`minBuild` in the app config is at least the first build that sends tokens.
+
+## Who may call whom
+
+`lib/calls.js` startCall refuses a call with reason `not_connected` unless the
+two are connected (`lib/relations.js` isConnected): each has the other in
+`User.contacts`, or both are members of the same circle. Contacts are the
+address book matches from `POST /contacts/match` plus `User.connections`, the
+people one got connected with through an invite (`lib/invites.js`); the match
+merges the connections back into `contacts` on every sync, so an invited pair
+stays connected even when neither has the other's number saved. A block ends a
+connection. Refused calls are counted per day (`MetricsDaily.ops.callsRejectedNotConnected`).
+
+Console → App → Flags: `calls_strict_contacts` (default on when unset) switches
+the check; `false` lets anyone ring anyone again, for a rollout only.
+
+`POST /contacts/match` is limited to 60 requests per user (token phone,
+otherwise IP) per 24 hours; the app syncs at start, after someone joined and
+on pull-to-refresh. `lastOnline` is only returned for matches who have the
+caller as a contact too (a token-less legacy client therefore sees none). A request with more than 2,000 hashes (or legacy phone numbers) and no match
+is logged and counted (`MetricsDaily.ops.matchSuspicious`).
+
+Day counters like these live in `lib/opsCounters.js` (one `OpsTally`
+document per day, raised with `$inc`); `lib/metrics.js` copies them into the
+day's snapshot under `ops`.
 
 ## Health check
 
