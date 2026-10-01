@@ -8,6 +8,7 @@ const { setup, teardown, reset, fakes } = require("./helpers");
 const Admin = require("../models/Admin");
 const AdminAudit = require("../models/AdminAudit");
 const User = require("../models/User");
+const Talk = require("../models/Talk");
 const { totpAt, currentStep } = require("../lib/adminAuth");
 
 let ctx;
@@ -88,6 +89,30 @@ test("research: the second talk invites, the first does not; a talk recorded twi
   await User.updateOne({ phone: CARL }, { plus: { active: true, until: new Date(Date.now() + 864e5), since: new Date(), source: "referral" } });
   await talked(CARL, BEN);
   assert.ok((await researchOf(CARL)).invitedAt instanceof Date);
+});
+
+test("research: a circle round counts as one talk for its owner, not for the others; active people are asked on their next talk", async () => {
+  await login(ANNA);
+  await login(BEN);
+  await login(CARL);
+  // Anna's own record of a round with Ben and Carl, written like circles leaveRoom does
+  // (one document per participant, each listing everyone who overlapped)
+  const startedAt = new Date(Date.now() - 600 * 1000);
+  await Talk.create({ callId: "room-1:anna", participants: [ANNA, BEN, CARL], startedAt, seconds: 300, group: true, owner: ANNA });
+  await talked(ANNA, BEN);
+  assert.ok((await researchOf(ANNA)).invitedAt instanceof Date, "round plus a 1:1 talk: invited");
+  assert.equal((await researchOf(BEN)).invitedAt, null, "Ben appears only in Anna's record: his first talk");
+
+  // Carl was active long before: three records of other people's rounds
+  // and two 1:1 talks of his own that never went through recordTalk
+  for (const n of [1, 2, 3]) {
+    await Talk.create({ callId: `room-${n}:ben`, participants: [BEN, CARL], startedAt, seconds: 300, group: true, owner: BEN });
+  }
+  await Talk.create({ callId: "old-1", participants: [CARL, BEN], startedAt, seconds: 300 });
+  await Talk.create({ callId: "old-2", participants: [CARL, BEN], startedAt, seconds: 300 });
+  assert.equal((await researchOf(CARL)).invitedAt, null, "nothing happened yet");
+  await talked(CARL, ANNA);
+  assert.ok((await researchOf(CARL)).invitedAt instanceof Date, "more than two talks: invited on the next one");
 });
 
 test("research: booked or dismissed once, only after an invitation", async () => {

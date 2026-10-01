@@ -108,18 +108,22 @@ first talk raises `invitesActivated` on each inviter and grants what is due.
 
 ## User research
 
-After someone's second talk (`Talk` documents with them in `participants`,
-counted in `lib/calls.js` recordTalk, so a replayed call counts once) the
-server sets `User.research.invitedAt`, and the app shows a card: 15 minutes
-with the founder, 7 days of Wanna yap+ as a thank-you. People whose Plus is
-an admin grant are not asked. `GET /me` (own profile only) returns
+Once someone has two talks (`Talk` documents counted like `lib/stats.js`
+does: 1:1 talks with them, group rounds only their own record; checked in
+`lib/calls.js` recordTalk, so a replayed call counts once and someone who
+was active before this existed is asked on their next 1:1 talk) the server
+sets `User.research.invitedAt`, and the app shows a card: 15 minutes with
+the founder, 7 days of Wanna yap+ as a thank-you. People whose Plus is an
+admin grant are not asked. `GET /me` (own profile only) returns
 `research: { invitedAt, bookedAt, dismissedAt, doneAt }`;
 `POST /me/research { action: "booked" | "dismissed" }` records the answer
 once (409 `not_invited` before the invitation) and the card stays away
-either way. In the console `POST /admin/users/:id/research-done` (support,
-audited as `research_done`) marks the talk as held; the thank-you is the
-usual `POST /admin/users/:id/plus { days: 7 }`. The user detail shows
-`research` once invited. Guide, notes and the weekly target:
+either way. `POST /admin/users/:id/research-done` (support, audited as
+`research_done`) marks the talk as held; the thank-you is the usual
+`POST /admin/users/:id/plus { days: 7 }`. `GET /admin/users/:id` carries
+`research` once invited; the console page shows no research row or button
+yet, so until it does the call is made against the API. The data export
+(`GET /me/export`) includes `research`. Guide, notes and the weekly target:
 `CMM/docs/RESEARCH.md`.
 
 ## Onboarding milestones and the north star

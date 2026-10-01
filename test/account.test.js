@@ -92,6 +92,8 @@ test("export: everything stored about the user, as JSON", async () => {
   assert.deepEqual(Object.keys(data.milestones), ["verifiedAt", "contactsSyncedAt", "firstRegisteredContactAt", "pushGrantedAt", "firstCallAt", "firstTalkAt", "firstInviteAt"]);
   assert.ok(Date.parse(data.milestones.verifiedAt) > 0);
   assert.equal(data.milestones.pushGrantedAt, null);
+  // So is the research invitation (README "User research")
+  assert.deepEqual(data.research, { invitedAt: null, bookedAt: null, dismissedAt: null, doneAt: null });
 });
 
 test("moments: pictures only as our Cloudinary uploads or inline images, no foreign URLs", async () => {
