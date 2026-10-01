@@ -141,6 +141,8 @@ async function reset() {
   await require("../models/BannedNumber").syncIndexes();
   await require("../models/ClientError").syncIndexes();
   await require("../models/WaitlistEntry").syncIndexes();
+  // Unique event ids: the webhook relies on the 11000 for a retried event
+  await require("../models/SubscriptionEvent").syncIndexes();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
   fakes.voipPushes.length = 0;

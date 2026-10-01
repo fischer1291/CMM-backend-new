@@ -70,6 +70,26 @@ Set up once, by hand (nothing in the repo does this):
       (≈ 20–30 $/month) only with an entry in `AppConfig.fixedCosts`
       (`CMM/docs/SCALE-PLAN.md`, 1.2 and 1.10).
 
+## Subscriptions (Wanna yap+)
+
+RevenueCat posts every subscription event to `POST /webhooks/revenuecat`
+(`routes/plus.js`). Each event is stored first in `SubscriptionEvent`
+(`models/SubscriptionEvent.js`: event id, user, type, product, store,
+environment, price in cents, currency, period, expiry, transfer ids, and the
+`result` the webhook decided), with the event id unique, so a retry answers
+`duplicate` and changes nothing; if applying fails, the stored event is
+removed again and the retry applies. The stored rows are the basis for MRR
+and churn; the raw payload is not kept. Sandbox purchases (test accounts)
+keep Plus for the tester with `plus.source = "sandbox"` and show up
+separately in the console, never as paying. A TRANSFER moves Plus from the
+old app user to the new one. `User.plus.status` says what the store last
+reported (active, trial, cancelled, billing_issue, paused, expired).
+
+`POST /me/plus/sync` (authenticated) asks RevenueCat's REST API for the
+caller's subscriptions and sets Plus from the answer, for the moment right
+after a purchase or restore when the webhook may still be on its way; it
+needs `REVENUECAT_API_KEY`.
+
 ## Environment
 
 | Variable | Required | Purpose |
@@ -92,5 +112,7 @@ Set up once, by hand (nothing in the repo does this):
 | `ADMIN_PUSH_PUBLIC_KEY`, `ADMIN_PUSH_PRIVATE_KEY` | no | VAPID key pair for push to the admin console (`npx web-push generate-vapid-keys`); without them a pair is created once and kept in the database |
 | `ADMIN_RP_ID`, `ADMIN_ORIGIN` | no | Passkeys (Face ID) for the console: the host and origin the console runs on, default the host of `PUBLIC_API_URL` and `https://` + that host |
 | `ADMIN_PUSH_CONTACT` | no | Contact address sent to the push services, default `hallo@wannayap.app` |
+| `REVENUECAT_WEBHOOK_SECRET` | purchases | The Authorization value RevenueCat sends to `POST /webhooks/revenuecat`; without it the webhook refuses everything |
+| `REVENUECAT_API_KEY` | no | RevenueCat secret API key (v1) for `GET /v1/subscribers/{id}`: `POST /me/plus/sync` after a purchase in the app, and a TRANSFER whose source we don't know. Without it sync answers 501 and such a transfer grants Plus without end date (logged) |
 | `POST_SLOTS` | no | When approved ad videos go out, Europe/Berlin, default `12:00,18:00` (one video per slot) |
 | `PORT` | no | Set by Render |

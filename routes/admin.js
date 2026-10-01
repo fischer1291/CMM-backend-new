@@ -640,8 +640,10 @@ module.exports = (io) => {
   router.get("/admin/plus", requireAdmin("viewer"), async (req, res) => {
     const now = new Date();
     const activeQuery = { "plus.active": true, $or: [{ "plus.until": null }, { "plus.until": { $gt: now } }] };
-    const [active, bySource, byProduct, interested, features, recent, limits] = await Promise.all([
+    const [active, sandbox, bySource, byProduct, interested, features, recent, limits] = await Promise.all([
       User.countDocuments(activeQuery),
+      // Testers with a sandbox purchase: Plus for them, but never paying
+      User.countDocuments({ ...activeQuery, "plus.source": "sandbox" }),
       User.aggregate([{ $match: activeQuery }, { $group: { _id: "$plus.source", n: { $sum: 1 } } }]),
       User.aggregate([{ $match: { ...activeQuery, "plus.source": "store" } }, { $group: { _id: "$plus.productId", n: { $sum: 1 } } }]),
       User.countDocuments({ "plusInterest.at": { $ne: null } }),
@@ -652,6 +654,7 @@ module.exports = (io) => {
     res.json({
       success: true,
       active,
+      sandbox,
       bySource: Object.fromEntries(bySource.map((x) => [x._id || "unknown", x.n])),
       byProduct: Object.fromEntries(byProduct.map((x) => [x._id || "unknown", x.n])),
       interest: { total: interested, last7Days: recent, features: Object.fromEntries(INTEREST.map((f) => [f, features.find((x) => x._id === f)?.n || 0])) },

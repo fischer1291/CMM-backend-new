@@ -426,7 +426,7 @@ function Audit() {
 const PLATFORM = { ios: 'iOS', android: 'Android' };
 const dateTime = (d) => (d ? new Date(d).toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'short' }) : '–');
 const date = (d) => (d ? new Date(d).toLocaleDateString('de-DE', { dateStyle: 'medium' }) : '–');
-const PLUS_SOURCES = { store: 'App Store', admin: 'vergeben', gift: 'Geschenk' };
+const PLUS_SOURCES = { store: 'App Store', sandbox: 'Sandbox (Tester)', admin: 'vergeben', gift: 'Geschenk' };
 const REASONS = { spam: 'Spam', harassment: 'Belästigung', inappropriate: 'Unangemessen', other: 'Sonstiges' };
 const RESOLUTIONS = { dismiss: 'Verworfen', hide_moment: 'Moment ausgeblendet', delete_moment: 'Moment gelöscht', suspend: 'Gesperrt', ban: 'Gebannt' };
 
@@ -978,6 +978,7 @@ function PlusPanel({ role }) {
       <${Kpi} label="Interesse gezeigt" value=${num(data.interest.total)} sub=${`${num(data.interest.last7Days)} in den letzten 7 Tagen`} color="var(--pink)" />
       <${Kpi} label="Käufe" value=${data.webhookConfigured ? 'verbunden' : 'noch nicht'} sub=${data.webhookConfigured ? 'RevenueCat-Webhook aktiv' : 'REVENUECAT_WEBHOOK_SECRET fehlt'} />
     </div>
+    ${data.sandbox > 0 ? html`<p class="note">${num(data.sandbox)} davon ${data.sandbox === 1 ? 'ist ein Sandbox-Kauf' : 'sind Sandbox-Käufe'} von Testern: Plus aktiv, aber nirgends als zahlend gezählt.</p>` : null}
     <div class="grid3">
       <div class="card">
         <div class="label">Grenzen</div>

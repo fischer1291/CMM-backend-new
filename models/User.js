@@ -90,7 +90,7 @@ const userSchema = new mongoose.Schema({
   // Missed calls up to here were seen in the call list
   callsSeenAt: { type: Date, default: null },
 
-  // Wanna yap+ (lib/plan.js). source: store (RevenueCat) | admin | gift | referral | waitlist
+  // Wanna yap+ (lib/plan.js). source: store (RevenueCat) | sandbox (store, test account) | admin | gift | referral | waitlist
   plus: {
     active: { type: Boolean, default: false },
     until: { type: Date, default: null },
@@ -99,6 +99,8 @@ const userSchema = new mongoose.Schema({
     productId: { type: String, default: null },
     // RevenueCat's last event, to ignore older ones arriving late
     eventAt: { type: Date, default: null },
+    // What the store last said (routes/plus.js); null for admin, gift, referral
+    status: { type: String, enum: ["active", "trial", "cancelled", "billing_issue", "paused", "expired"], default: null },
   },
   // "Interesse zeigen" before purchases are live: when, and what for
   plusInterest: {
