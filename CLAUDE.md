@@ -56,5 +56,7 @@ follows is `CMM/docs/SCALE-PLAN.md`.
 - **Owner / support / viewer**: console roles (`models/Admin.js`).
 - **Leader**: the one instance that runs background jobs (`lib/leader.js`).
 
-Operations docs (runbook, services, emergency, compliance) live in
-`CMM/docs/`, not here: one place per topic.
+Operations docs (runbook, services, emergency, the privacy change process)
+live in `CMM/docs/`, not here: one place per topic. The exception is
+`COMPLIANCE.md` in this root, because `test/compliance.test.js` checks it
+against `models/` on every run.

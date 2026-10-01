@@ -23,7 +23,15 @@ const researchOf = (user) => ({
   doneAt: user.research?.doneAt || null,
 });
 
-// GET /me            -> own profile (authenticated), with `research`
+// What the person agreed to in onboarding (README "Authentication"): only in
+// the own profile; null for accounts from before plan 1.6
+const consentOf = (user) => ({
+  ageConfirmedAt: user.consent?.ageConfirmedAt || null,
+  termsVersion: user.consent?.termsVersion || null,
+  privacyVersion: user.consent?.privacyVersion || null,
+});
+
+// GET /me            -> own profile (authenticated), with `research` and `consent`
 // GET /me?phone=...  -> profile of that user (name, avatar, last online)
 router.get("/", async (req, res) => {
   let phone;
@@ -43,7 +51,7 @@ router.get("/", async (req, res) => {
       return res.status(404).json({ success: false, error: "User not found" });
     }
     const own = !!viewer && phone === viewer;
-    res.json({ success: true, user: { ...profileOf(user), ...(own ? { research: researchOf(user) } : {}) } });
+    res.json({ success: true, user: { ...profileOf(user), ...(own ? { research: researchOf(user), consent: consentOf(user) } : {}) } });
   } catch (err) {
     res.status(500).json({ success: false, error: "Profil konnte nicht geladen werden" });
   }

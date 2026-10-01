@@ -115,6 +115,17 @@ const userSchema = new mongoose.Schema({
     dismissedAt: { type: Date, default: null },
     doneAt: { type: Date, default: null },
   },
+  // Consent given in onboarding (Art. 7 and 8 GDPR, COMPLIANCE.md): when the
+  // person confirmed to be at least 16, and which wording of the terms and
+  // the privacy policy they saw (CMM content/legal.ts TERMS_VERSION and
+  // PRIVACY_UPDATED). Written by routes/verify.js /check when the app sends
+  // it, again when a version changes; apps from before plan 1.6 send nothing
+  // and keep null.
+  consent: {
+    ageConfirmedAt: { type: Date, default: null },
+    termsVersion: { type: String, default: null },
+    privacyVersion: { type: String, default: null },
+  },
 
   // Moderation (admin console): no sign-in until then; tokens issued before
   // tokensValidAfter are rejected (lib/accessGate.js)

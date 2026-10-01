@@ -21,6 +21,7 @@ npm start       # needs the environment below
 | `lib/phone.js` | E.164 phone normalization |
 | `lib/push.js` | Expo and VoIP (APNs) push |
 | `lib/agora.js` | Agora RTC tokens |
+| `COMPLIANCE.md` | Record of processing per collection, processors, the privacy change process; `test/compliance.test.js` fails when a model has no row |
 
 What is still missing on the way to a profitable, scalable company (processes,
 automation, alerts, finance, compliance) is planned in the app repo:
@@ -31,6 +32,13 @@ automation, alerts, finance, compliance) is planned in the app repo:
 `POST /verify/check` returns a JWT after SMS verification. Clients send it as
 `Authorization: Bearer <token>` and as `auth.token` in the Socket.IO
 handshake. An authenticated request always acts as the phone in its token.
+The app sends `ageConfirmed` (true), `termsVersion` and `privacyVersion`
+(each up to 40 characters, `TERMS_VERSION` and `PRIVACY_UPDATED` from the
+app's `content/legal.ts`) with `/verify/check` once the person ticked the
+age box in onboarding; the backend stores them as `User.consent`
+(`ageConfirmedAt`, `termsVersion`, `privacyVersion`), again when a version
+changes, and never refuses a sign-in without them (older apps). `GET /me`
+and the export return `consent`.
 
 Rollout: while `AUTH_REQUIRED` is not `true`, requests **without** a token are
 still accepted (older app versions) and a token-less client may act as any

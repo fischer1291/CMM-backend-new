@@ -38,6 +38,33 @@ function reviewLoginStatus() {
 const sameCode = (a, b) =>
   a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
+// Consent sent with /check since plan 1.6: ageConfirmed (true only), and
+// the versions of the terms and the privacy policy the app showed. Nothing
+// here refuses a sign-in: older apps send no consent at all, and a bad
+// version is stored as null (the confirmation itself still counts).
+const MAX_VERSION_LENGTH = 40;
+const versionOf = (value) => {
+  const v = typeof value === "string" ? value.trim() : "";
+  return v && v.length <= MAX_VERSION_LENGTH ? v : null;
+};
+const consentOf = (body) =>
+  body?.ageConfirmed === true ? { termsVersion: versionOf(body.termsVersion), privacyVersion: versionOf(body.privacyVersion) } : null;
+
+/** Stores the consent once, and again whenever one of the versions changes. */
+async function recordConsent(phone, consent) {
+  await User.updateOne(
+    {
+      phone,
+      $or: [
+        { "consent.ageConfirmedAt": null },
+        { "consent.termsVersion": { $ne: consent.termsVersion } },
+        { "consent.privacyVersion": { $ne: consent.privacyVersion } },
+      ],
+    },
+    { $set: { consent: { ageConfirmedAt: new Date(), ...consent } } },
+  );
+}
+
 const countOps = (name) => opsCounters.count(name).catch((err) => console.error("❌ opsCounters:", err.message));
 // The full cap is logged once per day and instance, not once per refused start
 let capLoggedDay = null;
@@ -149,6 +176,8 @@ router.post("/check", perPhone(10), async (req, res) => {
     // Milestone: first verified sign-in (accounts from before the milestones
     // get it on their next one); never overwritten
     await User.updateOne({ phone, "milestones.verifiedAt": null }, { $set: { "milestones.verifiedAt": new Date() } });
+    const consent = consentOf(req.body);
+    if (consent) await recordConsent(phone, consent);
 
     res.json({
       success: true,

@@ -6,6 +6,8 @@ const User = require("../models/User");
 const Talk = require("../models/Talk");
 const Nudge = require("../models/Nudge");
 const CallMoment = require("../models/CallMoment");
+const MomentUnlock = require("../models/MomentUnlock");
+const SubscriptionEvent = require("../models/SubscriptionEvent");
 
 let ctx;
 before(async () => {
@@ -48,6 +50,7 @@ test("delete account: removes the user, their moments, talks, nudges and every t
   await Talk.create({ callId: "t1", participants: [ANNA, BEN], startedAt: new Date(), seconds: 600 });
   await Talk.create({ callId: "t2", participants: [BEN, CARL], startedAt: new Date(), seconds: 300 });
   await Nudge.create({ from: ANNA, to: BEN });
+  await MomentUnlock.create([{ phone: ANNA, day: "2026-10-01", via: "talk" }, { phone: BEN, day: "2026-10-01", via: "talk" }]);
 
   await request(ctx.app).delete("/me").expect(401);
   await request(ctx.app).delete("/me").set(auth(anna)).expect(200);
@@ -58,6 +61,7 @@ test("delete account: removes the user, their moments, talks, nudges and every t
   assert.equal(moments[0].totalReactions, 0);
   assert.deepEqual((await Talk.find()).map((t) => t.callId), ["t2"]);
   assert.equal(await Nudge.countDocuments(), 0);
+  assert.deepEqual((await MomentUnlock.find()).map((u) => u.phone), [BEN]);
   const benAfter = await User.findOne({ phone: BEN });
   assert.deepEqual(benAfter.contacts, [CARL]);
   assert.deepEqual(benAfter.statsSharing.sharedWith, []);
@@ -76,6 +80,9 @@ test("export: everything stored about the user, as JSON", async () => {
   await talked(ANNA, BEN);
   await postMoment(anna, BEN).expect(200);
   await Talk.create({ callId: "t1", participants: [ANNA, BEN], startedAt: new Date(), seconds: 600 });
+  const annaId = (await User.findOne({ phone: ANNA }))._id;
+  await SubscriptionEvent.create({ rcEventId: "ev-1", userId: annaId, appUserId: String(annaId), type: "INITIAL_PURCHASE", productId: "plus_monthly", store: "APP_STORE", priceCents: 299, currency: "EUR", eventAt: new Date("2026-10-01T10:00:00Z") });
+  await SubscriptionEvent.create({ rcEventId: "ev-2", appUserId: "someone-else", type: "RENEWAL" });
 
   await request(ctx.app).get("/me/export").expect(401);
   const { body } = await request(ctx.app).get("/me/export").set(auth(anna)).expect(200);
@@ -94,6 +101,12 @@ test("export: everything stored about the user, as JSON", async () => {
   assert.equal(data.milestones.pushGrantedAt, null);
   // So is the research invitation (README "User research")
   assert.deepEqual(data.research, { invitedAt: null, bookedAt: null, dismissedAt: null, doneAt: null });
+  // Consent (plan 1.6): nothing was sent in this login
+  assert.deepEqual(data.consent, { ageConfirmedAt: null, termsVersion: null, privacyVersion: null });
+  // Plus and the store's events for this person, never other people's
+  assert.equal(data.plus.active, false);
+  assert.deepEqual(data.subscriptions.map((e) => [e.type, e.productId, e.priceCents, e.currency]), [["INITIAL_PURCHASE", "plus_monthly", 299, "EUR"]]);
+  assert.ok(!JSON.stringify(data).includes("ev-1"), "no RevenueCat event ids in the export");
 });
 
 test("moments: pictures only as our Cloudinary uploads or inline images, no foreign URLs", async () => {
