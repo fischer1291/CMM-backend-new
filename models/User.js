@@ -80,6 +80,15 @@ const userSchema = new mongoose.Schema({
   // (E.164; they get the reward once this user had the first talk)
   joinedViaInvite: { type: Boolean, default: false },
   invitedBy: { type: [String], default: [] },
+  // Personal invite code in the share link (/einladung?von=CODE), 8
+  // characters from lib/waitlist.js newCode's alphabet; given on sign-up and
+  // to older accounts on their next GET /me (lib/invites.js ensureInviteCode).
+  // No default: the sparse unique index must skip accounts without one.
+  inviteCode: { type: String, unique: true, sparse: true },
+  // Device language from the Accept-Language header (e.g. "de-DE"), stored
+  // by /verify/check and /me/update: only measured (users.byLocale in
+  // lib/metrics.js), nothing is translated
+  locale: { type: String, default: null },
   // First invite sent (activation funnel) and invite rewards already given
   // (lib/referral.js)
   firstInviteAt: { type: Date, default: null },

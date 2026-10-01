@@ -118,6 +118,37 @@ first talk raises `invitesActivated` on each inviter and grants what is due.
 `/me/plan` returns `referral: { joined, activated, earned, toNext, ... }`,
 `toNext` counted on `activated`.
 
+## Invite links
+
+Every account has a personal invite code (`User.inviteCode`, 8 characters
+from the waitlist code alphabet, unique). `POST /verify/check` gives it on
+sign-up; accounts from before get theirs on their next own `GET /me`
+(`lib/invites.js` ensureInviteCode), and `GET /me` returns it as
+`inviteCode` (own profile only). The app shares `/einladung?von=CODE`.
+
+- `POST /invites/visit { code, platform: "ios" | "android" | "other" }`
+  (public, 60/h per IP): the page was opened. A counter per day, code and
+  platform (`InviteVisit`, TTL 400 days), nothing about the visitor. Answers
+  `{ success: true, valid }`; unknown codes count too with `valid: false`.
+- `POST /verify/check { ..., inviteCode? }`: the link opened the app and the
+  sign-up carries the code. If the person has no inviter yet and the code
+  belongs to someone else, both are connected like an invite
+  (`contacts`, `connections`, `invitedBy`, `joinedViaInvite`, the inviter's
+  `invitesJoined`, `claimInviteCode`); the own code and unknown codes are
+  ignored in silence, the answer is unchanged.
+- `POST /waitlist { ..., platform? }`: Android visitors of the invite page
+  join the waitlist with `platform: "android"`, `source: "einladung"` and
+  `campaign: "invite-CODE"`. Without `platform` the user agent decides
+  (iPhone/iPad → `ios`, Android → `android`, else null); stored as
+  `WaitlistEntry.platform`.
+- `User.locale`: the first entry of `Accept-Language` (e.g. `de-DE`, up to
+  20 characters), stored by `/verify/check` and `/me/update`. Measured only.
+
+The daily snapshot (`lib/metrics.js` computeDay) carries
+`growth.inviteVisits { total, ios, android, other }`,
+`waitlist.byPlatform { ios, android, unknown }` (confirmations of the day)
+and `users.byLocale` (the five most common locales of the day's sign-ups).
+
 ## User research
 
 Once someone has two talks (`Talk` documents counted like `lib/stats.js`

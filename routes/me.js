@@ -3,7 +3,8 @@ const User = require("../models/User");
 const { actingPhone } = require("../lib/auth");
 const { normalizePhone, regionOf } = require("../lib/phone");
 const { isBlocked } = require("../lib/relations");
-const { announceJoined } = require("../lib/invites");
+const { announceJoined, ensureInviteCode } = require("../lib/invites");
+const { localeOf } = require("../lib/appConfig");
 
 const router = express.Router();
 
@@ -31,7 +32,7 @@ const consentOf = (user) => ({
   privacyVersion: user.consent?.privacyVersion || null,
 });
 
-// GET /me            -> own profile (authenticated), with `research` and `consent`
+// GET /me            -> own profile (authenticated), with `inviteCode`, `research` and `consent`
 // GET /me?phone=...  -> profile of that user (name, avatar, last online)
 router.get("/", async (req, res) => {
   let phone;
@@ -51,7 +52,12 @@ router.get("/", async (req, res) => {
       return res.status(404).json({ success: false, error: "User not found" });
     }
     const own = !!viewer && phone === viewer;
-    res.json({ success: true, user: { ...profileOf(user), ...(own ? { research: researchOf(user), consent: consentOf(user) } : {}) } });
+    // The share link's code; accounts from before plan 1.11 get theirs here
+    if (own && !user.inviteCode) await ensureInviteCode(user).catch((err) => console.error("❌ ensureInviteCode:", err.message));
+    res.json({
+      success: true,
+      user: { ...profileOf(user), ...(own ? { inviteCode: user.inviteCode || null, research: researchOf(user), consent: consentOf(user) } : {}) },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: "Profil konnte nicht geladen werden" });
   }
@@ -98,6 +104,9 @@ router.post("/update", async (req, res) => {
     }
     update.avatarUrl = url;
   }
+  // The device language, measured only (lib/appConfig.js localeOf)
+  const locale = localeOf(req.headers);
+  if (locale) update.locale = locale;
 
   try {
     const user = await User.findOneAndUpdate({ phone }, update, { new: true });

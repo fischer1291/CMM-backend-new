@@ -4,9 +4,9 @@ const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
 const User = require("../models/User");
 const { normalizePhone, countryOf } = require("../lib/phone");
 const { signToken } = require("../lib/auth");
-const { connectInviters } = require("../lib/invites");
+const { connectInviters, ensureInviteCode, claimInviteCode } = require("../lib/invites");
 const { signInBlock } = require("../lib/accessGate");
-const { opsConfig } = require("../lib/appConfig");
+const { opsConfig, localeOf } = require("../lib/appConfig");
 const opsCounters = require("../lib/opsCounters");
 const { localParts } = require("../lib/localTime");
 const { client: twilioClient } = require("../lib/twilio");
@@ -163,15 +163,24 @@ router.post("/check", perPhone(10), async (req, res) => {
     }
 
     const isNew = !(await User.exists({ phone }));
+    // The device language rides along (measured only, lib/appConfig.js localeOf)
+    const locale = localeOf(req.headers);
     const user = await User.findOneAndUpdate(
       { phone },
-      { $setOnInsert: { phone, phoneHash: User.hashPhone(phone) } },
+      { $setOnInsert: { phone, phoneHash: User.hashPhone(phone) }, ...(locale ? { $set: { locale } } : {}) },
       { new: true, upsert: true },
     );
 
     if (isNew) {
       // Invited by friends: connect them right away
       connectInviters(user, req.app.get("io")).catch((err) => console.error("❌ connectInviters:", err.message));
+    }
+    // The personal invite link's code (also for accounts from before plan 1.11)
+    await ensureInviteCode(user).catch((err) => console.error("❌ ensureInviteCode:", err.message));
+    // Came through someone's link (/einladung): connect both, credit the
+    // inviter. Unknown codes and the own code are ignored in silence.
+    if (typeof req.body?.inviteCode === "string" && req.body.inviteCode.length <= 16) {
+      await claimInviteCode(user, req.body.inviteCode, req.app.get("io")).catch((err) => console.error("❌ claimInviteCode:", err.message));
     }
     // Milestone: first verified sign-in (accounts from before the milestones
     // get it on their next one); never overwritten

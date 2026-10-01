@@ -127,6 +127,8 @@ function createApp({ ringTimeoutMs } = {}) {
   // Waitlist on the landing page: no account
   const waitlistRoutes = require("./routes/waitlist");
   app.use(waitlistRoutes.publicRoutes());
+  // The invite link's visit counter: opened in the browser, no account
+  app.use(require("./routes/invites").publicRoutes());
 
   // Everything below knows the requesting user (req.auth) or is legacy.
   // Exception: the invite link preview (/circles/code/:code) is public.

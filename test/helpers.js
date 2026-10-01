@@ -183,6 +183,8 @@ async function reset() {
   await require("../models/BannedNumber").syncIndexes();
   await require("../models/ClientError").syncIndexes();
   await require("../models/WaitlistEntry").syncIndexes();
+  // One row per day, code and platform: the visit counter relies on the upsert
+  await require("../models/InviteVisit").syncIndexes();
   // Unique event ids: the webhook relies on the 11000 for a retried event
   await require("../models/SubscriptionEvent").syncIndexes();
   fakes.sms.length = 0;

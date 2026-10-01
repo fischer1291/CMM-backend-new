@@ -20,7 +20,8 @@ const limiter = (limit) =>
 function publicRoutes() {
   const router = express.Router();
 
-  // POST /waitlist { email, ref?, source?, campaign?, website? }
+  // POST /waitlist { email, ref?, source?, campaign?, platform?, website? }
+  // (platform "ios" | "android"; without it, the user agent decides)
   router.post("/waitlist", limiter(10), async (req, res) => {
     // Honeypot: people don't fill in a hidden field, bots do
     if (req.body?.website) return res.json({ success: true });
@@ -30,6 +31,8 @@ function publicRoutes() {
         ref: req.body?.ref,
         source: req.body?.source,
         campaign: req.body?.campaign,
+        platform: req.body?.platform,
+        userAgent: req.get("user-agent"),
         ip: req.ip,
       });
       if (result.error) return res.status(400).json({ success: false, error: result.error });

@@ -24,12 +24,17 @@ const metricsDailySchema = new mongoose.Schema(
       // (lib/metrics.js density): percent with at least three registered
       // contacts, percent with none, and how many were looked at
       density: { c3plus: Number, c0: Number, sample: Number },
+      // The five most common device languages of the day's sign-ups (User.locale)
+      byLocale: { type: [{ _id: false, locale: String, users: Number }], default: undefined },
     },
     calls: { started: Number, answered: Number, missed: Number, declined: Number, busy: Number, cancelled: Number, audio: Number },
     talks: { count: Number, minutes: Number, people: Number },
     circles: { total: Number, new: Number, rooms: Number, ritualRooms: Number, roomMinutes: Number },
     rituals: { dailyJoined: Number, moments: Number, nudges: Number },
-    growth: { invites: Number, joinedViaInvite: Number },
+    // inviteVisits: the personal invite link opened (InviteVisit), by platform
+    growth: { invites: Number, joinedViaInvite: Number, inviteVisits: { total: Number, ios: Number, android: Number, other: Number } },
+    // Waitlist confirmations of the day by the platform they told us (WaitlistEntry.platform)
+    waitlist: { byPlatform: { ios: Number, android: Number, unknown: Number } },
     push: { sent: Number, skipped: Number, failed: Number },
     reports: { new: Number, open: Number },
     // Day counters from lib/opsCounters.js, e.g. callsRejectedNotConnected, matchSuspicious, smsStarted
