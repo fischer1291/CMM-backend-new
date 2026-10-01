@@ -41,6 +41,11 @@ const {
   clearSessionCookie,
   audit,
   requireAdmin,
+  INVITE_DAYS,
+  newInviteToken,
+  hashInviteToken,
+  inviteExpiry,
+  findByInviteToken,
 } = require("../lib/adminAuth");
 const metrics = require("../lib/metrics");
 const ClientError = require("../models/ClientError");
@@ -67,32 +72,59 @@ module.exports = (io) => {
   });
   router.use("/admin/auth", authLimit);
 
-  // Is there an admin yet? The console shows setup or login.
+  // Is there an admin yet? The console shows setup or login. An admin with a
+  // pending invitation counts (the only owner after reset-admin-totp.js):
+  // they continue via their link, not via the first-time setup.
+  const anyAdmin = () => Admin.exists({ $or: [{ totpEnabled: true }, { inviteTokenHash: { $ne: null } }] });
   router.get("/admin/auth/state", async (req, res) => {
-    const ready = await Admin.exists({ totpEnabled: true });
-    res.json({ success: true, setupNeeded: !ready });
+    res.json({ success: true, setupNeeded: !(await anyAdmin()) });
+  });
+
+  const qrOf = (url) => QRCode.toString(url, { type: "svg", margin: 1, color: { dark: "#000000", light: "#ffffff" } });
+
+  // GET /admin/auth/invite/:token: whom a setup link is for, so the console can
+  // greet them; 404 once it is used up or expired
+  router.get("/admin/auth/invite/:token", async (req, res) => {
+    const admin = await findByInviteToken(req.params.token);
+    if (!admin) return res.status(404).json({ success: false, error: "invite_invalid" });
+    res.json({ success: true, email: admin.email, role: admin.role, invitedBy: admin.invitedBy, expiresAt: admin.inviteExpiresAt });
   });
 
   /**
    * First admin: only while none is set up, and only with ADMIN_API_KEY
    * (from Render). Returns the TOTP secret to scan; confirm with a code.
+   *
+   * With `inviteToken` instead (an invitation from POST /admin/admins or a
+   * reset by scripts/reset-admin-totp.js): sets the password and a fresh TOTP
+   * secret of that admin, whatever other admins exist. The token stays valid
+   * until the code is confirmed, so an interrupted setup can start over.
    */
   router.post("/admin/auth/setup", async (req, res) => {
-    const { email, password, setupKey } = req.body || {};
+    const { email, password, setupKey, inviteToken } = req.body || {};
+    if (!strongEnough(password)) return res.status(400).json({ success: false, error: "weak_password" });
+    if (inviteToken) {
+      const invited = await findByInviteToken(inviteToken);
+      if (!invited) return res.status(404).json({ success: false, error: "invite_invalid" });
+      invited.passwordHash = hashPassword(password);
+      invited.totpSecret = newTotpSecret();
+      invited.totpEnabled = false;
+      await invited.save();
+      const url = otpauthUrl(invited.email, invited.totpSecret);
+      await audit(req, "setup_started", { admin: invited.email, meta: { invited: true } });
+      return res.json({ success: true, email: invited.email, secret: invited.totpSecret, otpauth: url, qr: await qrOf(url) });
+    }
     const key = process.env.ADMIN_API_KEY;
     if (!key || setupKey !== key) return res.status(403).json({ success: false, error: "wrong_setup_key" });
-    if (await Admin.exists({ totpEnabled: true })) return res.status(409).json({ success: false, error: "already_set_up" });
+    if (await anyAdmin()) return res.status(409).json({ success: false, error: "already_set_up" });
     if (!EMAIL.test(String(email || ""))) return res.status(400).json({ success: false, error: "invalid_email" });
-    if (!strongEnough(password)) return res.status(400).json({ success: false, error: "weak_password" });
 
-    // An unfinished setup is simply replaced
-    await Admin.deleteMany({ totpEnabled: false });
+    // An unfinished setup is simply replaced (not a pending invitation)
+    await Admin.deleteMany({ totpEnabled: false, inviteTokenHash: null });
     const secret = newTotpSecret();
     const admin = await Admin.create({ email, passwordHash: hashPassword(password), totpSecret: secret, role: "owner" });
     const url = otpauthUrl(admin.email, secret);
-    const qr = await QRCode.toString(url, { type: "svg", margin: 1, color: { dark: "#000000", light: "#ffffff" } });
     await audit(req, "setup_started", { admin: admin.email });
-    res.json({ success: true, secret, otpauth: url, qr });
+    res.json({ success: true, email: admin.email, secret, otpauth: url, qr: await qrOf(url) });
   });
 
   router.post("/admin/auth/setup/confirm", async (req, res) => {
@@ -106,6 +138,10 @@ module.exports = (io) => {
     admin.totpEnabled = true;
     admin.totpLastStep = step;
     admin.lastLoginAt = new Date();
+    // An invited (or reset) admin is live from here; the setup link is spent
+    admin.active = true;
+    admin.inviteTokenHash = null;
+    admin.inviteExpiresAt = null;
     await admin.save();
     setSessionCookie(res, signSession(admin));
     await audit(req, "setup_done", { admin: admin.email });
@@ -114,7 +150,7 @@ module.exports = (io) => {
 
   router.post("/admin/auth/login", async (req, res) => {
     const { email, password, code } = req.body || {};
-    const admin = await Admin.findOne({ email: String(email || "").toLowerCase().trim(), totpEnabled: true });
+    const admin = await Admin.findOne({ email: String(email || "").toLowerCase().trim(), totpEnabled: true, active: { $ne: false } });
     const fail = async (error) => {
       if (admin) {
         admin.failedLogins += 1;
@@ -364,6 +400,141 @@ module.exports = (io) => {
     const { state, already } = await waitlist.startLaunch(req.admin.email);
     if (!already) await audit(req, "waitlist_launch_started");
     res.json({ success: true, already: !!already, launch: state });
+  });
+
+  // --- Daily push acknowledged (plan 1.8) ----------------------------------------
+
+  // POST /admin/daily/ack: the console calls it when the morning push's link
+  // (#ack) is opened. A sign of life for the dead-man rule (lib/adminPush.js)
+  router.post("/admin/daily/ack", requireAdmin(), async (req, res) => {
+    const lastAckAt = new Date();
+    await Admin.updateOne({ _id: req.admin._id }, { lastAckAt });
+    res.json({ success: true, lastAckAt });
+  });
+
+  // --- Team: the other admins (owner only, plan 1.8) -----------------------------
+
+  const ROLES = ["owner", "support", "viewer"];
+  const ROLE_LABEL = { owner: "Owner", support: "Support", viewer: "Nur lesen" };
+  const consoleUrl = () => `${(process.env.PUBLIC_API_URL || "https://api.wannayap.app").replace(/\/$/, "")}/console/`;
+  const teamItem = (a, self) => ({
+    id: String(a._id),
+    email: a.email,
+    role: a.role,
+    active: a.active !== false,
+    totpEnabled: !!a.totpEnabled,
+    passkeys: (a.passkeys || []).length,
+    lastLoginAt: a.lastLoginAt || null,
+    lastAckAt: a.lastAckAt || null,
+    // Set up not finished: the invitation is still open (or has run out)
+    invitePending: !a.totpEnabled && !!a.inviteTokenHash,
+    inviteExpiresAt: !a.totpEnabled && a.inviteTokenHash ? a.inviteExpiresAt : null,
+    invitedBy: a.invitedBy || null,
+    createdAt: a.createdAt,
+    me: String(a._id) === String(self._id),
+  });
+  // Owners who can actually sign in: at least one must always remain
+  const activeOwners = () => Admin.countDocuments({ role: "owner", totpEnabled: true, active: { $ne: false } });
+
+  async function findAdmin(req, res) {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      res.status(400).json({ success: false, error: "invalid_id" });
+      return null;
+    }
+    const target = await Admin.findById(req.params.id);
+    if (!target) res.status(404).json({ success: false, error: "not_found" });
+    return target;
+  }
+
+  router.get("/admin/admins", requireAdmin("owner"), async (req, res) => {
+    const admins = await Admin.find({}).sort({ createdAt: 1 }).lean();
+    res.json({ success: true, admins: admins.map((a) => teamItem(a, req.admin)), mailConfigured: mailer.configured() });
+  });
+
+  /**
+   * POST /admin/admins { email, role }: invite someone. Creates an inactive
+   * admin with a one-time setup link (7 days) and mails it; without SMTP_URL
+   * (or when the mail fails) the link comes back in the answer for the owner to
+   * pass on. Someone deactivated or not finished is simply invited again.
+   */
+  router.post("/admin/admins", requireAdmin("owner"), async (req, res) => {
+    const email = String(req.body?.email || "").toLowerCase().trim();
+    const role = ROLES.includes(req.body?.role) ? req.body.role : null;
+    if (!EMAIL.test(email)) return res.status(400).json({ success: false, error: "invalid_email" });
+    if (!role) return res.status(400).json({ success: false, error: "invalid_role" });
+    let target = await Admin.findOne({ email });
+    if (target && target.active !== false && target.totpEnabled) return res.status(409).json({ success: false, error: "exists" });
+    const token = newInviteToken();
+    const fields = { role, active: false, totpEnabled: false, inviteTokenHash: hashInviteToken(token), inviteExpiresAt: inviteExpiry(), invitedBy: req.admin.email };
+    if (target) {
+      // A new start: old password, code and sessions are void
+      Object.assign(target, fields, { passwordHash: hashPassword(newInviteToken()), totpSecret: newTotpSecret(), sessionVersion: target.sessionVersion + 1 });
+      await target.save();
+    } else {
+      target = await Admin.create({ email, ...fields, passwordHash: hashPassword(newInviteToken()), totpSecret: newTotpSecret() });
+    }
+    const link = `${consoleUrl()}#setup/${token}`;
+    let mailed = false;
+    if (mailer.configured()) {
+      try {
+        await mailer.sendMail({
+          to: email,
+          subject: "Du bist zur Wanna yap?-Konsole eingeladen",
+          text: `Hey!\n\n${req.admin.email} hat dich als „${ROLE_LABEL[role]}“ zur Admin-Konsole von Wanna yap? eingeladen.\n\nRichte dein Konto hier ein (Passwort und Authenticator-App; der Link gilt ${INVITE_DAYS} Tage):\n${link}\n\nDu kennst Wanna yap? nicht? Dann ignorier diese Mail einfach.\n\nWanna yap?`,
+        });
+        mailed = true;
+      } catch (err) {
+        console.error("❌ admin invite mail:", err.reason || err.message);
+      }
+    }
+    await audit(req, "admin_invited", { target: email, meta: { role, mailed } });
+    res.json({ success: true, admin: teamItem(target, req.admin), mailed, link: mailed ? null : link });
+  });
+
+  // PUT /admin/admins/:id { role }: never demote the last owner
+  router.put("/admin/admins/:id", requireAdmin("owner"), async (req, res) => {
+    const role = ROLES.includes(req.body?.role) ? req.body.role : null;
+    if (!role) return res.status(400).json({ success: false, error: "invalid_role" });
+    const target = await findAdmin(req, res);
+    if (!target) return;
+    if (target.role === "owner" && role !== "owner" && target.active !== false && target.totpEnabled && (await activeOwners()) <= 1) {
+      return res.status(409).json({ success: false, error: "last_owner" });
+    }
+    const from = target.role;
+    target.role = role;
+    await target.save();
+    // Two owners demoting each other at once: whoever saved second undoes it
+    if (from === "owner" && role !== "owner" && (await activeOwners()) === 0) {
+      target.role = "owner";
+      await target.save();
+      return res.status(409).json({ success: false, error: "last_owner" });
+    }
+    await audit(req, "admin_role", { target: target.email, meta: { from, to: role } });
+    res.json({ success: true, admin: teamItem(target, req.admin) });
+  });
+
+  // DELETE /admin/admins/:id: deactivate (keeps the record), ends their sessions
+  router.delete("/admin/admins/:id", requireAdmin("owner"), async (req, res) => {
+    const target = await findAdmin(req, res);
+    if (!target) return;
+    if (String(target._id) === String(req.admin._id)) return res.status(400).json({ success: false, error: "self" });
+    if (target.role === "owner" && target.active !== false && target.totpEnabled && (await activeOwners()) <= 1) {
+      return res.status(409).json({ success: false, error: "last_owner" });
+    }
+    const wasActive = target.active !== false && target.totpEnabled;
+    target.active = false;
+    target.inviteTokenHash = null;
+    target.inviteExpiresAt = null;
+    target.sessionVersion += 1;
+    await target.save();
+    // Two owners deactivating each other at once: whoever saved second undoes it
+    if (target.role === "owner" && wasActive && (await activeOwners()) === 0) {
+      target.active = true;
+      await target.save();
+      return res.status(409).json({ success: false, error: "last_owner" });
+    }
+    await audit(req, "admin_deactivated", { target: target.email, meta: { role: target.role } });
+    res.json({ success: true, admin: teamItem(target, req.admin) });
   });
 
   // --- Audit log ---------------------------------------------------------------
@@ -878,8 +1049,8 @@ module.exports = (io) => {
   router.get("/admin/config", requireAdmin("viewer"), async (req, res) => {
     const [config, spread] = await Promise.all([appConfig.getConfig(), appConfig.versionSpread()]);
     const flags = config.flags instanceof Map ? Object.fromEntries(config.flags) : config.flags || {};
-    // The owner's private alert number stays with the owner; others see only whether one is set
-    const ops = req.admin.role === "owner" ? config.ops : { ...config.ops, alertPhone: config.ops?.alertPhone ? "•••" : null };
+    // The owner's private alert number and emergency contact stay with the owner; others see only whether one is set
+    const ops = req.admin.role === "owner" ? config.ops : { ...config.ops, alertPhone: config.ops?.alertPhone ? "•••" : null, emergencyContact: config.ops?.emergencyContact ? "•••" : null };
     res.json({ success: true, config: { ...config, flags, ops, _id: undefined, __v: undefined }, ...spread });
   });
 

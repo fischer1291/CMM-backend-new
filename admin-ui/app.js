@@ -22,6 +22,11 @@ const ERRORS = {
   weak_password: 'Das Passwort braucht mindestens 12 Zeichen.',
   invalid_email: 'Bitte eine gültige E-Mail-Adresse eingeben.',
   already_set_up: 'Es gibt schon einen Admin. Bitte anmelden.',
+  invite_invalid: 'Der Einladungslink ist abgelaufen oder wurde schon benutzt. Bitte neu einladen lassen.',
+  exists: 'Diese Adresse ist schon ein aktiver Admin.',
+  last_owner: 'Das geht nicht: Mindestens ein Owner muss bleiben.',
+  self: 'Dich selbst kannst du nicht deaktivieren.',
+  invalid_role: 'Bitte eine Rolle wählen.',
   locked: 'Zu viele Versuche. Bitte in 15 Minuten erneut versuchen.',
   nothing_to_post: 'Kein verbundener Kanal, auf dem das Video noch fehlt. Verbinden unter Freigabe → Kanäle.',
 };
@@ -187,7 +192,11 @@ function Login({ onDone }) {
   </form></div>`;
 }
 
-function Setup({ onDone }) {
+/**
+ * First admin (with ADMIN_API_KEY) or, with `token` from #setup/<token>, an
+ * invited admin or one whose code was reset (scripts/reset-admin-totp.js).
+ */
+function Setup({ onDone, token }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [setupKey, setSetupKey] = useState('');
@@ -195,6 +204,12 @@ function Setup({ onDone }) {
   const [started, setStarted] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  // Whom the invitation is for; false once it is used up or expired
+  const [invite, setInvite] = useState(null);
+  useEffect(() => {
+    if (!token) return;
+    api(`/auth/invite/${encodeURIComponent(token)}`).then((d) => { setInvite(d); setEmail(d.email); }).catch(() => setInvite(false));
+  }, [token]);
 
   const run = async (e, fn) => {
     e.preventDefault();
@@ -209,6 +224,22 @@ function Setup({ onDone }) {
     }
   };
 
+  if (token && !started) {
+    if (invite === null) return html`<div class="center note">Lade Einladung …</div>`;
+    if (invite === false) {
+      return html`<div class="center"><div class="card auth"><${Brand} /><h1>Einladung</h1><p class="error">${ERRORS.invite_invalid}</p>
+        <button type="button" class="btn small ghost" style="width:100%" onClick=${() => { location.hash = ''; location.reload(); }}>Zur Anmeldung</button></div></div>`;
+    }
+    return html`<div class="center"><form class="card auth" onSubmit=${(e) => run(e, async () => setStarted(await api('/auth/setup', { method: 'POST', body: { inviteToken: token, password } })))}>
+      <${Brand} />
+      <h1>Willkommen</h1>
+      <p>${invite.invitedBy && invite.invitedBy !== 'reset-admin-totp' ? `${invite.invitedBy} hat dich` : 'Du wurdest'} als „${TEAM_ROLES[invite.role] || invite.role}“ zur Konsole eingeladen. Wähle ein Passwort für <b>${invite.email}</b>; danach richtest du deine Authenticator-App ein.</p>
+      ${error ? html`<p class="error">${error}</p>` : null}
+      <${Field} label="Passwort (mind. 12 Zeichen)" type="password" value=${password} onInput=${setPassword} autocomplete="new-password" autofocus />
+      <button class="btn" style="width:100%" disabled=${busy}>Weiter</button>
+    </form></div>`;
+  }
+
   if (!started) {
     return html`<div class="center"><form class="card auth" onSubmit=${(e) => run(e, async () => setStarted(await api('/auth/setup', { method: 'POST', body: { email, password, setupKey } })))}>
       <${Brand} />
@@ -222,7 +253,7 @@ function Setup({ onDone }) {
     </form></div>`;
   }
 
-  return html`<div class="center"><form class="card auth" onSubmit=${(e) => run(e, async () => onDone((await api('/auth/setup/confirm', { method: 'POST', body: { email, password, code } })).admin))}>
+  return html`<div class="center"><form class="card auth" onSubmit=${(e) => run(e, async () => onDone((await api('/auth/setup/confirm', { method: 'POST', body: { email: started.email || email, password, code } })).admin))}>
     <${Brand} />
     <h1>Zwei-Faktor</h1>
     <p>Scanne den QR-Code mit einer Authenticator-App (z. B. 1Password, Google Authenticator) und gib den Code ein.</p>
@@ -460,6 +491,93 @@ function Audit() {
   </table>${entries.length ? null : html`<p class="note">Noch keine Einträge.</p>`}</div>`;
 }
 
+// --- Team: the other admins (owner only, routes/admin.js /admin/admins) ------------------
+
+const TEAM_ROLES = { owner: 'Owner', support: 'Support', viewer: 'Nur lesen' };
+
+function Team({ me }) {
+  const [data, setData] = useState(null);
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState('support');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [link, setLink] = useState(null);
+  const load = useCallback(() => api('/admins').then(setData).catch(() => setData(false)), []);
+  useEffect(() => { load(); }, [load]);
+  if (data === false) return html`<div class="card">Konnte nicht geladen werden.</div>`;
+  if (!data) return html`<div class="card note">Lade Team …</div>`;
+
+  const act = async (fn, done) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const result = await fn();
+      if (done) setMsg({ ok: true, text: done(result) });
+      load();
+      return result;
+    } catch (err) {
+      setMsg({ ok: false, text: message(err) });
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+  const invite = async (e, to = email, as = role) => {
+    e?.preventDefault();
+    setLink(null);
+    const r = await act(() => api('/admins', { method: 'POST', body: { email: to, role: as } }), (r) => (r.mailed ? `Einladung an ${to} ist raus (gilt 7 Tage).` : data.mailConfigured ? `Die Mail an ${to} ging nicht raus. Gib den Link selbst weiter (gilt 7 Tage):` : `Kein Mailversand eingerichtet (SMTP_URL). Gib den Link selbst weiter (gilt 7 Tage):`));
+    if (r) {
+      setEmail('');
+      if (r.link) setLink(r.link);
+    }
+  };
+  const setRoleOf = (a, next) => {
+    if (next === a.role) return;
+    if (a.me && next !== 'owner' && !confirm('Du nimmst dir selbst die Owner-Rolle. Weiter?')) return load();
+    act(() => api(`/admins/${a.id}`, { method: 'PUT', body: { role: next } }), () => `${a.email} ist jetzt ${TEAM_ROLES[next]}.`);
+  };
+  const deactivate = (a) => {
+    if (!confirm(`${a.email} deaktivieren? Die Person kann sich dann nicht mehr anmelden und bekommt keine Mitteilungen mehr. Eine neue Einladung macht das rückgängig.`)) return;
+    act(() => api(`/admins/${a.id}`, { method: 'DELETE' }), () => `${a.email} ist deaktiviert.`);
+  };
+  const status = (a) => {
+    if (!a.active && a.totpEnabled) return html`<span class="pill warn">deaktiviert</span>`;
+    if (!a.totpEnabled) {
+      const open = a.inviteExpiresAt && new Date(a.inviteExpiresAt) > new Date();
+      return html`<span class=${`pill ${open ? 'todo' : 'warn'}`}>${open ? `eingeladen, bis ${date(a.inviteExpiresAt)}` : 'Einladung abgelaufen'}</span>`;
+    }
+    return html`<span class="pill on">aktiv</span>`;
+  };
+
+  return html`
+    ${msg ? html`<div class=${msg.ok ? 'flash' : 'error'}>${msg.text}${link ? html`<div class="inline" style="margin-top:8px"><code style="word-break:break-all;font-size:12px">${link}</code><${CopyButton} text=${link} /></div>` : null}</div>` : null}
+    <div class="card scroll"><table>
+      <thead><tr><th>E-Mail</th><th>Rolle</th><th>Status</th><th>Zwei-Faktor</th><th>Letzte Anmeldung</th><th>Letzte Quittung</th><th></th></tr></thead>
+      <tbody>${data.admins.map((a) => html`<tr>
+        <td>${a.email}${a.me ? html` <span class="muted">(du)</span>` : null}</td>
+        <td><select value=${a.role} disabled=${busy || (!a.active && a.totpEnabled)} onChange=${(e) => setRoleOf(a, e.target.value)}>${Object.entries(TEAM_ROLES).map(([k, v]) => html`<option value=${k}>${v}</option>`)}</select></td>
+        <td>${status(a)}</td>
+        <td class="muted">${a.totpEnabled ? `Code${a.passkeys ? ` · ${a.passkeys} Passkey${a.passkeys === 1 ? '' : 's'}` : ''}` : '–'}</td>
+        <td class="muted">${a.lastLoginAt ? dateTime(a.lastLoginAt) : '–'}</td>
+        <td class="muted">${a.lastAckAt ? dateTime(a.lastAckAt) : '–'}</td>
+        <td style="text-align:right;white-space:nowrap">
+          ${a.active && a.totpEnabled && !a.me ? html`<button class="btn small ghost" disabled=${busy} onClick=${() => deactivate(a)}>Deaktivieren</button>` : null}
+          ${!a.active || !a.totpEnabled ? html`<button class="btn small ghost" disabled=${busy} onClick=${(e) => invite(e, a.email, a.role)}>Erneut einladen</button>` : null}
+        </td>
+      </tr>`)}</tbody>
+    </table></div>
+    <form class="card" style="margin-top:12px" onSubmit=${invite}>
+      <div class="label">Einladen</div>
+      <p class="note" style="margin-top:0">Die Person bekommt einen Link (7 Tage gültig), setzt ein Passwort und richtet ihre Authenticator-App ein. Owner: alles, auch Team und Einstellungen · Support: Nutzer, Meldungen, Support · Nur lesen: Zahlen. Ein zweiter Owner ist der Plan: Fällst du aus, kann jemand weitermachen (CMM/docs/EMERGENCY.md).</p>
+      <div class="inline">
+        <input type="email" required placeholder="name@beispiel.de" value=${email} onInput=${(e) => setEmail(e.target.value)} autocomplete="off" />
+        <select value=${role} onChange=${(e) => setRole(e.target.value)}>${Object.entries(TEAM_ROLES).map(([k, v]) => html`<option value=${k}>${v}</option>`)}</select>
+        <button class="btn small" disabled=${busy || !email}>Einladen</button>
+      </div>
+      ${!data.mailConfigured ? html`<p class="note" style="margin:8px 0 0">Ohne SMTP_URL wird keine Mail verschickt; der Link erscheint hier zum Weitergeben.</p>` : null}
+    </form>
+    <p class="note">Quittung: Wer die tägliche Mitteilung antippt, quittiert sie. Hat 7 Tage lang kein Owner quittiert oder sich angemeldet, bekommt der Notfallkontakt (App → Betrieb) eine Mail, sonst die Owner einen Push. Authenticator verloren und kein zweiter Owner da? <code>node scripts/reset-admin-totp.js ${me.email}</code> in der Render-Shell (README, Abschnitt Team).</p>`;
+}
 
 // --- Users -------------------------------------------------------------------------
 
@@ -812,7 +930,7 @@ function AppSettings({ role }) {
         updateUrl: c.updateUrl || '',
         banner: { enabled: !!c.banner?.enabled, text: c.banner?.text || '', level: c.banner?.level || 'info', until: c.banner?.until ? c.banner.until.slice(0, 16) : '' },
         flags: { ...(c.flags || {}) },
-        ops: { smsPerDay: String(c.ops?.smsPerDay ?? 100), smsPaused: !!c.ops?.smsPaused, smsRegions: (c.ops?.smsRegions || ['DE', 'AT', 'CH']).join(', '), alertPhone: c.ops?.alertPhone || '' },
+        ops: { smsPerDay: String(c.ops?.smsPerDay ?? 100), smsPaused: !!c.ops?.smsPaused, smsRegions: (c.ops?.smsRegions || ['DE', 'AT', 'CH']).join(', '), alertPhone: c.ops?.alertPhone || '', emergencyContact: c.ops?.emergencyContact || '' },
         goals: { activationPct: String(c.goals?.activationPct ?? 40), densityPct: String(c.goals?.densityPct ?? 50) },
       });
     }).catch(() => setData(false));
@@ -834,14 +952,14 @@ function AppSettings({ role }) {
           updateUrl: form.updateUrl.trim() || null,
           banner: { ...form.banner, until: form.banner.until ? new Date(form.banner.until).toISOString() : null },
           flags: form.flags,
-          ops: { smsPerDay: Number(form.ops.smsPerDay), smsPaused: form.ops.smsPaused, smsRegions: form.ops.smsRegions.toUpperCase().split(/[\s,]+/).filter(Boolean), alertPhone: form.ops.alertPhone.trim() || null },
+          ops: { smsPerDay: Number(form.ops.smsPerDay), smsPaused: form.ops.smsPaused, smsRegions: form.ops.smsRegions.toUpperCase().split(/[\s,]+/).filter(Boolean), alertPhone: form.ops.alertPhone.trim() || null, emergencyContact: form.ops.emergencyContact.trim() || null },
           goals: { activationPct: Number(form.goals.activationPct), densityPct: Number(form.goals.densityPct) },
         },
       });
       setFlash('Gespeichert. Offene Apps bekommen es sofort, alle anderen beim nächsten Start.');
       load();
     } catch (err) {
-      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH), Alarm-Nummer mit Ländervorwahl (+49…)', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100' };
+      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH), Alarm-Nummer mit Ländervorwahl (+49…), Notfallkontakt als E-Mail-Adresse', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100' };
       setFlash(`Fehler: ${msg[err.code] || err.code || err.message}`);
     }
   };
@@ -886,6 +1004,7 @@ function AppSettings({ role }) {
         <label class="field"><span>Länder (ISO-Codes, Komma-getrennt)</span><input value=${form.ops.smsRegions} onInput=${(e) => set({ ops: { ...form.ops, smsRegions: e.target.value } })} disabled=${!owner} placeholder="DE, AT, CH" /></label>
         <label class="check"><input type="checkbox" checked=${form.ops.smsPaused} onChange=${(e) => set({ ops: { ...form.ops, smsPaused: e.target.checked } })} disabled=${!owner} /> Notschalter: keine SMS senden (Anmeldung pausiert)</label>
         <label class="field"><span>Alarm-SMS an (nur Stufe „error“, leer = keine)</span><input value=${owner ? form.ops.alertPhone : ''} onInput=${(e) => set({ ops: { ...form.ops, alertPhone: e.target.value } })} disabled=${!owner} placeholder=${owner ? '+49…' : (form.ops.alertPhone ? 'hinterlegt (nur Owner sieht die Nummer)' : 'keine')} inputmode="tel" /></label>
+        <label class="field"><span>Notfallkontakt (E-Mail; bekommt eine Mail, wenn 7 Tage kein Owner quittiert hat)</span><input value=${owner ? form.ops.emergencyContact : ''} onInput=${(e) => set({ ops: { ...form.ops, emergencyContact: e.target.value } })} disabled=${!owner} placeholder=${owner ? 'vertrauensperson@…' : (form.ops.emergencyContact ? 'hinterlegt (nur Owner sieht die Adresse)' : 'keiner')} type="email" /></label>
         ${data.config.ops?.lastBackupAt ? html`<p class="note" style="margin:0">Letztes Backup: ${new Date(data.config.ops.lastBackupAt).toLocaleString('de-DE')}${data.config.ops.lastBackupBytes ? ` (${Math.round(data.config.ops.lastBackupBytes / 1048576)} MB)` : ''}</p>` : null}
       </div>
       <div class="card">
@@ -1940,6 +2059,7 @@ function App() {
   const [openTickets, setOpenTickets] = useState(0);
   const [openApprovals, setOpenApprovals] = useState(0);
   const [momentsOf, setMomentsOf] = useState(null);
+  const [acked, setAcked] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -1952,6 +2072,13 @@ function App() {
       }
     })();
   }, []);
+
+  // The morning push opens #ack: that acknowledges it (the dead-man rule, README "Team")
+  useEffect(() => {
+    if (!state.admin || route.tab !== 'ack') return;
+    api('/daily/ack', { method: 'POST' }).then(() => setAcked(new Date())).catch(() => {});
+    location.hash = '#dashboard';
+  }, [state.admin, route.tab]);
 
   useEffect(() => {
     if (!state.admin || state.admin.role === 'viewer') return;
@@ -1995,13 +2122,17 @@ function App() {
 
   if (state.loading) return html`<div class="center note">Lade …</div>`;
   if (!state.admin) {
+    // An invitation link (#setup/<token>) works whether or not an admin exists
+    if (route.tab === 'setup' && route.id) {
+      return html`<${Setup} token=${route.id} onDone=${(admin) => { location.hash = '#dashboard'; setState({ admin }); }} />`;
+    }
     return state.setupNeeded
       ? html`<${Setup} onDone=${(admin) => setState({ admin })} />`
       : html`<${Login} onDone=${(admin) => setState({ admin })} />`;
   }
 
   const role = state.admin.role;
-  const tabs = ['dashboard', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'approvals', 'app', ...(role === 'owner' ? ['audit'] : []), 'notify'];
+  const tabs = ['dashboard', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'approvals', 'app', ...(role === 'owner' ? ['audit', 'team'] : []), 'notify'];
   const tab = tabs.includes(route.tab) ? route.tab : 'dashboard';
   const nav = (next, id = null) => {
     const hash = id ? `#${next}/${encodeURIComponent(id)}` : `#${next}`;
@@ -2031,6 +2162,8 @@ function App() {
     body = html`<${AppSettings} role=${role} />`;
   } else if (tab === 'audit') {
     body = html`<${Audit} />`;
+  } else if (tab === 'team') {
+    body = html`<${Team} me=${state.admin} />`;
   } else if (tab === 'waitlist') {
     body = html`<${Waitlist} role=${role} />`;
   } else if (tab === 'approvals') {
@@ -2053,13 +2186,15 @@ function App() {
         <button class=${tab === 'waitlist' ? 'on' : ''} onClick=${() => go('waitlist')}>Warteliste</button>
         <button class=${tab === 'approvals' ? 'on' : ''} onClick=${() => go('approvals')}>Freigabe${openApprovals ? html` <span class="count">${openApprovals}</span>` : null}</button>
         <button class=${tab === 'app' ? 'on' : ''} onClick=${() => go('app')}>App</button>
-        ${role === 'owner' ? html`<button class=${tab === 'audit' ? 'on' : ''} onClick=${() => go('audit')}>Protokoll</button>` : null}
+        ${role === 'owner' ? html`<button class=${tab === 'audit' ? 'on' : ''} onClick=${() => go('audit')}>Protokoll</button>
+        <button class=${tab === 'team' ? 'on' : ''} onClick=${() => go('team')}>Team</button>` : null}
       </div>
       <span class="spacer"></span>
       <span class="who">${state.admin.email}</span>
       <button class=${`btn small ghost bell ${tab === 'notify' ? 'on' : ''}`} title="Einstellungen: Mitteilungen und Face ID" aria-label="Einstellungen" onClick=${() => go('notify')}>⚙︎</button>
       <button class="btn small ghost" onClick=${logout}>Abmelden</button>
     </div>
+    ${acked ? html`<div class="flash">Tageszahlen quittiert (${acked.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}). Danke, das zählt als Lebenszeichen.</div>` : null}
     ${body}
   </div>`;
 }

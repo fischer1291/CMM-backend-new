@@ -294,6 +294,59 @@ owners, others get `•••`). The "Heute" card lists the last alerts
 | `no_talks` | error | yesterday's snapshot has `users.dau > 20` and `talks.count == 0` | Call delivery is broken: VoIP push, Agora certificate, `GET /api/push-health` |
 | `backup_stale` | warn | `AppConfig.ops.lastBackupAt` exists and is older than 8 days | GitHub → Actions → DB-Backup: failed or paused run, see Backup |
 | `sms_cap` | warn | today's `smsStarted` is at 80 % of `ops.smsPerDay` | Real demand: raise the cap (Console → App → Betrieb); otherwise suspect SMS pumping and narrow `smsRegions` |
+| `owner_silent` | warn | not a rule here but the dead-man check in `lib/adminPush.js` (see Team): no owner acknowledged the morning push or signed in for 7 days; once per 7 days | Owner: open the console. Emergency contact: `CMM/docs/EMERGENCY.md` |
+
+## Team
+
+The console has three roles (`models/Admin.js`): `owner` (everything,
+including the team, settings and exports), `support` (users, reports,
+moments, support tickets) and `viewer` (numbers only). The first owner is
+created once through `POST /admin/auth/setup` with `ADMIN_API_KEY`; everyone
+else is invited (plan 1.8).
+
+- **Invite** (Console → Team, owner only): `POST /admin/admins { email, role }`
+  creates an inactive admin (`active: false`, `totpEnabled: false`) with a
+  one-time setup token (`inviteTokenHash`, SHA-256 of the token;
+  `inviteExpiresAt` 7 days; `invitedBy`) and mails the link
+  `<PUBLIC_API_URL>/console/#setup/<token>` (`lib/mailer.js`). Without
+  `SMTP_URL`, or when the mail fails, the answer carries `link` for the owner
+  to pass on. Someone deactivated or not finished is simply invited again
+  (new token, old password, code and sessions void). The link opens the
+  console's setup page: `GET /admin/auth/invite/:token` says whom it is for,
+  `POST /admin/auth/setup { inviteToken, password }` sets the password and a
+  fresh TOTP secret regardless of how many admins exist (the token stays valid
+  until the code is confirmed, so an interrupted setup starts over),
+  `POST /admin/auth/setup/confirm` activates. Audited as `admin_invited`,
+  `setup_started`, `setup_done`.
+- **Roles**: `PUT /admin/admins/:id { role }`, audited as `admin_role`. The
+  last active owner can't be demoted (`409 last_owner`).
+- **Deactivate**: `DELETE /admin/admins/:id` sets `active: false` and bumps
+  `sessionVersion` (signed out at once; no pushes, no alert mails), never
+  yourself (`400 self`) and never the last active owner (`409 last_owner`).
+  The record stays for the audit trail; audited as `admin_deactivated`.
+  `GET /admin/admins` lists everyone without secrets.
+- **Lost authenticator, no second owner**: in the Render Shell run
+  `node scripts/reset-admin-totp.js <email>`. It switches TOTP off, draws a
+  new secret, signs out every session and prints a setup link (7 days) that
+  runs through the same invitation flow (new password, scan the new secret).
+  Passkeys and settings stay. With a second owner, "Erneut einladen" in
+  Console → Team does the same. Use the link soon: until the setup is
+  confirmed the admin counts as invited, and the console offers the login
+  page, not the first-time setup.
+- **Acknowledgement**: the morning push (`lib/adminPush.js` dailyDue) links
+  to `#ack`; opening it makes the console call `POST /admin/daily/ack`
+  (every role), which sets `Admin.lastAckAt`.
+- **Dead-man rule**: `adminPush.deadManCheck`, a leader job every hour. When
+  no active owner acknowledged or signed in (`lastAckAt`, `lastLoginAt`)
+  within 7 days: a mail to `AppConfig.ops.emergencyContact` (Console → App →
+  Betrieb, "Notfallkontakt"; owners see the address, others `•••`), pointing
+  at `CMM/docs/EMERGENCY.md`; without a contact a push "Quittung fehlt seit
+  7 Tagen" to the owners. At most once per 7 days, booked in `AlertState`
+  under `owner_silent` (so it shows in the console's alert list). When the
+  mail cannot go out (no `SMTP_URL`, SMTP error) the owners get the push
+  instead, saying that the contact was not reached; the next mail attempt
+  is 7 days later. Name a person, set the address, and tell them where
+  `EMERGENCY.md` is; create that file before you set the address.
 
 ## Subscriptions (Wanna yap+)
 
@@ -330,9 +383,9 @@ needs `REVENUECAT_API_KEY`.
 | `VOIP_TOPIC` | no | Defaults to `com.schly21.kontaktlisteapp.voip` |
 | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | yes | Avatar uploads |
 | `EXPO_ACCESS_TOKEN` | no | Expo push |
-| `SMTP_URL` | waitlist | SMTP for waitlist mails, e.g. `smtps://user:pass@smtp-relay.brevo.com:465`; without it no mail is sent |
+| `SMTP_URL` | waitlist | SMTP for waitlist, alert, invitation and dead-man mails, e.g. `smtps://user:pass@smtp-relay.brevo.com:465`; without it no mail is sent |
 | `MAIL_FROM` | no | Sender, defaults to `Wanna yap? <hallo@wannayap.app>` (the domain needs SPF/DKIM at the mail provider) |
-| `SITE_URL`, `PUBLIC_API_URL` | no | Links in mails, default `https://wannayap.app` and `https://api.wannayap.app` |
+| `SITE_URL`, `PUBLIC_API_URL` | no | Links in mails (waitlist, admin invitations, the TOTP reset script), default `https://wannayap.app` and `https://api.wannayap.app` |
 | `WAITLIST_BATCH` | no | Launch mails per 15 s batch (default 40, max 200); keep under the provider's rate limit |
 | `MARKETING_AGENT_KEY` | agent | Bearer key of the daily marketing agent (CMM repo, `marketing/AGENT.md`), at least 24 characters; without it `/marketing/*` refuses everyone |
 | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` | posting | TikTok developer app (Login Kit + Content Posting API); its redirect URI is `https://api.wannayap.app/marketing/tiktok/callback`. Connected in the console (Freigabe → Kanäle) |

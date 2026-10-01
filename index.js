@@ -2,6 +2,7 @@ require("dotenv").config();
 const mongoose = require("mongoose");
 const User = require("./models/User");
 const Call = require("./models/Call");
+const Admin = require("./models/Admin");
 const { createApp } = require("./app");
 const { initializeVoipPush } = require("./lib/push");
 const { agoraCredentials } = require("./lib/agora");
@@ -55,10 +56,14 @@ async function migrate() {
   const AppConfig = require("./models/AppConfig");
   const applied = await AppConfig.findOne({ key: "app" }, { migrations: 1 }).lean();
   if (!applied?.migrations?.morningPush) {
-    const moved = await require("./models/Admin").updateMany({ "notify.dailyHour": 20 }, { "notify.dailyHour": 8 });
+    const moved = await Admin.updateMany({ "notify.dailyHour": 20 }, { "notify.dailyHour": 8 });
     await AppConfig.updateOne({ key: "app" }, { $set: { "migrations.morningPush": new Date() } }, { upsert: true });
     if (moved.modifiedCount) console.log(`🔧 Moved the daily push of ${moved.modifiedCount} admin(s) to 8:00`);
   }
+
+  // Admins from before plan 1.8 have no `active` flag: they are all active
+  const activated = await Admin.updateMany({ active: { $exists: false } }, { active: true });
+  if (activated.modifiedCount) console.log(`🔧 Marked ${activated.modifiedCount} admin(s) as active`);
 }
 
 async function main() {
@@ -180,6 +185,14 @@ async function main() {
       .then((sent) => sent && console.log(`📊 Tageszahlen an ${sent} Admin(s)`))
       .catch((err) => console.error("❌ admin daily push:", err.message));
   }, 5 * 60 * 1000);
+
+  // Dead-man rule: no owner acknowledged or signed in for 7 days (lib/adminPush.js);
+  // checked hourly, sent at most once per 7 days
+  setInterval(() => {
+    asJobLeader("dead-man", () => adminPush.deadManCheck())
+      .then((how) => how && console.log(`🚨 Dead-man rule: ${how === "mail" ? "emergency contact mailed" : "owners pushed"}`))
+      .catch((err) => console.error("❌ dead-man check:", err.message));
+  }, 60 * 60 * 1000);
 
   // Every 15 minutes: delivery receipts of sent pushes
   setInterval(() => {

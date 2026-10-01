@@ -12,6 +12,18 @@ const adminSchema = new mongoose.Schema({
   totpLastStep: { type: Number, default: 0 },
   // owner: everything · support: users and reports · viewer: numbers only
   role: { type: String, enum: ["owner", "support", "viewer"], default: "owner" },
+  // Deactivated by an owner (plan 1.8): no sign-in, no pushes, no alert mails;
+  // the record stays for the audit trail and can be invited again
+  active: { type: Boolean, default: true },
+  // Invitation (POST /admin/admins) or TOTP reset (scripts/reset-admin-totp.js):
+  // the SHA-256 of a one-time setup token, valid until inviteExpiresAt. The
+  // setup routes accept the token instead of ADMIN_API_KEY; confirming clears it
+  inviteTokenHash: { type: String, default: null },
+  inviteExpiresAt: { type: Date, default: null },
+  invitedBy: { type: String, default: null },
+  // When they last confirmed the daily push (POST /admin/daily/ack). No owner
+  // acknowledging or signing in for 7 days wakes the dead-man rule (lib/adminPush.js)
+  lastAckAt: { type: Date, default: null },
   // Bumped to sign out every session
   sessionVersion: { type: Number, default: 0 },
   failedLogins: { type: Number, default: 0 },
