@@ -3,6 +3,10 @@
 Express + Socket.IO + MongoDB backend for the Wanna yap? app. Deployed on
 Render from `main`.
 
+Node 22 (see `.nvmrc`; `engines` in `package.json` pins `22.x`, CI runs the
+same version). Render reads `engines` too; set `NODE_VERSION=22` in the
+service's environment so a change of the Render default never surprises us.
+
 ```bash
 npm install
 npm test        # API + socket tests against an in-memory MongoDB
