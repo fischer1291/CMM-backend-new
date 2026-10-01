@@ -106,6 +106,22 @@ first talk raises `invitesActivated` on each inviter and grants what is due.
 `/me/plan` returns `referral: { joined, activated, earned, toNext, ... }`,
 `toNext` counted on `activated`.
 
+## User research
+
+After someone's second talk (`Talk` documents with them in `participants`,
+counted in `lib/calls.js` recordTalk, so a replayed call counts once) the
+server sets `User.research.invitedAt`, and the app shows a card: 15 minutes
+with the founder, 7 days of Wanna yap+ as a thank-you. People whose Plus is
+an admin grant are not asked. `GET /me` (own profile only) returns
+`research: { invitedAt, bookedAt, dismissedAt, doneAt }`;
+`POST /me/research { action: "booked" | "dismissed" }` records the answer
+once (409 `not_invited` before the invitation) and the card stays away
+either way. In the console `POST /admin/users/:id/research-done` (support,
+audited as `research_done`) marks the talk as held; the thank-you is the
+usual `POST /admin/users/:id/plus { days: 7 }`. The user detail shows
+`research` once invited. Guide, notes and the weekly target:
+`CMM/docs/RESEARCH.md`.
+
 ## Onboarding milestones and the north star
 
 `User.milestones` records when each person reached a step of the funnel,

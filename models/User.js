@@ -104,6 +104,17 @@ const userSchema = new mongoose.Schema({
     firstCallAt: { type: Date, default: null },
     firstTalkAt: { type: Date, default: null },
   },
+  // User research (README "User research"): after the second talk the app
+  // invites to a 15-minute call with the founder (invitedAt, lib/calls.js
+  // recordTalk, never for an admin Plus grant). The person books or
+  // dismisses once (routes/me.js); doneAt is set by support in the console
+  // when the talk took place; the thank-you is the usual Plus grant.
+  research: {
+    invitedAt: { type: Date, default: null },
+    bookedAt: { type: Date, default: null },
+    dismissedAt: { type: Date, default: null },
+    doneAt: { type: Date, default: null },
+  },
 
   // Moderation (admin console): no sign-in until then; tokens issued before
   // tokensValidAfter are rejected (lib/accessGate.js)

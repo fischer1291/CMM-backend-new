@@ -452,6 +452,7 @@ module.exports = (io) => {
         plan: (await plan.planOf(user)).plan,
         plus: user.plus?.since || user.plus?.active ? { active: plan.isPlus(user), until: user.plus.until, since: user.plus.since, source: user.plus.source, productId: user.plus.productId } : null,
         plusInterest: user.plusInterest?.at ? user.plusInterest : null,
+        research: user.research?.invitedAt ? user.research : null,
         mood: user.mood || null,
         suspendReason: user.suspendReason || null,
         tokensValidAfter: user.tokensValidAfter || null,
@@ -634,6 +635,20 @@ module.exports = (io) => {
     io?.to(`user:${user.phone}`).emit("planChanged", {});
     await audit(req, req.body?.revoke ? "plus_revoked" : "plus_granted", { target: String(user._id), meta: { days: req.body?.days ?? null } });
     res.json({ success: true, plus: user.plus });
+  });
+
+  // The research call with this person took place (README "User research");
+  // the thank-you is a Plus grant above. Set once, never overwritten.
+  router.post("/admin/users/:id/research-done", requireAdmin("support"), async (req, res) => {
+    const user = await findUser(req, res);
+    if (!user) return;
+    if (!user.research?.invitedAt) return res.status(409).json({ success: false, error: "not_invited" });
+    if (!user.research.doneAt) {
+      user.research.doneAt = new Date();
+      await user.save();
+    }
+    await audit(req, "research_done", { target: String(user._id) });
+    res.json({ success: true, research: user.research });
   });
 
   // Subscriptions and "Interesse zeigen" in numbers
