@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const express = require("express");
 const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
 const ClientError = require("../models/ClientError");
+const opsCounters = require("../lib/opsCounters");
 
 const MAX_VERSIONS = 10;
 const clean = (v, max) => (typeof v === "string" ? v.slice(0, max) : "");
@@ -52,6 +53,8 @@ module.exports = () => {
       { key: keyOf(message, stack), [`versions.${MAX_VERSIONS}`]: { $exists: true } },
       { $push: { versions: { $each: [], $slice: -MAX_VERSIONS } } },
     );
+    // Per day, for the alert "three times yesterday's errors" (lib/alerts.js)
+    opsCounters.count("clientErrors", now).catch((err) => console.error("❌ opsCounters:", err.message));
     res.json({ success: true });
   });
 

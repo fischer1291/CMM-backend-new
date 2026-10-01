@@ -104,6 +104,8 @@ function createApp({ ringTimeoutMs } = {}) {
 
   // Store purchases (RevenueCat), authenticated with its own secret
   app.use(require("./routes/plus").webhook(io));
+  // Backup ping (own key) and the alert history for the console
+  app.use(require("./routes/ops"));
 
   // Admin console: its own sign-in (cookie + TOTP), static files at /console
   app.use(require("./routes/admin")(io));

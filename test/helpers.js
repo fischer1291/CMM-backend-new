@@ -25,12 +25,21 @@ const fakes = {
   rejectMailTo: null,
   // Twilio refuses to send to this number
   failSmsTo: null,
+  // Plain SMS (alerts) "sent" via lib/twilio.js
+  alertSms: [],
 };
 
 const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
   if (request === "twilio") {
     return () => ({
+      messages: {
+        create: async ({ to, body }) => {
+          if (fakes.failSmsTo && to === fakes.failSmsTo) throw new Error("twilio_down");
+          fakes.alertSms.push({ to, body });
+          return { sid: `SM${fakes.alertSms.length}` };
+        },
+      },
       verify: {
         v2: {
           services: () => ({
@@ -183,6 +192,7 @@ async function reset() {
   fakes.failMailTo = null;
   fakes.rejectMailTo = null;
   fakes.failSmsTo = null;
+  fakes.alertSms.length = 0;
   fakes.receipts = {};
 }
 

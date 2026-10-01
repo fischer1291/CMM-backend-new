@@ -1,7 +1,6 @@
 const crypto = require("crypto");
 const express = require("express");
 const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
-const twilio = require("twilio");
 const User = require("../models/User");
 const { normalizePhone, countryOf } = require("../lib/phone");
 const { signToken } = require("../lib/auth");
@@ -10,16 +9,9 @@ const { signInBlock } = require("../lib/accessGate");
 const { opsConfig } = require("../lib/appConfig");
 const opsCounters = require("../lib/opsCounters");
 const { localParts } = require("../lib/localTime");
+const { client: twilioClient } = require("../lib/twilio");
 
 const router = express.Router();
-
-let client = null;
-function twilioClient() {
-  if (!client) {
-    client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-  }
-  return client;
-}
 
 const skip = () => process.env.NODE_ENV === "test";
 

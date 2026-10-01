@@ -12,6 +12,7 @@ const { checkReceipts } = require("./lib/receipts");
 const { tickDailyMoments } = require("./lib/dailyMoment");
 const { expirePendingMoments } = require("./lib/moments");
 const { runSnapshots } = require("./lib/metrics");
+const { runRules } = require("./lib/alerts");
 const { tickMomentsWaiting } = require("./lib/unlock");
 const { asLeader, releaseLease, INSTANCE } = require("./lib/leader");
 const { migratePrivateCircles, tickRituals, endStaleRooms } = require("./lib/circles");
@@ -125,9 +126,14 @@ async function main() {
     asJobLeader("tick", tick).catch((err) => console.error("❌ availability tick:", err.message));
   }, 60 * 1000);
 
-  // Admin numbers: fill missing days now, then refresh every 30 minutes
+  // Admin numbers: fill missing days now, then refresh every 30 minutes; the
+  // alert rules (lib/alerts.js) run right after, on the fresh numbers
   const snapshots = () =>
-    asJobLeader("snapshots", runSnapshots).catch((err) => console.error("❌ metrics snapshots:", err.message));
+    asJobLeader("snapshots", runSnapshots)
+      .catch((err) => console.error("❌ metrics snapshots:", err.message))
+      .then(() => asJobLeader("alerts", runRules))
+      .then((fired) => fired?.length && console.log(`🚨 Alarme: ${fired.join(", ")}`))
+      .catch((err) => console.error("❌ alerts:", err.message));
   snapshots();
   setInterval(snapshots, 30 * 60 * 1000);
 

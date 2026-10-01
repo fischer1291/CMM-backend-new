@@ -164,8 +164,8 @@ a later, deliberate 20 stays). It reports yesterday whole (`lib/today.js`
 yesterdayNumbers): new users, active, talks, visits, waitlist, then
 "Aktivierung 4 W: xx % (Ziel 40) 🟢/🔴", "Dichte: xx %", tickets whose
 last message is from the user and older than 24 hours, videos waiting for
-approval and yesterday's SMS against the cap. Night alerts join the push
-once `lib/alerts.js` exists (plan 1.10).
+approval, the tags of the alerts of the last 12 hours ("Alarme der Nacht",
+see Alerts) and yesterday's SMS against the cap.
 
 ## Health check
 
@@ -211,8 +211,13 @@ S3-compatible endpoint (Backblaze B2 or Cloudflare R2, free tier). The
 newest 8 dumps stay in the bucket, older ones are deleted after each upload.
 The plain archive never leaves the runner and is deleted right after
 encryption; the run fails with an `::error::` naming the missing secret when
-one is not set. GitHub mails the owner when a scheduled run fails; the alert
-"last dump older than 8 days" comes with plan 1.10.
+one is not set. GitHub mails the owner when a scheduled run fails. With the
+optional secrets `BACKUP_PING_URL` (`https://api.wannayap.app/ops/backup-done`)
+and `BACKUP_PING_KEY` (the same value as the env variable on Render) the
+last step posts the dump's name and size to the backend, which stores
+`AppConfig.ops.lastBackupAt` and raises the alert `backup_stale` when no
+dump reported for 8 days; without them the step is skipped. The console
+shows the last backup under App → Betrieb.
 
 GitHub secrets (Settings → Secrets and variables → Actions):
 
@@ -223,6 +228,7 @@ GitHub secrets (Settings → Secrets and variables → Actions):
 | `BACKUP_S3_ENDPOINT` | `https://s3.<region>.backblazeb2.com` or `https://<account>.r2.cloudflarestorage.com` |
 | `BACKUP_S3_BUCKET` | Bucket name (private, no public access) |
 | `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY` | A key limited to that bucket with read, write and delete |
+| `BACKUP_PING_URL`, `BACKUP_PING_KEY` | Optional: where and with which key the run reports the finished dump (see above) |
 
 Atlas → Network Access must allow GitHub-hosted runners, which have no fixed
 IPs: either `0.0.0.0/0` (what Render needs anyway unless its static outbound
@@ -252,6 +258,36 @@ and dropped by the run) and proves that this code version works with it; the
 restored data next to it stays untouched. `test/helpers.js` refuses to drop
 any database without that prefix.
 
+## Alerts
+
+`lib/alerts.js` runs 13 rules every 30 minutes on the job leader, right
+after the metrics snapshots (`index.js`). A hit goes out through
+`alert(tag, text, { level })`: at most once an hour per tag (one
+`AlertState` document per tag keeps `lastAt`, `lastText`, `count`, so a
+new leader after a deploy doesn't repeat it), as a push over the console's
+`alerts` kind (owners, `lib/adminPush.js`), as a mail to every owner admin
+(`lib/mailer.js`, only with `SMTP_URL`) and, for level `error`, as an SMS
+to `AppConfig.ops.alertPhone` (Console → App → Betrieb, "Alarm-SMS an";
+needs `TWILIO_SMS_FROM`). The "Heute" card lists the last alerts
+(`GET /admin/alerts`, viewer); the morning push names the tags of the last
+12 hours. What to do in detail: `CMM/docs/RUNBOOK.md`, section "Alarme".
+
+| Tag | Level | Fires when | What to do |
+|---|---|---|---|
+| `sms_failures` | error | today `smsFailed / smsStarted > 20 %` with at least 5 starts (`lib/opsCounters.js`) | Twilio console: balance, Verify service status, Fraud Guard; pause SMS in the console if it is pumping |
+| `push_failures` | warn | of the pushes tried in the last 60 minutes (`PushDecision` result `sent`/`failed`) more than 10 % failed or got an error receipt, at least 20 tried | Expo status and `GET /api/push-health`; a single bad app build shows in Console → Fehler |
+| `push_credentials` | error | `pushCredentialErrors > 0` today: Apple/Expo refused our credentials (`InvalidProviderToken`, `ExpiredProviderToken`, `TopicDisallowed`, `MismatchSenderId` …; counted in `lib/push.js` and `lib/receipts.js`, not for dead device tokens) | Renew the APNs key / Expo credentials (`VOIP_KEY_*`, EAS credentials), redeploy |
+| `tick_late` | error | the `jobs` lock's `lastRunAt` is older than 3 minutes (`lib/leader.js`) | `/healthz` and Render logs; restart the service if the leader hangs |
+| `moment_missing` | warn | after 21:30 Berlin time today's `DailyMoment` for Europe/Berlin has no `sentAt` | Check `tickDailyMoments` errors in the logs; the tick may be stalled (see `tick_late`) |
+| `client_errors` | warn | a new `ClientError` with `fatal` in the last 30 minutes, or today's reported errors are more than three times yesterday's with at least 10 (`clientErrors` day counter, `routes/diagnostics.js`) | Console → Fehler: message, stack and versions; hotfix or raise `minBuild` |
+| `revenuecat` | error | today `rcUnauthorized > 0` (wrong `REVENUECAT_WEBHOOK_SECRET`) or `rcUnknownUser > 0` (`routes/plus.js`) | Compare the secret in RevenueCat and on Render; for unknown users find the purchase in RevenueCat and grant Plus by hand |
+| `agent_silent` | warn | the newest `AdDraft` is older than 36 hours (only once one ever existed) | GitHub → Actions → marketing-agent: re-enable the schedule (paused after 60 days without commits) or read the failed run |
+| `support_overdue` | warn | an open `SupportTicket` whose last message is from the user and older than 24 hours | Console → Support: answer |
+| `social_token` | warn | a connected `MarketingChannel` whose token (TikTok: refresh token) expires within 7 days | Console → Freigabe → Kanäle: reconnect |
+| `no_talks` | error | yesterday's snapshot has `users.dau > 20` and `talks.count == 0` | Call delivery is broken: VoIP push, Agora certificate, `GET /api/push-health` |
+| `backup_stale` | warn | `AppConfig.ops.lastBackupAt` exists and is older than 8 days | GitHub → Actions → DB-Backup: failed or paused run, see Backup |
+| `sms_cap` | warn | today's `smsStarted` is at 80 % of `ops.smsPerDay` | Real demand: raise the cap (Console → App → Betrieb); otherwise suspect SMS pumping and narrow `smsRegions` |
+
 ## Subscriptions (Wanna yap+)
 
 RevenueCat posts every subscription event to `POST /webhooks/revenuecat`
@@ -280,6 +316,8 @@ needs `REVENUECAT_API_KEY`.
 | `JWT_SECRET` | yes | Signs auth tokens; without it no tokens are issued |
 | `AUTH_REQUIRED` | later | `true` rejects requests without a token |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SID` | yes | SMS verification |
+| `TWILIO_SMS_FROM` | alerts | A Twilio phone number (`+49…`) or Messaging Service SID (`MG…`) for alert SMS to `AppConfig.ops.alertPhone` (`lib/twilio.js`); without it alerts go out as push and mail only |
+| `BACKUP_PING_KEY` | backup | Bearer key for `POST /ops/backup-done` (`routes/ops.js`), at least 24 characters; the same value is the GitHub secret of the backup workflow. Without it the endpoint refuses everyone |
 | `AGORA_APP_ID`, `AGORA_APP_CERTIFICATE` | yes | Agora tokens (the old certificate was public and must be rotated) |
 | `VOIP_KEY_CONTENT`, `VOIP_KEY_ID`, `VOIP_TEAM_ID` | iOS | APNs key for VoIP pushes |
 | `VOIP_TOPIC` | no | Defaults to `com.schly21.kontaktlisteapp.voip` |

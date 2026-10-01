@@ -15,6 +15,10 @@ const { planOf, limits } = require("../lib/plan");
 const { referralOf } = require("../lib/referral");
 const { yearReview } = require("../lib/yearReview");
 const revenuecat = require("../lib/revenuecat");
+const opsCounters = require("../lib/opsCounters");
+
+// Webhook trouble is counted per day for the alert revenuecat (lib/alerts.js)
+const countOps = (name) => opsCounters.count(name).catch((err) => console.error("❌ opsCounters:", err.message));
 
 // What people can say they're interested in (the paywall's feature list)
 const INTEREST = ["hd_video", "bigger_circles", "longer_rounds", "memories", "year_review", "icons", "rituals", "family", "support"];
@@ -242,6 +246,7 @@ module.exports.webhook = (io) => {
     const given = String(req.headers.authorization || "");
     const expected = `Bearer ${secret}`;
     if (!secret || given.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected))) {
+      countOps("rcUnauthorized");
       return res.status(401).json({ success: false });
     }
     const event = req.body?.event;
@@ -249,8 +254,10 @@ module.exports.webhook = (io) => {
     try {
       const { result, users } = await applyEvent(event);
       for (const user of users) io?.to(`user:${user.phone}`).emit("planChanged", {});
-      if (result === "unknown_user") console.error(`❌ RevenueCat ${event.type} for unknown app user ${event.app_user_id || (event.transferred_to || []).join(",")}`);
-      else console.log(`💳 RevenueCat ${event.type}: ${result}`);
+      if (result === "unknown_user") {
+        countOps("rcUnknownUser");
+        console.error(`❌ RevenueCat ${event.type} for unknown app user ${event.app_user_id || (event.transferred_to || []).join(",")}`);
+      } else console.log(`💳 RevenueCat ${event.type}: ${result}`);
       res.json({ success: true, result });
     } catch (err) {
       console.error("❌ RevenueCat webhook:", err.message);

@@ -9,6 +9,8 @@ const { withDatabase } = require("./helpers");
 
 const yml = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "db-backup.yml"), "utf8");
 const SECRETS = ["MONGODB_URI", "BACKUP_AGE_PUBLIC_KEY", "BACKUP_S3_ENDPOINT", "BACKUP_S3_BUCKET", "BACKUP_S3_ACCESS_KEY_ID", "BACKUP_S3_SECRET_ACCESS_KEY"];
+// The backup ping (routes/ops.js) is optional: without them the step is skipped
+const OPTIONAL = ["BACKUP_PING_URL", "BACKUP_PING_KEY"];
 
 test("db-backup.yml: weekly schedule, manual run, read-only token, one run at a time", () => {
   assert.match(yml, /^\s+- cron: "17 3 \* \* 0"$/m);
@@ -18,9 +20,9 @@ test("db-backup.yml: weekly schedule, manual run, read-only token, one run at a 
   assert.doesNotMatch(yml, /actions\/checkout/, "nothing from the repo is needed on the runner");
 });
 
-test("db-backup.yml: exactly the documented secrets, all checked before anything runs", () => {
+test("db-backup.yml: exactly the documented secrets, the required ones checked before anything runs", () => {
   const used = [...new Set([...yml.matchAll(/\$\{\{ secrets\.(\w+) \}\}/g)].map((m) => m[1]))].sort();
-  assert.deepEqual(used, [...SECRETS].sort());
+  assert.deepEqual(used, [...SECRETS, ...OPTIONAL].sort());
   const check = /name: Secrets vorhanden\?[\s\S]*?for name in ([^;]+);/.exec(yml);
   assert.ok(check, "the first step checks the secrets");
   assert.deepEqual(check[1].trim().split(/\s+/).sort(), [...SECRETS].sort());
@@ -51,6 +53,15 @@ test("db-backup.yml: steps with pipes run under shell: bash, so a failed left si
   for (const step of ["mongodump und age installieren", "Upload in den Bucket und alte Dumps löschen"]) {
     assert.match(yml, new RegExp(`- name: ${step}\\n\\s+shell: bash\\n`), `${step}: shell: bash`);
   }
+});
+
+test("db-backup.yml: the backup ping runs last, only with both secrets, with the key in the header", () => {
+  const steps = [...yml.matchAll(/- name: (.+)/g)].map((m) => m[1]);
+  assert.equal(steps.at(-1), "Backend benachrichtigen");
+  assert.match(yml, /- name: Backend benachrichtigen\n\s+if: \$\{\{ env\.BACKUP_PING_URL != '' && env\.BACKUP_PING_KEY != '' \}\}/);
+  assert.match(yml, /curl -fsS -X POST "\$BACKUP_PING_URL"/);
+  assert.match(yml, /-H "Authorization: Bearer \$BACKUP_PING_KEY"/);
+  assert.match(yml, /echo "bytes=\$\(stat -c %s "\$name"\)" >> "\$GITHUB_OUTPUT"/);
 });
 
 test("withDatabase: same cluster and options, only the database changes", () => {

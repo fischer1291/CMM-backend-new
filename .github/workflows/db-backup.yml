@@ -31,6 +31,11 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Optional: the backend learns that the dump is there (alert backup_stale,
+      # plan 1.10). Without both the last step is skipped, never an error.
+      BACKUP_PING_URL: ${{ secrets.BACKUP_PING_URL }}
+      BACKUP_PING_KEY: ${{ secrets.BACKUP_PING_KEY }}
     steps:
       - name: Secrets vorhanden?
         env:
@@ -93,6 +98,7 @@ jobs:
           fi
           age -r "$BACKUP_AGE_PUBLIC_KEY" -o "$name" dump.archive.gz
           echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "bytes=$(stat -c %s "$name")" >> "$GITHUB_OUTPUT"
           echo "Dump verschlüsselt: $name ($(du -h "$name" | cut -f1))"
 
       # The AWS CLI is preinstalled on ubuntu-latest. The region is part of
@@ -134,3 +140,15 @@ jobs:
             echo
             tail -n "$KEEP" "$RUNNER_TEMP/dumps.txt" | sort -r | sed 's/^/- /'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # POST /ops/backup-done (routes/ops.js) with the dump's name and size;
+      # the backend stores the time and alerts when no dump reported for 8 days
+      - name: Backend benachrichtigen
+        if: ${{ env.BACKUP_PING_URL != '' && env.BACKUP_PING_KEY != '' }}
+        env:
+          NAME: ${{ steps.dump.outputs.name }}
+          BYTES: ${{ steps.dump.outputs.bytes }}
+        run: |
+          curl -fsS -X POST "$BACKUP_PING_URL" \
+            -H "Authorization: Bearer $BACKUP_PING_KEY" -H "Content-Type: application/json" \
+            -d "{\"name\":\"$NAME\",\"bytes\":$BYTES}"

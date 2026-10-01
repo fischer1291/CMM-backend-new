@@ -305,10 +305,27 @@ function NorthStar({ activation: a, density: d }) {
   </div>`;
 }
 
-/** Today so far, next to the whole same weekday last week, the north star and what is waiting. */
+/** The last alerts (lib/alerts.js): tag, when, text; the tag is the key in RUNBOOK.md. */
+function Alerts({ alerts }) {
+  if (!alerts) return null;
+  const when = (d) => new Date(d).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return html`<div class="alerts">
+    <div class="label" style="margin:12px 0 4px">Alarme</div>
+    ${alerts.length === 0 ? html`<p class="note" style="margin:0">Bisher keine. Die Regeln laufen alle 30 Minuten.</p>` : alerts.slice(0, 5).map((a) => html`<div class="kv" title=${a.lastText}>
+      <span><span class=${`pill ${a.level === 'error' ? 'warn' : 'todo'}`}>${a.tag}</span> <span class="muted">${when(a.lastAt)}${a.count > 1 ? ` · ${a.count}×` : ''}</span></span>
+      <span class="muted" style="text-align:right">${a.lastText.length > 90 ? `${a.lastText.slice(0, 90)}…` : a.lastText}</span>
+    </div>`)}
+  </div>`;
+}
+
+/** Today so far, next to the whole same weekday last week, the north star, the last alerts and what is waiting. */
 function Today({ onGo }) {
   const [data, setData] = useState(null);
-  const load = useCallback(() => api('/today').then(setData).catch(() => {}), []);
+  const [alerts, setAlerts] = useState(null);
+  const load = useCallback(() => {
+    api('/today').then(setData).catch(() => {});
+    api('/alerts').then((d) => setAlerts(d.alerts)).catch(() => {});
+  }, []);
   useEffect(() => {
     load();
     const t = setInterval(load, 60_000);
@@ -340,6 +357,7 @@ function Today({ onGo }) {
     </div>
     <${NorthStar} activation=${data.activation} density=${data.density} />
     ${data.sms ? html`<p class="note" style="margin:8px 0 0">SMS heute ${num(data.sms.started)} von ${num(data.sms.cap)}${data.sms.paused ? ' · pausiert' : ''} (App → Betrieb)</p>` : null}
+    <${Alerts} alerts=${alerts} />
   </div>`;
 }
 
@@ -794,7 +812,7 @@ function AppSettings({ role }) {
         updateUrl: c.updateUrl || '',
         banner: { enabled: !!c.banner?.enabled, text: c.banner?.text || '', level: c.banner?.level || 'info', until: c.banner?.until ? c.banner.until.slice(0, 16) : '' },
         flags: { ...(c.flags || {}) },
-        ops: { smsPerDay: String(c.ops?.smsPerDay ?? 100), smsPaused: !!c.ops?.smsPaused, smsRegions: (c.ops?.smsRegions || ['DE', 'AT', 'CH']).join(', ') },
+        ops: { smsPerDay: String(c.ops?.smsPerDay ?? 100), smsPaused: !!c.ops?.smsPaused, smsRegions: (c.ops?.smsRegions || ['DE', 'AT', 'CH']).join(', '), alertPhone: c.ops?.alertPhone || '' },
         goals: { activationPct: String(c.goals?.activationPct ?? 40), densityPct: String(c.goals?.densityPct ?? 50) },
       });
     }).catch(() => setData(false));
@@ -816,14 +834,14 @@ function AppSettings({ role }) {
           updateUrl: form.updateUrl.trim() || null,
           banner: { ...form.banner, until: form.banner.until ? new Date(form.banner.until).toISOString() : null },
           flags: form.flags,
-          ops: { smsPerDay: Number(form.ops.smsPerDay), smsPaused: form.ops.smsPaused, smsRegions: form.ops.smsRegions.toUpperCase().split(/[\s,]+/).filter(Boolean) },
+          ops: { smsPerDay: Number(form.ops.smsPerDay), smsPaused: form.ops.smsPaused, smsRegions: form.ops.smsRegions.toUpperCase().split(/[\s,]+/).filter(Boolean), alertPhone: form.ops.alertPhone.trim() || null },
           goals: { activationPct: Number(form.goals.activationPct), densityPct: Number(form.goals.densityPct) },
         },
       });
       setFlash('Gespeichert. Offene Apps bekommen es sofort, alle anderen beim nächsten Start.');
       load();
     } catch (err) {
-      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH)', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100' };
+      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH), Alarm-Nummer mit Ländervorwahl (+49…)', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100' };
       setFlash(`Fehler: ${msg[err.code] || err.code || err.message}`);
     }
   };
@@ -867,6 +885,8 @@ function AppSettings({ role }) {
         <label class="field"><span>SMS pro Tag (Deckel, danach 429)</span><input value=${form.ops.smsPerDay} onInput=${(e) => set({ ops: { ...form.ops, smsPerDay: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
         <label class="field"><span>Länder (ISO-Codes, Komma-getrennt)</span><input value=${form.ops.smsRegions} onInput=${(e) => set({ ops: { ...form.ops, smsRegions: e.target.value } })} disabled=${!owner} placeholder="DE, AT, CH" /></label>
         <label class="check"><input type="checkbox" checked=${form.ops.smsPaused} onChange=${(e) => set({ ops: { ...form.ops, smsPaused: e.target.checked } })} disabled=${!owner} /> Notschalter: keine SMS senden (Anmeldung pausiert)</label>
+        <label class="field"><span>Alarm-SMS an (nur Stufe „error“, leer = keine)</span><input value=${form.ops.alertPhone} onInput=${(e) => set({ ops: { ...form.ops, alertPhone: e.target.value } })} disabled=${!owner} placeholder="+49…" inputmode="tel" /></label>
+        ${data.config.ops?.lastBackupAt ? html`<p class="note" style="margin:0">Letztes Backup: ${new Date(data.config.ops.lastBackupAt).toLocaleString('de-DE')}${data.config.ops.lastBackupBytes ? ` (${Math.round(data.config.ops.lastBackupBytes / 1048576)} MB)` : ''}</p>` : null}
       </div>
       <div class="card">
         <div class="label">Ziele</div>
