@@ -85,6 +85,13 @@ function createApp({ ringTimeoutMs } = {}) {
     }
   });
 
+  // Liveness for Render and the uptime monitor: 200 or 503, never a write
+  app.get("/healthz", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const status = await require("./lib/health").healthStatus();
+    res.status(status.ok ? 200 : 503).json(status);
+  });
+
   // Min version, banner and feature flags: read before sign-in, too
   app.get("/app-config", async (req, res) => {
     try {

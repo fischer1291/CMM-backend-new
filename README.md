@@ -36,6 +36,40 @@ Rollout: while `AUTH_REQUIRED` is not `true`, requests **without** a token are
 still accepted (older app versions). Once all clients send tokens, set
 `AUTH_REQUIRED=true`.
 
+## Health check
+
+`GET /healthz` answers without authentication and without writing anything:
+
+- `200 {ok:true, db:"connected", lastTickAgeSec, version}` when MongoDB is
+  connected and the leader finished a background job (`lib/leader.js` stamps
+  `lastRunAt` on the `jobs` lock) less than 3 minutes ago. A process younger
+  than 5 minutes passes without a tick (`lastTickAgeSec: null`), because the
+  first minute tick is still ahead.
+- `503 {ok:false, reason}` otherwise: `db` (not connected or the lock could
+  not be read), `tick_stale` (last job older than 3 minutes), `no_tick` (no
+  job ever finished and the process is older than 5 minutes).
+
+`index.js` also exits the process (code 1, after releasing the `jobs` lease)
+on `unhandledRejection` and `uncaughtException`; Render restarts it.
+
+Set up once, by hand (nothing in the repo does this):
+
+- [ ] Render → the service → Settings → Health Check Path: `/healthz`. Render
+      then only routes traffic to an instance that answers 200 and restarts
+      one that keeps failing.
+- [ ] External monitor, free tier of Better Stack or UptimeRobot, one check
+      per minute (UptimeRobot free: 5 minutes), alerts to the phone via the
+      provider's app or mail:
+  - [ ] `https://api.wannayap.app/healthz`, expect HTTP 200
+  - [ ] `https://api.wannayap.app/api/push-health`, keyword check: the body
+        must contain `"voipConfigured":true` and `"authRequired":true`
+  - [ ] `https://wannayap.app`, expect HTTP 200
+  - [ ] `https://wannayap.app/.well-known/apple-app-site-association`, expect
+        HTTP 200 (Universal Links break silently without it)
+- [ ] Phone calls as escalation are not in the free tiers; a paid plan
+      (≈ 20–30 $/month) only with an entry in `AppConfig.fixedCosts`
+      (`CMM/docs/SCALE-PLAN.md`, 1.2 and 1.10).
+
 ## Environment
 
 | Variable | Required | Purpose |

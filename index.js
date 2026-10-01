@@ -17,6 +17,20 @@ const { asLeader, releaseLease, INSTANCE } = require("./lib/leader");
 const { migratePrivateCircles, tickRituals, endStaleRooms } = require("./lib/circles");
 
 const PORT = process.env.PORT || 3000;
+// Background jobs run on one instance only (lib/leader.js)
+const JOBS = "jobs";
+
+// A rejected promise nobody awaits or an exception outside a request leaves
+// the process in an unknown state: log it, hand the jobs over and exit; Render
+// restarts the service and the uptime monitor sees /healthz fail meanwhile.
+const crash = (kind) => (err) => {
+  console.error(`💥 ${kind}:`, err);
+  const exit = () => process.exit(1);
+  setTimeout(exit, 1000);
+  releaseLease(JOBS).then(exit, exit);
+};
+process.on("unhandledRejection", crash("unhandledRejection"));
+process.on("uncaughtException", crash("uncaughtException"));
 
 /** One-off data fixes that are safe to run on every start. */
 async function migrate() {
@@ -78,9 +92,8 @@ async function main() {
     }
     await tickMomentsWaiting();
   };
-  // Background jobs run on one instance only (lib/leader.js). The minute tick
-  // also renews the lease, so the leader keeps it while it's alive.
-  const JOBS = "jobs";
+  // The minute tick also renews the lease, so the leader keeps it while it's
+  // alive; every finished job stamps lastRunAt on the lock for /healthz.
   let leading = false;
   const asJobLeader = async (name, fn) => {
     const result = await asLeader(JOBS, async () => {
