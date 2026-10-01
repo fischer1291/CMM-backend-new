@@ -57,7 +57,11 @@ async function migrate() {
   const applied = await AppConfig.findOne({ key: "app" }, { migrations: 1 }).lean();
   if (!applied?.migrations?.morningPush) {
     const moved = await Admin.updateMany({ "notify.dailyHour": 20 }, { "notify.dailyHour": 8 });
-    await AppConfig.updateOne({ key: "app" }, { $set: { "migrations.morningPush": new Date() } }, { upsert: true });
+    // An older document may carry migrations: null (the schema default); the
+    // dotted $set needs an object there. setDefaultsOnInsert: false keeps a
+    // fresh database free of null subtrees (ops, goals, limits)
+    await AppConfig.updateOne({ key: "app", migrations: null }, { $set: { migrations: {} } });
+    await AppConfig.updateOne({ key: "app" }, { $set: { "migrations.morningPush": new Date() } }, { upsert: true, setDefaultsOnInsert: false });
     if (moved.modifiedCount) console.log(`🔧 Moved the daily push of ${moved.modifiedCount} admin(s) to 8:00`);
   }
 

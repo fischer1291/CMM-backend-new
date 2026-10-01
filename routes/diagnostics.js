@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const express = require("express");
 const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
 const ClientError = require("../models/ClientError");
+const { acceptToken } = require("../lib/auth");
 const opsCounters = require("../lib/opsCounters");
 
 const MAX_VERSIONS = 10;
@@ -38,11 +39,16 @@ module.exports = () => {
     const version = clean(req.body?.version, 20).replace(/[^\w .()-]/g, "").trim();
     const platform = ["ios", "android", "web"].includes(req.body?.platform) ? req.body.platform : null;
     const now = new Date();
+    // The route is public (crashes before sign-in count too), but only a
+    // signed-in app may mark an error fatal: a fatal error alerts the owner
+    // (lib/alerts.js), and that must not be reachable for anyone with curl
+    const header = req.headers.authorization || "";
+    const reporter = header.startsWith("Bearer ") ? await acceptToken(header.slice(7)).catch(() => null) : null;
     await ClientError.updateOne(
       { key: keyOf(message, stack) },
       {
         $setOnInsert: { message, stack, platform, firstAt: now },
-        $set: { lastAt: now, ...(req.body?.fatal === true ? { fatal: true } : {}) },
+        $set: { lastAt: now, ...(req.body?.fatal === true && reporter ? { fatal: true } : {}) },
         $inc: { count: 1 },
         ...(version ? { $addToSet: { versions: version } } : {}),
       },

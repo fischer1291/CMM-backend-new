@@ -437,7 +437,9 @@ test("app errors: reported without sign-in, grouped, listed for the console", as
   assert.equal(res.body.errors.length, 1);
   const [error] = res.body.errors;
   assert.equal(error.count, 2);
-  assert.equal(error.fatal, true);
+  // Reports without a token can't mark an error fatal: a fatal error alerts the
+  // owner (lib/alerts.js), so only a signed-in app may say so (test/alerts.test.js)
+  assert.equal(error.fatal, false);
   assert.deepEqual(error.versions, ["1.0.0 (21)", "1.0.1 (22)"]);
   await request(ctx.app).get("/admin/errors").expect(401);
 });

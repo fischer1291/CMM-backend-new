@@ -337,3 +337,25 @@ test("leader change: two runs shortly after each other send one alarm, because t
   assert.equal(sent.length, 1);
   assert.equal((await AlertState.findOne({ tag: "backup_stale" }).lean()).count, 1);
 });
+
+test("rules: a fatal error alerts without its text and only from a signed-in app; tick_late speaks up without any stamp", async () => {
+  await owner();
+  const now = new Date();
+  const report = { message: "<b>Klick hier</b> http://evil.example", stack: "at x", fatal: true };
+  // Anonymous report: fatal is not honoured, nothing fires
+  await request(ctx.app).post("/diagnostics/errors").send(report).expect(200);
+  assert.deepEqual(await alerts.runRules(now), []);
+  // The same from a signed-in app fires, but the text stays out of push and mail
+  const { body } = await request(ctx.app).post("/verify/check").send({ phone: "+4915111111111", code: fakes.approvedCode }).expect(200);
+  await request(ctx.app).post("/diagnostics/errors").set("Authorization", `Bearer ${body.token}`).send(report).expect(200);
+  assert.deepEqual(await alerts.runRules(now), ["client_errors"]);
+  const text = sent.find((s) => s.options.topic === "alert-client_errors").payload.body;
+  assert.match(text, /Neuer fataler App-Fehler \(Schlüssel [0-9a-f]{8}, 2×\)/);
+  assert.doesNotMatch(text, /Klick hier|evil/);
+  // No job has ever finished after the startup grace: tick_late reports it
+  await AlertState.deleteMany({});
+  await Lock.deleteMany({});
+  const fired = await alerts.runRules(now, { uptimeSec: STARTUP_GRACE_SEC + 60 });
+  assert.deepEqual(fired.sort(), ["client_errors", "tick_late"]);
+  assert.match(sent.find((s) => s.options.topic === "alert-tick_late").payload.body, /hat kein Hintergrundjob abgeschlossen/);
+});
