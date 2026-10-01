@@ -198,7 +198,7 @@ module.exports = (io) => {
     const now = new Date();
     const own = STORE_SOURCES.includes(me.plus?.source);
     if (found && (found.active || own) && !hasOpenAdminGrant(me)) {
-      me.plus = { ...me.plus?.toObject?.(), active: true, until: found.until, productId: found.productId, status: found.status, source: found.sandbox ? "sandbox" : "store", since: me.plus?.since || now, eventAt: now };
+      me.plus = { ...me.plus?.toObject?.(), active: found.active, until: found.until, productId: found.productId, status: found.status, source: found.sandbox ? "sandbox" : "store", since: me.plus?.since || now, eventAt: now };
       await me.save();
       io?.to(`user:${me.phone}`).emit("planChanged", {});
     } else if (!found && own && me.plus.active) {

@@ -71,7 +71,7 @@ router.post("/match", perUser, async (req, res) => {
       await User.updateOne({ phone: own }, [{ $set: { contacts: { $setDifference: [union, [own, ...blocked]] } } }]);
     }
     if (asked > SUSPICIOUS_HASHES && others.length === 0) {
-      console.warn(`⚠️ contacts/match: ${asked} entries without a match from ${own || req.ip}`);
+      console.warn(`⚠️ contacts/match: ${asked} entries without a match from ${own ? `${own.slice(0, 3)}…${own.slice(-3)}` : req.ip}`);
       opsCounters.count("matchSuspicious").catch((err) => console.error("❌ opsCounters:", err.message));
     }
 
