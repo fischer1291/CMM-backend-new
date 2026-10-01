@@ -106,6 +106,51 @@ first talk raises `invitesActivated` on each inviter and grants what is due.
 `/me/plan` returns `referral: { joined, activated, earned, toNext, ... }`,
 `toNext` counted on `activated`.
 
+## Onboarding milestones and the north star
+
+`User.milestones` records when each person reached a step of the funnel,
+every field set once by a conditional update and never overwritten:
+`verifiedAt` (`POST /verify/check`; accounts from before get it on their
+next sign-in), `contactsSyncedAt` and `firstRegisteredContactAt`
+(`POST /contacts/match`, the latter only when at least one number was
+registered), `pushGrantedAt` (`POST /user/push-token`), `firstCallAt`
+(`lib/calls.js` startCall, the caller, only once the call actually rang,
+not for an unreachable callee) and `firstTalkAt` (see Invite rewards).
+`firstInviteAt` sits on the user directly. No new data leaves the server:
+the fields only say when, and the person sees them in their own export
+(`GET /me/export`, `milestones`).
+
+`lib/metrics.js` turns them into two rolling numbers in every day's
+snapshot (`MetricsDaily.users`):
+
+- `activation4w` (percent) and `activationSample`: of everyone who signed
+  up in the last four full weeks (Monday to Sunday, Europe/Berlin), the
+  share with a real conversation within 7 days, counted on those whose
+  window is over. Under 100 measured the console and the push show the
+  number but say "zu wenig Daten" instead of judging it.
+- `density: { c3plus, c0, sample }`: of everyone 7 to 35 days in, the
+  share (percent) with at least three registered contacts and the share
+  with none.
+
+The goals they are judged against live in the app config
+(Console → App → Ziele, `AppConfig.goals`, `lib/appConfig.js`
+DEFAULT_GOALS): `activationPct` (default 40) and `densityPct` (default 50),
+whole percentages, never sent to the app. The "Heute" card shows both
+numbers with a traffic light, the Marketing-Budget card (Freigabe) turns red
+with "Keine bezahlte Reichweite unter 40 %" while activation is under goal
+on a sample of at least 100, and `GET /marketing/context` gives the agent
+`activation: { pct4w, sample, goalPct, density, densityGoalPct }`.
+
+The daily push to the console is a morning push: `Admin.notify.dailyHour`
+defaults to 8 (the first start after this change moves admins still on the
+old default 20 to 8, once, noted in `AppConfig.migrations.morningPush`;
+a later, deliberate 20 stays). It reports yesterday whole (`lib/today.js`
+yesterdayNumbers): new users, active, talks, visits, waitlist, then
+"Aktivierung 4 W: xx % (Ziel 40) 🟢/🔴", "Dichte: xx %", tickets whose
+last message is from the user and older than 24 hours, videos waiting for
+approval and yesterday's SMS against the cap. Night alerts join the push
+once `lib/alerts.js` exists (plan 1.10).
+
 ## Health check
 
 `GET /healthz` answers without authentication and without writing anything:

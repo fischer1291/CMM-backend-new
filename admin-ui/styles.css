@@ -98,6 +98,7 @@ table.rows tr.click:hover td { background: var(--surface); }
 .kv > span:last-child { text-align: right; }
 .card .label { margin-bottom: 8px; }
 .bad { color: var(--danger); }
+.good { color: var(--success); }
 .dots { display: grid; grid-template-columns: repeat(14, 1fr); gap: 4px; margin-top: 6px; }
 .dots span { aspect-ratio: 1; border-radius: 4px; background: var(--surface-strong); }
 .dots span.on { background: var(--cyan); box-shadow: 0 0 8px rgba(0, 229, 255, 0.5); }
@@ -269,6 +270,8 @@ img.ref.chosen { border-color: var(--cyan); }
 .delta.up { color: var(--cyan); }
 .delta.down { color: var(--pink); }
 .todo-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.northstar { margin-top: 10px; }
+.card.budget.under-goal { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger) inset; }
 .todo-row .pill { border: 0; cursor: pointer; font: inherit; font-size: 13px; padding: 6px 12px; }
 @media (max-width: 600px) {
   .today-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

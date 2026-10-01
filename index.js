@@ -47,6 +47,17 @@ async function migrate() {
   // Nudges: the unique (from, to) index and the 20 h TTL were replaced by a
   // history with cooldowns; syncIndexes drops/recreates what changed
   await require("./models/Nudge").syncIndexes();
+
+  // The daily numbers became a morning push (plan 1.12): admins still on the
+  // old default hour 20 move to 8, once; the marker keeps a later, deliberate
+  // 20 alone
+  const AppConfig = require("./models/AppConfig");
+  const applied = await AppConfig.findOne({ key: "app" }, { migrations: 1 }).lean();
+  if (!applied?.migrations?.morningPush) {
+    const moved = await require("./models/Admin").updateMany({ "notify.dailyHour": 20 }, { "notify.dailyHour": 8 });
+    await AppConfig.updateOne({ key: "app" }, { $set: { "migrations.morningPush": new Date() } }, { upsert: true });
+    if (moved.modifiedCount) console.log(`🔧 Moved the daily push of ${moved.modifiedCount} admin(s) to 8:00`);
+  }
 }
 
 async function main() {

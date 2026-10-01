@@ -68,7 +68,12 @@ router.post("/match", perUser, async (req, res) => {
       // is never lost: either it is already in connections here, or its
       // $addToSet lands on top of this contacts list afterwards
       const union = { $setUnion: [others.map((u) => u.phone), { $ifNull: ["$connections", []] }] };
-      await User.updateOne({ phone: own }, [{ $set: { contacts: { $setDifference: [union, [own, ...blocked]] } } }]);
+      // Milestones in the same write: the first sync, and the first sync that
+      // found somebody. $ifNull keeps a value that is already there.
+      const now = new Date();
+      const milestones = { "milestones.contactsSyncedAt": { $ifNull: ["$milestones.contactsSyncedAt", now] } };
+      if (others.length) milestones["milestones.firstRegisteredContactAt"] = { $ifNull: ["$milestones.firstRegisteredContactAt", now] };
+      await User.updateOne({ phone: own }, [{ $set: { contacts: { $setDifference: [union, [own, ...blocked]] }, ...milestones } }]);
     }
     if (asked > SUSPICIOUS_HASHES && others.length === 0) {
       console.warn(`⚠️ contacts/match: ${asked} entries without a match from ${own ? `${own.slice(0, 3)}…${own.slice(-3)}` : req.ip}`);

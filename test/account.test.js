@@ -88,6 +88,10 @@ test("export: everything stored about the user, as JSON", async () => {
   assert.equal(data.moments[0].image, "(Bild in der Datenbank)");
   assert.deepEqual(data.conversations.map((c) => [c.with, c.seconds]), [[BEN, 600]]);
   assert.ok(!JSON.stringify(data).includes("ExponentPushToken"), "no push tokens in the export");
+  // Onboarding milestones are about the person and belong in the export
+  assert.deepEqual(Object.keys(data.milestones), ["verifiedAt", "contactsSyncedAt", "firstRegisteredContactAt", "pushGrantedAt", "firstCallAt", "firstTalkAt", "firstInviteAt"]);
+  assert.ok(Date.parse(data.milestones.verifiedAt) > 0);
+  assert.equal(data.milestones.pushGrantedAt, null);
 });
 
 test("moments: pictures only as our Cloudinary uploads or inline images, no foreign URLs", async () => {

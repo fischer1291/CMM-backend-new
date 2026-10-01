@@ -57,7 +57,7 @@ test("admin push: VAPID key, subscribe an iPhone, test push, unsubscribe", async
   const state = (await request(ctx.app).get("/admin/push").set(admin(cookie)).expect(200)).body;
   assert.match(state.publicKey, /^[A-Za-z0-9_-]{80,}$/);
   assert.deepEqual(state.kinds, ["approvals", "posting", "support", "reports", "daily", "alerts"]);
-  assert.equal(state.notify.dailyHour, 20);
+  assert.equal(state.notify.dailyHour, 8);
   assert.equal(state.devices.length, 0);
   // Same key on the next call
   assert.equal((await request(ctx.app).get("/admin/push").set(admin(cookie))).body.publicKey, state.publicKey);
@@ -113,19 +113,53 @@ test("admin push: a device that is gone is forgotten", async () => {
   assert.equal(await AdminPushSubscription.countDocuments(), 0);
 });
 
-test("admin push: the day's numbers once a day at the chosen hour (Berlin)", async () => {
+test("admin push: yesterday's numbers once a day, in the morning at the chosen hour (Berlin)", async () => {
   await subscribed();
-  await Admin.updateOne({ email: EMAIL }, { "notify.dailyHour": 20 });
-  // 19:30 Berlin (summer time): not yet
-  assert.equal(await adminPush.dailyDue(new Date("2026-09-29T17:30:00Z")), 0);
-  // 20:05 Berlin: now, and only once
-  assert.equal(await adminPush.dailyDue(new Date("2026-09-29T18:05:00Z")), 1);
-  assert.equal(await adminPush.dailyDue(new Date("2026-09-29T19:00:00Z")), 0);
+  // 7:30 Berlin (summer time): not yet
+  assert.equal(await adminPush.dailyDue(new Date("2026-09-29T05:30:00Z")), 0);
+  // 8:05 Berlin: now, and only once
+  assert.equal(await adminPush.dailyDue(new Date("2026-09-29T06:05:00Z")), 1);
+  assert.equal(await adminPush.dailyDue(new Date("2026-09-29T07:00:00Z")), 0);
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].payload.title, "Heute bei Wanna yap?");
-  assert.match(sent[0].payload.body, /neue Nutzer · \d+ aktiv · \d+ Gespräche · \d+ Besuche auf der Website/);
+  assert.equal(sent[0].payload.title, "Gestern bei Wanna yap?");
+  assert.match(sent[0].payload.body, /^Gestern: \d+ neue Nutzer · \d+ aktiv · \d+ Gespräche · \d+ Besuche auf der Website · Aktivierung 4 W: noch keine Daten · SMS \d+\/\d+$/);
   // Next day again
-  assert.equal(await adminPush.dailyDue(new Date("2026-09-30T18:10:00Z")), 1);
+  assert.equal(await adminPush.dailyDue(new Date("2026-09-30T06:10:00Z")), 1);
+});
+
+test("morning push: yesterday whole, the north star with its traffic light against the goal, overdue tickets", async () => {
+  const mongoose = require("mongoose");
+  const Talk = require("../models/Talk");
+  const SupportTicket = require("../models/SupportTicket");
+  const { saveConfig } = require("../lib/appConfig");
+  const now = new Date("2026-09-30T06:10:00Z");
+  const DAY = 24 * 3600 * 1000;
+  const idAt = (date, n) => new mongoose.Types.ObjectId(Math.floor(date.getTime() / 1000).toString(16).padStart(8, "0") + String(n).padStart(16, "0"));
+  // 120 people signed up 25 days ago (in the last four full weeks and 7 to 35 days in):
+  // 40 talked within a week, 30 have three registered contacts
+  const cohort = [];
+  for (let i = 1; i <= 120; i++) {
+    cohort.push({ _id: idAt(new Date(now.getTime() - 25 * DAY), i), phone: `+49151${String(i).padStart(7, "0")}`, contacts: i <= 30 ? ["+491", "+492", "+493"] : [] });
+  }
+  await require("../models/User").insertMany(cohort);
+  await Talk.insertMany(cohort.slice(0, 40).map((u, i) => ({ callId: `t${i}`, participants: [u.phone, "+499"], startedAt: new Date(now.getTime() - 24 * DAY), seconds: 60 })));
+  // Three signed up yesterday
+  await require("../models/User").insertMany([1, 2, 3].map((i) => ({ _id: idAt(new Date(now.getTime() - 12 * 3600 * 1000), 200 + i), phone: `+4917${String(i).padStart(8, "0")}` })));
+  // One ticket waited for us for 30 hours, one for an hour
+  await SupportTicket.create({ phone: cohort[0].phone, category: "bug", messages: [{ from: "user", text: "Hilfe" }], updatedAt: new Date(now.getTime() - 30 * 3600 * 1000) });
+  await SupportTicket.create({ phone: cohort[1].phone, category: "idea", messages: [{ from: "user", text: "Idee" }], updatedAt: new Date(now.getTime() - 3600 * 1000) });
+
+  let body = await adminPush.daySummary(now);
+  assert.match(body, /^Gestern: 3 neue Nutzer · 0 aktiv · 0 Gespräche · 0 Besuche auf der Website · /);
+  assert.match(body, /· Aktivierung 4 W: 33 % \(Ziel 40\) 🔴 · Dichte: 25 % \(75 % ohne Kontakte\) · 1 Ticket wartet seit über 24 h · SMS 0\/100$/);
+
+  // A lower goal turns it green; under 100 measured nothing is judged
+  await saveConfig({ goals: { activationPct: 30 } }, "owner@test");
+  assert.match(await adminPush.daySummary(now), /Aktivierung 4 W: 33 % \(Ziel 30\) 🟢/);
+  await require("../models/User").deleteMany({ phone: { $in: cohort.slice(99).map((u) => u.phone) } });
+  body = await adminPush.daySummary(now);
+  assert.match(body, /Aktivierung 4 W: 40 % \(Ziel 30, erst 99 gemessen\) ·/);
+  assert.doesNotMatch(body, /🟢|🔴/);
 });
 
 test("admin push: a support message from the app arrives as a push", async () => {

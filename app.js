@@ -292,6 +292,8 @@ function createApp({ ringTimeoutMs } = {}) {
       if (!user) {
         return res.status(404).json({ success: false, message: "User not found" });
       }
+      // Milestone: the first time this person allowed pushes; never overwritten
+      await User.updateOne({ phone, "milestones.pushGrantedAt": null }, { $set: { "milestones.pushGrantedAt": new Date() } });
       res.json({ success: true });
     } catch (error) {
       console.error("❌ Error registering push token:", error.message);

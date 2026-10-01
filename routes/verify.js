@@ -154,6 +154,9 @@ router.post("/check", perPhone(10), async (req, res) => {
       // Invited by friends: connect them right away
       connectInviters(user, req.app.get("io")).catch((err) => console.error("❌ connectInviters:", err.message));
     }
+    // Milestone: first verified sign-in (accounts from before the milestones
+    // get it on their next one); never overwritten
+    await User.updateOne({ phone, "milestones.verifiedAt": null }, { $set: { "milestones.verifiedAt": new Date() } });
 
     res.json({
       success: true,

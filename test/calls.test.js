@@ -73,6 +73,55 @@ test("calls: strangers can't ring anyone; the caller hears not_connected and the
   assert.equal((await computeDay(todayKey())).ops.callsRejectedNotConnected, 2);
 });
 
+test("milestones: verified, contacts synced, first registered contact, push granted, first call; each set once", async () => {
+  const anna = await login(ANNA, "Anna");
+  const milestones = async (phone) => (await User.findOne({ phone }).lean()).milestones;
+  let m = await milestones(ANNA);
+  assert.ok(m.verifiedAt instanceof Date);
+  for (const key of ["contactsSyncedAt", "firstRegisteredContactAt", "pushGrantedAt", "firstCallAt", "firstTalkAt"]) assert.equal(m[key], null, key);
+  const { verifiedAt } = m;
+  // Signing in again keeps the first time
+  await login(ANNA);
+  assert.equal(+(await milestones(ANNA)).verifiedAt, +verifiedAt);
+
+  // A sync that finds nobody: synced, but no registered contact yet
+  await match(anna, [CARL]);
+  m = await milestones(ANNA);
+  assert.ok(m.contactsSyncedAt instanceof Date);
+  assert.equal(m.firstRegisteredContactAt, null);
+  const { contactsSyncedAt } = m;
+  const ben = await login(BEN, "Ben");
+  await match(anna, [BEN]);
+  m = await milestones(ANNA);
+  assert.equal(+m.contactsSyncedAt, +contactsSyncedAt);
+  assert.ok(m.firstRegisteredContactAt instanceof Date);
+
+  await request(ctx.app).post("/user/push-token").set(auth(anna)).send({ token: "ExponentPushToken[anna]" }).expect(200);
+  const { pushGrantedAt } = await milestones(ANNA);
+  assert.ok(pushGrantedAt instanceof Date);
+  await request(ctx.app).post("/user/push-token").set(auth(anna)).send({ token: "ExponentPushToken[anna2]" }).expect(200);
+  assert.equal(+(await milestones(ANNA)).pushGrantedAt, +pushGrantedAt);
+
+  // The first call that rang somebody counts for the caller only
+  await match(ben, [ANNA]);
+  assert.equal((await ctx.calls.startCall({ from: ANNA, to: BEN, channel: "call_first" })).ok, true);
+  const { firstCallAt } = await milestones(ANNA);
+  assert.ok(firstCallAt instanceof Date);
+  assert.equal((await milestones(BEN)).firstCallAt, null);
+  await ctx.calls.endCall({ me: ANNA, other: BEN, channel: "call_first" });
+  assert.equal((await ctx.calls.startCall({ from: ANNA, to: BEN, channel: "call_second" })).ok, true);
+  assert.equal(+(await milestones(ANNA)).firstCallAt, +firstCallAt);
+  await ctx.calls.endCall({ me: ANNA, other: BEN, channel: "call_second" });
+
+  // A call that reaches nobody (offline, no push token) is no first call
+  const carl = await login(CARL, "Carl");
+  await match(carl, [ANNA]);
+  await match(anna, [CARL]);
+  await User.updateOne({ phone: ANNA }, { $unset: { pushToken: 1, voipToken: 1 } });
+  assert.equal((await ctx.calls.startCall({ from: CARL, to: ANNA, channel: "call_void" })).reason, "unreachable");
+  assert.equal((await milestones(CARL)).firstCallAt, null);
+});
+
 test("calls: mutual contacts ring each other", async () => {
   const anna = await login(ANNA, "Anna");
   const ben = await login(BEN, "Ben");

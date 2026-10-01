@@ -18,7 +18,8 @@ const adminSchema = new mongoose.Schema({
   lockedUntil: { type: Date, default: null },
   lastLoginAt: { type: Date, default: null },
   // Push to the console on their phone (lib/adminPush.js): what they want to hear
-  // about, and the hour (Europe/Berlin) of the daily numbers
+  // about, and the hour (Europe/Berlin) of the daily numbers. A morning push
+  // since plan 1.12: yesterday's numbers and whether the north star is green
   notify: {
     approvals: { type: Boolean, default: true },
     posting: { type: Boolean, default: true },
@@ -26,7 +27,7 @@ const adminSchema = new mongoose.Schema({
     reports: { type: Boolean, default: true },
     daily: { type: Boolean, default: true },
     alerts: { type: Boolean, default: true },
-    dailyHour: { type: Number, default: 20, min: 0, max: 23 },
+    dailyHour: { type: Number, default: 8, min: 0, max: 23 },
   },
   // Passkeys (Face ID / Touch ID) for signing in without password and code
   // (lib/adminPasskeys.js). Each one is a key pair on a device; only the

@@ -90,8 +90,18 @@ const userSchema = new mongoose.Schema({
     referrals: { type: Number, default: 0 },
   },
   referralRewards: { type: Number, default: 0 },
-  // Onboarding milestones (more follow with the activation funnel)
+  // Onboarding milestones (activation funnel): each is set once, by a
+  // conditional update on the empty field, and never overwritten.
+  // verifiedAt: routes/verify.js · contactsSyncedAt, firstRegisteredContactAt
+  // (a match with at least one hit): routes/contacts.js · pushGrantedAt:
+  // app.js /user/push-token · firstCallAt: lib/calls.js startCall ·
+  // firstTalkAt: lib/referral.js noteFirstTalk. firstInviteAt is above.
   milestones: {
+    verifiedAt: { type: Date, default: null },
+    contactsSyncedAt: { type: Date, default: null },
+    firstRegisteredContactAt: { type: Date, default: null },
+    pushGrantedAt: { type: Date, default: null },
+    firstCallAt: { type: Date, default: null },
     firstTalkAt: { type: Date, default: null },
   },
 

@@ -45,7 +45,8 @@ test("sms cap: the third start of the day is refused once smsPerDay is 2, and th
 
   const today = await todayNumbers();
   assert.deepEqual(today.sms, { started: 2, cap: 2, paused: false });
-  assert.match(await daySummary(), /· SMS 2\/2$/);
+  // The morning push reports the day before
+  assert.match(await daySummary(new Date(Date.now() + 24 * 3600 * 1000)), /· SMS 2\/2$/);
 });
 
 test("sms allowlist: only DE, AT and CH by default; the console narrows it", async () => {

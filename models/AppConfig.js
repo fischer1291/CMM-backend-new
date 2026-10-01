@@ -21,6 +21,10 @@ const appConfigSchema = new mongoose.Schema(
     limits: { type: mongoose.Schema.Types.Mixed, default: null },
     // Cost brakes for sign-up SMS (lib/appConfig.js DEFAULT_OPS): { smsPerDay, smsPaused, smsRegions }
     ops: { type: mongoose.Schema.Types.Mixed, default: null },
+    // Goals the numbers are judged against (lib/appConfig.js DEFAULT_GOALS): { activationPct, densityPct }
+    goals: { type: mongoose.Schema.Types.Mixed, default: null },
+    // One-off data fixes already applied (index.js migrate), e.g. { morningPush: Date }
+    migrations: { type: mongoose.Schema.Types.Mixed, default: null },
     // Launch mail to the waitlist (lib/waitlist.js): { startedAt, by, finishedAt, sent, failed }
     waitlistLaunch: { type: mongoose.Schema.Types.Mixed, default: null },
     updatedBy: { type: String, default: null },

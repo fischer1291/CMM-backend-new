@@ -285,7 +285,27 @@ function AppErrors() {
   </div>`;
 }
 
-/** Today so far, next to the whole same weekday last week, and what is waiting. */
+/**
+ * The north star as a line with a traffic light: rolling activation of the
+ * last four weeks against the goal (App → Ziele), judged only from 100
+ * measured sign-ups on, and the address book density of new people.
+ */
+function NorthStar({ activation: a, density: d }) {
+  if (!a) return null;
+  const light = a.ok === null ? '' : a.ok ? 'good' : 'bad';
+  const activation = a.pct4w === null
+    ? html`<span class="muted">noch keine Daten</span>`
+    : html`<b class=${light}>${a.pct4w} %</b> <span class="muted">Ziel ${a.goalPct}${a.enough ? '' : ` · erst ${num(a.sample)} gemessen, zu wenig Daten`}</span>`;
+  const density = d.c3plus === null
+    ? html`<span class="muted">noch keine Daten</span>`
+    : html`<b class=${d.c3plus >= d.goalPct ? 'good' : 'bad'}>${d.c3plus} %</b> <span class="muted">mit ≥ 3 Kontakten (Ziel ${d.goalPct})${d.c0 ? `, ${d.c0} % ohne` : ''}</span>`;
+  return html`<div class="northstar">
+    <div class="kv"><span>Aktivierung 4 W</span><span>${activation}</span></div>
+    <div class="kv"><span>Dichte (7–35 Tage dabei)</span><span>${density}</span></div>
+  </div>`;
+}
+
+/** Today so far, next to the whole same weekday last week, the north star and what is waiting. */
 function Today({ onGo }) {
   const [data, setData] = useState(null);
   const load = useCallback(() => api('/today').then(setData).catch(() => {}), []);
@@ -318,6 +338,7 @@ function Today({ onGo }) {
       ${tile('Website', 'visits')}
       ${tile('Warteliste', 'waitlist')}
     </div>
+    <${NorthStar} activation=${data.activation} density=${data.density} />
     ${data.sms ? html`<p class="note" style="margin:8px 0 0">SMS heute ${num(data.sms.started)} von ${num(data.sms.cap)}${data.sms.paused ? ' · pausiert' : ''} (App → Betrieb)</p>` : null}
   </div>`;
 }
@@ -774,6 +795,7 @@ function AppSettings({ role }) {
         banner: { enabled: !!c.banner?.enabled, text: c.banner?.text || '', level: c.banner?.level || 'info', until: c.banner?.until ? c.banner.until.slice(0, 16) : '' },
         flags: { ...(c.flags || {}) },
         ops: { smsPerDay: String(c.ops?.smsPerDay ?? 100), smsPaused: !!c.ops?.smsPaused, smsRegions: (c.ops?.smsRegions || ['DE', 'AT', 'CH']).join(', ') },
+        goals: { activationPct: String(c.goals?.activationPct ?? 40), densityPct: String(c.goals?.densityPct ?? 50) },
       });
     }).catch(() => setData(false));
   }, []);
@@ -795,12 +817,13 @@ function AppSettings({ role }) {
           banner: { ...form.banner, until: form.banner.until ? new Date(form.banner.until).toISOString() : null },
           flags: form.flags,
           ops: { smsPerDay: Number(form.ops.smsPerDay), smsPaused: form.ops.smsPaused, smsRegions: form.ops.smsRegions.toUpperCase().split(/[\s,]+/).filter(Boolean) },
+          goals: { activationPct: Number(form.goals.activationPct), densityPct: Number(form.goals.densityPct) },
         },
       });
       setFlash('Gespeichert. Offene Apps bekommen es sofort, alle anderen beim nächsten Start.');
       load();
     } catch (err) {
-      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH)' };
+      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH)', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100' };
       setFlash(`Fehler: ${msg[err.code] || err.code || err.message}`);
     }
   };
@@ -844,6 +867,12 @@ function AppSettings({ role }) {
         <label class="field"><span>SMS pro Tag (Deckel, danach 429)</span><input value=${form.ops.smsPerDay} onInput=${(e) => set({ ops: { ...form.ops, smsPerDay: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
         <label class="field"><span>Länder (ISO-Codes, Komma-getrennt)</span><input value=${form.ops.smsRegions} onInput=${(e) => set({ ops: { ...form.ops, smsRegions: e.target.value } })} disabled=${!owner} placeholder="DE, AT, CH" /></label>
         <label class="check"><input type="checkbox" checked=${form.ops.smsPaused} onChange=${(e) => set({ ops: { ...form.ops, smsPaused: e.target.checked } })} disabled=${!owner} /> Notschalter: keine SMS senden (Anmeldung pausiert)</label>
+      </div>
+      <div class="card">
+        <div class="label">Ziele</div>
+        <p class="note" style="margin-top:0">Der Nordstern: Heute-Karte, Morgen-Push und Marketing-Budget zeigen eine Ampel gegen diese Werte. Unter dem Aktivierungsziel keine bezahlte Reichweite.</p>
+        <label class="field"><span>Aktivierung in 7 Tagen, rollierend 4 Wochen (%)</span><input value=${form.goals.activationPct} onInput=${(e) => set({ goals: { ...form.goals, activationPct: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
+        <label class="field"><span>Neue Nutzer mit ≥ 3 registrierten Kontakten (%)</span><input value=${form.goals.densityPct} onInput=${(e) => set({ goals: { ...form.goals, densityPct: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
       </div>
     </div>
     ${owner ? html`<div class="inline" style="justify-content:flex-end"><button class="btn" onClick=${save}>Speichern</button></div>` : html`<p class="note">Nur Owner können Einstellungen ändern.</p>`}
@@ -1443,13 +1472,17 @@ function BudgetLine({ onOpen }) {
 
 function BudgetCard({ owner }) {
   const [data, setData] = useState(null);
+  const [star, setStar] = useState(null);
   const [edit, setEdit] = useState(null);
   const [error, setError] = useState(null);
   const load = useCallback(() => api('/marketing/budget').then(setData).catch(() => setData({ error: true })), []);
   useEffect(() => { load(); }, [load]);
+  // The north star (lib/today.js): red card while activation is under goal
+  useEffect(() => { api('/today').then((t) => setStar(t.activation)).catch(() => {}); }, []);
   if (!data) return null;
   if (data.error) return html`<div class="card">Das Budget konnte nicht geladen werden.</div>`;
   const b = data.budget;
+  const underGoal = !!star && star.ok === false;
   const bar = (spent, cap) => html`<div class="bar"><i style=${`width:${Math.min(100, cap ? (spent / cap) * 100 : 100)}%`}></i></div>`;
   const save = async () => {
     setError(null);
@@ -1461,7 +1494,8 @@ function BudgetCard({ owner }) {
       setError(e.code === 'daily_above_weekly' ? 'Das Tagesbudget darf nicht über dem Wochenbudget liegen.' : 'Bitte gültige Beträge eingeben.');
     }
   };
-  return html`<div class="card budget" style="margin-bottom:12px">
+  return html`<div class=${`card budget ${underGoal ? 'under-goal' : ''}`} style="margin-bottom:12px">
+    ${underGoal ? html`<p class="bad" style="margin:0 0 8px"><b>Keine bezahlte Reichweite unter ${star.goalPct} %.</b> Aktivierung 4 W liegt bei ${star.pct4w} % (${num(star.sample)} gemessen).</p>` : null}
     <div class="inline" style="justify-content:space-between"><div class="label" style="margin:0">Marketing-Budget</div>
       ${owner && !edit ? html`<button class="btn small ghost" onClick=${() => setEdit({ daily: b.dailyEur, weekly: b.weeklyEur })}>Ändern</button>` : null}</div>
     <div class="grid2" style="margin-top:8px">
