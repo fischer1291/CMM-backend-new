@@ -3,10 +3,13 @@ const express = require("express");
 const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
 const twilio = require("twilio");
 const User = require("../models/User");
-const { normalizePhone } = require("../lib/phone");
+const { normalizePhone, countryOf } = require("../lib/phone");
 const { signToken } = require("../lib/auth");
 const { connectInviters } = require("../lib/invites");
 const { signInBlock } = require("../lib/accessGate");
+const { opsConfig } = require("../lib/appConfig");
+const opsCounters = require("../lib/opsCounters");
+const { localParts } = require("../lib/localTime");
 
 const router = express.Router();
 
@@ -43,6 +46,10 @@ function reviewLoginStatus() {
 const sameCode = (a, b) =>
   a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
+const countOps = (name) => opsCounters.count(name).catch((err) => console.error("❌ opsCounters:", err.message));
+// The full cap is logged once per day and instance, not once per refused start
+let capLoggedDay = null;
+
 // SMS cost the project money: limit per target number and per client IP
 const perPhone = (limit) =>
   rateLimit({
@@ -78,6 +85,26 @@ router.post("/start", perIp, perPhone(5), async (req, res) => {
     return res.json({ success: true, phone });
   }
 
+  // Cost brakes (console → App → Betrieb): kill switch, countries we send
+  // to (new numbers only: existing accounts keep signing in), and a global
+  // cap per day that is checked and booked in one step
+  const ops = await opsConfig();
+  if (ops.smsPaused) {
+    return res.status(503).json({ success: false, error: "Die Anmeldung per SMS ist gerade pausiert. Bitte versuch es später noch einmal." });
+  }
+  const country = countryOf(phone);
+  if ((!country || !ops.smsRegions.includes(country)) && !(await User.exists({ phone }))) {
+    return res.status(403).json({ success: false, error: "Wanna yap? gibt es derzeit nur in Deutschland, Österreich und der Schweiz." });
+  }
+  if (!(await opsCounters.countUpTo("smsStarted", ops.smsPerDay))) {
+    const day = localParts(new Date(), "Europe/Berlin").dateKey;
+    if (capLoggedDay !== day) {
+      capLoggedDay = day;
+      console.error(`❌ verify/start: daily SMS cap of ${ops.smsPerDay} reached`);
+    }
+    return res.status(429).json({ success: false, error: "Heute sind keine Anmeldungen mehr möglich. Bitte versuch es morgen noch einmal." });
+  }
+
   try {
     await twilioClient()
       .verify.v2.services(process.env.TWILIO_VERIFY_SID)
@@ -85,6 +112,7 @@ router.post("/start", perIp, perPhone(5), async (req, res) => {
     res.json({ success: true, phone });
   } catch (err) {
     console.error("❌ verify/start failed:", err.message);
+    countOps("smsFailed");
     res.status(502).json({ success: false, error: "SMS konnte nicht gesendet werden" });
   }
 });
@@ -102,6 +130,7 @@ router.post("/check", perPhone(10), async (req, res) => {
 
   try {
     const reviewCode = reviewCodeFor(phone);
+    if (!reviewCode) countOps("smsChecked");
     const approved = reviewCode
       ? sameCode(code, reviewCode)
       : (

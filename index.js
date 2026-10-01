@@ -70,7 +70,7 @@ async function main() {
   const stale = await calls.sweepStaleCalls();
   if (stale) console.log(`🔧 Marked ${stale} stale ringing calls as missed`);
   // Talk-time stats start with the calls still on record (idempotent)
-  const answered = await Call.find({ status: "ended", acceptedAt: { $ne: null }, endedAt: { $ne: null } });
+  const answered = await Call.find({ status: "ended", acceptedAt: { $ne: null }, endedAt: { $ne: null } }).sort({ acceptedAt: 1 });
   for (const call of answered) await calls.recordTalk(call);
 
   // Every minute: start scheduled availability, end expired sessions

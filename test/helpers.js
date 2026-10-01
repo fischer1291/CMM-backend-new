@@ -20,6 +20,8 @@ const fakes = {
   mails: [],
   failMailTo: null,
   rejectMailTo: null,
+  // Twilio refuses to send to this number
+  failSmsTo: null,
 };
 
 const originalLoad = Module._load;
@@ -29,7 +31,12 @@ Module._load = function (request, parent, isMain) {
       verify: {
         v2: {
           services: () => ({
-            verifications: { create: async ({ to }) => fakes.sms.push(to) },
+            verifications: {
+              create: async ({ to }) => {
+                if (fakes.failSmsTo && to === fakes.failSmsTo) throw new Error("twilio_down");
+                fakes.sms.push(to);
+              },
+            },
             verificationChecks: {
               create: async ({ code }) => ({
                 status: code === fakes.approvedCode ? "approved" : "pending",
@@ -137,6 +144,7 @@ async function reset() {
   require("../lib/accessGate").reset();
   require("../lib/appConfig").resetAppCache();
   require("../lib/appConfig").resetFlagsCache();
+  require("../lib/appConfig").resetOpsCache();
   await require("../models/SupportTicket").syncIndexes();
   await require("../models/AppConfig").syncIndexes();
   await require("../models/BannedNumber").syncIndexes();
@@ -150,6 +158,7 @@ async function reset() {
   fakes.mails.length = 0;
   fakes.failMailTo = null;
   fakes.rejectMailTo = null;
+  fakes.failSmsTo = null;
   fakes.receipts = {};
 }
 

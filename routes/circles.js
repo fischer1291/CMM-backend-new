@@ -432,7 +432,7 @@ module.exports = (io) => {
   router.post("/rooms/:id/leave", async (req, res) => {
     const found = await loadRoom(req, res);
     if (!found) return;
-    const room = await leaveRoom(found.room, req.auth.phone);
+    const room = await leaveRoom(found.room, req.auth.phone, new Date(), req.app.get("io"));
     emitCircle(found.circle, "roomUpdated", { circleId: String(found.circle._id), roomId: String(found.room._id), ended: !room?.active });
     res.json({ success: true, ended: !room?.active });
   });

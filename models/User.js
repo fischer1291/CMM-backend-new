@@ -73,8 +73,13 @@ const userSchema = new mongoose.Schema({
   // Badges: people who joined via this user's invites ("Brückenbauer"),
   // the badge tiers already celebrated, and up to 3 badges on show
   invitesJoined: { type: Number, default: 0 },
-  // Came in through someone's invite (admin growth numbers)
+  // Of those, how many had their first talk since: what invite rewards count
+  // (lib/referral.js)
+  invitesActivated: { type: Number, default: 0 },
+  // Came in through someone's invite (admin growth numbers), and by whom
+  // (E.164; they get the reward once this user had the first talk)
   joinedViaInvite: { type: Boolean, default: false },
+  invitedBy: { type: [String], default: [] },
   // First invite sent (activation funnel) and invite rewards already given
   // (lib/referral.js)
   firstInviteAt: { type: Date, default: null },
@@ -85,6 +90,10 @@ const userSchema = new mongoose.Schema({
     referrals: { type: Number, default: 0 },
   },
   referralRewards: { type: Number, default: 0 },
+  // Onboarding milestones (more follow with the activation funnel)
+  milestones: {
+    firstTalkAt: { type: Date, default: null },
+  },
 
   // Moderation (admin console): no sign-in until then; tokens issued before
   // tokensValidAfter are rejected (lib/accessGate.js)

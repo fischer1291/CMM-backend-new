@@ -226,6 +226,11 @@ test("rooms: open, join, leave; talks for each participant; tokens only for memb
   assert.equal(left.body.ended, true);
   const talks = await Talk.find({ group: true }).sort({ owner: 1 });
   assert.deepEqual(talks.map((t) => [t.owner, t.participants]), [[ANNA, [ANNA, BEN]], [BEN, [BEN, ANNA]]]);
+  // A round is a first talk too (invite rewards, lib/referral.js)
+  for (const phone of [ANNA, BEN]) {
+    assert.equal((await User.findOne({ phone })).milestones.firstTalkAt.getTime(), tenMinutesAgo.getTime(), phone);
+  }
+  assert.equal((await User.findOne({ phone: CARL })).milestones?.firstTalkAt ?? null, null, "Carl never joined");
 
   // Counts in each one's own stats, with the other person
   const stats = (await request(ctx.app).get("/me/stats").set(auth(ben))).body.stats;

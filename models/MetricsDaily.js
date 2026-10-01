@@ -16,7 +16,7 @@ const metricsDailySchema = new mongoose.Schema(
     growth: { invites: Number, joinedViaInvite: Number },
     push: { sent: Number, skipped: Number, failed: Number },
     reports: { new: Number, open: Number },
-    // Day counters from lib/opsCounters.js, e.g. callsRejectedNotConnected, matchSuspicious
+    // Day counters from lib/opsCounters.js, e.g. callsRejectedNotConnected, matchSuspicious, smsStarted
     ops: { type: mongoose.Schema.Types.Mixed, default: null },
     computedAt: { type: Date, default: Date.now },
   },

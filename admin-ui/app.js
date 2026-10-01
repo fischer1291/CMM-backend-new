@@ -318,6 +318,7 @@ function Today({ onGo }) {
       ${tile('Website', 'visits')}
       ${tile('Warteliste', 'waitlist')}
     </div>
+    ${data.sms ? html`<p class="note" style="margin:8px 0 0">SMS heute ${num(data.sms.started)} von ${num(data.sms.cap)}${data.sms.paused ? ' · pausiert' : ''} (App → Betrieb)</p>` : null}
   </div>`;
 }
 
@@ -772,6 +773,7 @@ function AppSettings({ role }) {
         updateUrl: c.updateUrl || '',
         banner: { enabled: !!c.banner?.enabled, text: c.banner?.text || '', level: c.banner?.level || 'info', until: c.banner?.until ? c.banner.until.slice(0, 16) : '' },
         flags: { ...(c.flags || {}) },
+        ops: { smsPerDay: String(c.ops?.smsPerDay ?? 100), smsPaused: !!c.ops?.smsPaused, smsRegions: (c.ops?.smsRegions || ['DE', 'AT', 'CH']).join(', ') },
       });
     }).catch(() => setData(false));
   }, []);
@@ -792,12 +794,13 @@ function AppSettings({ role }) {
           updateUrl: form.updateUrl.trim() || null,
           banner: { ...form.banner, until: form.banner.until ? new Date(form.banner.until).toISOString() : null },
           flags: form.flags,
+          ops: { smsPerDay: Number(form.ops.smsPerDay), smsPaused: form.ops.smsPaused, smsRegions: form.ops.smsRegions.toUpperCase().split(/[\s,]+/).filter(Boolean) },
         },
       });
       setFlash('Gespeichert. Offene Apps bekommen es sofort, alle anderen beim nächsten Start.');
       load();
     } catch (err) {
-      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich' };
+      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH)' };
       setFlash(`Fehler: ${msg[err.code] || err.code || err.message}`);
     }
   };
@@ -834,6 +837,13 @@ function AppSettings({ role }) {
         </div>`)}
         ${owner ? html`<div class="inline" style="margin-top:10px"><input placeholder="neues_flag" value=${newFlag} onInput=${(e) => setNewFlag(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))} />
           <button class="btn small ghost" disabled=${!newFlag} onClick=${() => { set({ flags: { ...form.flags, [newFlag]: false } }); setNewFlag(''); }}>Hinzufügen</button></div>` : null}
+      </div>
+      <div class="card">
+        <div class="label">Betrieb</div>
+        <p class="note" style="margin-top:0">Bremsen für die Anmeldung per SMS (Twilio kostet pro Code). Gilt sofort, nicht für den Review-Login.</p>
+        <label class="field"><span>SMS pro Tag (Deckel, danach 429)</span><input value=${form.ops.smsPerDay} onInput=${(e) => set({ ops: { ...form.ops, smsPerDay: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
+        <label class="field"><span>Länder (ISO-Codes, Komma-getrennt)</span><input value=${form.ops.smsRegions} onInput=${(e) => set({ ops: { ...form.ops, smsRegions: e.target.value } })} disabled=${!owner} placeholder="DE, AT, CH" /></label>
+        <label class="check"><input type="checkbox" checked=${form.ops.smsPaused} onChange=${(e) => set({ ops: { ...form.ops, smsPaused: e.target.checked } })} disabled=${!owner} /> Notschalter: keine SMS senden (Anmeldung pausiert)</label>
       </div>
     </div>
     ${owner ? html`<div class="inline" style="justify-content:flex-end"><button class="btn" onClick=${save}>Speichern</button></div>` : html`<p class="note">Nur Owner können Einstellungen ändern.</p>`}

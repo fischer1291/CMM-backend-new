@@ -65,6 +65,47 @@ Day counters like these live in `lib/opsCounters.js` (one `OpsTally`
 document per day, raised with `$inc`); `lib/metrics.js` copies them into the
 day's snapshot under `ops`.
 
+## Sign-up SMS: cost brakes
+
+Every `POST /verify/start` costs a Twilio Verify SMS. Besides the limiters
+per IP (20/h) and per number (5 per 15 min), `routes/verify.js` checks the
+`ops` block of the app config (Console → App → Betrieb, `lib/appConfig.js`
+DEFAULT_OPS, cached 30 s), in this order:
+
+- `smsPaused` (default off): the kill switch; every start answers 503
+  "Die Anmeldung per SMS ist gerade pausiert".
+- `smsRegions` (default `DE, AT, CH`): the number's country must be on the
+  list, otherwise 403 "Wanna yap? gibt es derzeit nur in Deutschland,
+  Österreich und der Schweiz". A number whose country can't be told
+  (satellite, other non-geographic ranges) is refused too. Existing
+  accounts keep getting their code wherever their number is from: the list
+  guards against SMS pumping with new numbers, not against users who moved.
+- `smsPerDay` (default 100): a global cap per day (Europe/Berlin). The day's
+  counter `smsStarted` is raised with a conditional `$inc`
+  (`lib/opsCounters.js` countUpTo), so the check and the booking are one
+  step; at the cap every start answers 429 "Heute sind keine Anmeldungen
+  mehr möglich" and the server logs a line (once per day). Set the cap to about three
+  times the sign-ups you expect per day.
+
+The demo login for App Store review (`REVIEW_PHONE`) sends no SMS and skips
+all three. The day's counters `smsStarted`, `smsChecked` (code checks sent
+to Twilio) and `smsFailed` (Twilio refused to send) land in
+`MetricsDaily.ops`; the daily push and the "Heute" card show
+"SMS x/Deckel". Still by hand: Twilio Verify Fraud Guard and an
+auto-recharge limit in the Twilio console.
+
+## Invite rewards
+
+`lib/referral.js`: every 3 people who come in through a user's invites
+**and have their first talk** (`User.milestones.firstTalkAt`, set by
+`noteFirstTalk` from `lib/calls.js` recordTalk and from circle rounds in
+`lib/circles.js`) give the inviter 30 days of Wanna yap+, up to 6
+times. A join alone (`User.invitesJoined`, badge "Brückenbauer") earns
+nothing; `User.invitedBy` remembers who invited the new user, and their
+first talk raises `invitesActivated` on each inviter and grants what is due.
+`/me/plan` returns `referral: { joined, activated, earned, toNext, ... }`,
+`toNext` counted on `activated`.
+
 ## Health check
 
 `GET /healthz` answers without authentication and without writing anything:
