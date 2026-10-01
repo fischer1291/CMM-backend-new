@@ -59,7 +59,8 @@ test("db-backup.yml: the backup ping runs last, only with both secrets, with the
   const steps = [...yml.matchAll(/- name: (.+)/g)].map((m) => m[1]);
   assert.equal(steps.at(-1), "Backend benachrichtigen");
   assert.match(yml, /- name: Backend benachrichtigen\n\s+if: \$\{\{ env\.BACKUP_PING_URL != '' && env\.BACKUP_PING_KEY != '' \}\}/);
-  assert.match(yml, /curl -fsS -X POST "\$BACKUP_PING_URL"/);
+  // Retries, so a Render cold start doesn't turn a good dump red
+  assert.match(yml, /curl -fsS --retry 3 --retry-all-errors --retry-delay 10 --max-time 60 -X POST "\$BACKUP_PING_URL"/);
   assert.match(yml, /-H "Authorization: Bearer \$BACKUP_PING_KEY"/);
   assert.match(yml, /echo "bytes=\$\(stat -c %s "\$name"\)" >> "\$GITHUB_OUTPUT"/);
 });

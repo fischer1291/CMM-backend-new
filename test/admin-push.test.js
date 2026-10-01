@@ -145,9 +145,12 @@ test("morning push: yesterday whole, the north star with its traffic light again
   await Talk.insertMany(cohort.slice(0, 40).map((u, i) => ({ callId: `t${i}`, participants: [u.phone, "+499"], startedAt: new Date(now.getTime() - 24 * DAY), seconds: 60 })));
   // Three signed up yesterday
   await require("../models/User").insertMany([1, 2, 3].map((i) => ({ _id: idAt(new Date(now.getTime() - 12 * 3600 * 1000), 200 + i), phone: `+4917${String(i).padStart(8, "0")}` })));
-  // One ticket waited for us for 30 hours, one for an hour
-  await SupportTicket.create({ phone: cohort[0].phone, category: "bug", messages: [{ from: "user", text: "Hilfe" }], updatedAt: new Date(now.getTime() - 30 * 3600 * 1000) });
-  await SupportTicket.create({ phone: cohort[1].phone, category: "idea", messages: [{ from: "user", text: "Idee" }], updatedAt: new Date(now.getTime() - 3600 * 1000) });
+  // One ticket waited for us for 30 hours, one for an hour (the count is
+  // overdueTickets in lib/today.js: the last message is the user's and old)
+  const old = new Date(now.getTime() - 30 * 3600 * 1000);
+  const fresh = new Date(now.getTime() - 3600 * 1000);
+  await SupportTicket.create({ phone: cohort[0].phone, category: "bug", messages: [{ from: "user", text: "Hilfe", at: old }], updatedAt: old });
+  await SupportTicket.create({ phone: cohort[1].phone, category: "idea", messages: [{ from: "user", text: "Idee", at: fresh }], updatedAt: fresh });
 
   let body = await adminPush.daySummary(now);
   assert.match(body, /^Gestern: 3 neue Nutzer · 0 aktiv · 0 Gespräche · 0 Besuche auf der Website · /);

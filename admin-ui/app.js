@@ -885,7 +885,7 @@ function AppSettings({ role }) {
         <label class="field"><span>SMS pro Tag (Deckel, danach 429)</span><input value=${form.ops.smsPerDay} onInput=${(e) => set({ ops: { ...form.ops, smsPerDay: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
         <label class="field"><span>Länder (ISO-Codes, Komma-getrennt)</span><input value=${form.ops.smsRegions} onInput=${(e) => set({ ops: { ...form.ops, smsRegions: e.target.value } })} disabled=${!owner} placeholder="DE, AT, CH" /></label>
         <label class="check"><input type="checkbox" checked=${form.ops.smsPaused} onChange=${(e) => set({ ops: { ...form.ops, smsPaused: e.target.checked } })} disabled=${!owner} /> Notschalter: keine SMS senden (Anmeldung pausiert)</label>
-        <label class="field"><span>Alarm-SMS an (nur Stufe „error“, leer = keine)</span><input value=${form.ops.alertPhone} onInput=${(e) => set({ ops: { ...form.ops, alertPhone: e.target.value } })} disabled=${!owner} placeholder="+49…" inputmode="tel" /></label>
+        <label class="field"><span>Alarm-SMS an (nur Stufe „error“, leer = keine)</span><input value=${owner ? form.ops.alertPhone : ''} onInput=${(e) => set({ ops: { ...form.ops, alertPhone: e.target.value } })} disabled=${!owner} placeholder=${owner ? '+49…' : (form.ops.alertPhone ? 'hinterlegt (nur Owner sieht die Nummer)' : 'keine')} inputmode="tel" /></label>
         ${data.config.ops?.lastBackupAt ? html`<p class="note" style="margin:0">Letztes Backup: ${new Date(data.config.ops.lastBackupAt).toLocaleString('de-DE')}${data.config.ops.lastBackupBytes ? ` (${Math.round(data.config.ops.lastBackupBytes / 1048576)} MB)` : ''}</p>` : null}
       </div>
       <div class="card">

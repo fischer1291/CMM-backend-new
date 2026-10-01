@@ -30,6 +30,10 @@ router.post("/ops/backup-done", async (req, res) => {
   const bytes = Number.isInteger(req.body?.bytes) && req.body.bytes >= 0 ? req.body.bytes : null;
   const name = typeof req.body?.name === "string" ? req.body.name.slice(0, 100) : null;
   const now = new Date();
+  // The schema's default for ops is null, which index.js migrate() writes on a
+  // fresh database (its upsert doesn't mention ops): a dotted $set into null
+  // would fail, so turn the block into an object first.
+  await AppConfig.updateOne({ key: "app", ops: null }, { $set: { ops: {} } });
   await AppConfig.updateOne({ key: "app" }, { $set: { "ops.lastBackupAt": now, "ops.lastBackupBytes": bytes, "ops.lastBackupName": name } }, { upsert: true });
   resetOpsCache();
   console.log(`💾 Backup gemeldet: ${name || "?"} (${bytes == null ? "?" : bytes} Bytes)`);

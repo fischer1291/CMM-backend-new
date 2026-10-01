@@ -266,13 +266,16 @@ any database without that prefix.
 
 `lib/alerts.js` runs 13 rules every 30 minutes on the job leader, right
 after the metrics snapshots (`index.js`). A hit goes out through
-`alert(tag, text, { level })`: at most once an hour per tag (one
-`AlertState` document per tag keeps `lastAt`, `lastText`, `count`, so a
-new leader after a deploy doesn't repeat it), as a push over the console's
+`alert(tag, text, { level })`: at most once an hour per tag, and only once
+a day while the text is unchanged (one `AlertState` document per tag keeps
+`lastAt`, `lastText`, `count`, so a new leader after a deploy doesn't
+repeat it, and a day counter that stays red doesn't page every hour), as a
+push over the console's
 `alerts` kind (owners, `lib/adminPush.js`), as a mail to every owner admin
 (`lib/mailer.js`, only with `SMTP_URL`) and, for level `error`, as an SMS
 to `AppConfig.ops.alertPhone` (Console → App → Betrieb, "Alarm-SMS an";
-needs `TWILIO_SMS_FROM`). The "Heute" card lists the last alerts
+needs `TWILIO_SMS_FROM`; `GET /admin/config` shows the number only to
+owners, others get `•••`). The "Heute" card lists the last alerts
 (`GET /admin/alerts`, viewer); the morning push names the tags of the last
 12 hours. What to do in detail: `CMM/docs/RUNBOOK.md`, section "Alarme".
 
@@ -281,12 +284,12 @@ needs `TWILIO_SMS_FROM`). The "Heute" card lists the last alerts
 | `sms_failures` | error | today `smsFailed / smsStarted > 20 %` with at least 5 starts (`lib/opsCounters.js`) | Twilio console: balance, Verify service status, Fraud Guard; pause SMS in the console if it is pumping |
 | `push_failures` | warn | of the pushes tried in the last 60 minutes (`PushDecision` result `sent`/`failed`) more than 10 % failed or got an error receipt, at least 20 tried | Expo status and `GET /api/push-health`; a single bad app build shows in Console → Fehler |
 | `push_credentials` | error | `pushCredentialErrors > 0` today: Apple/Expo refused our credentials (`InvalidProviderToken`, `ExpiredProviderToken`, `TopicDisallowed`, `MismatchSenderId` …; counted in `lib/push.js` and `lib/receipts.js`, not for dead device tokens) | Renew the APNs key / Expo credentials (`VOIP_KEY_*`, EAS credentials), redeploy |
-| `tick_late` | error | the `jobs` lock's `lastRunAt` is older than 3 minutes (`lib/leader.js`) | `/healthz` and Render logs; restart the service if the leader hangs |
+| `tick_late` | error | the tick's own stamp `tickAt` on the `jobs` lock is older than 3 minutes (`lib/leader.js` `asLeader` with `tick: true`; the other jobs under the lock refresh only `lastRunAt`), not during the first 5 minutes after a start (`STARTUP_GRACE_SEC` as for `/healthz`) | `/healthz` and Render logs; restart the service if the leader hangs |
 | `moment_missing` | warn | after 21:30 Berlin time today's `DailyMoment` for Europe/Berlin has no `sentAt` | Check `tickDailyMoments` errors in the logs; the tick may be stalled (see `tick_late`) |
-| `client_errors` | warn | a new `ClientError` with `fatal` in the last 30 minutes, or today's reported errors are more than three times yesterday's with at least 10 (`clientErrors` day counter, `routes/diagnostics.js`) | Console → Fehler: message, stack and versions; hotfix or raise `minBuild` |
+| `client_errors` | warn | a new `ClientError` with `fatal` in the last 60 minutes, or today's reported errors are more than three times yesterday's with at least 10 (`clientErrors` day counter, `routes/diagnostics.js`) | Console → Fehler: message, stack and versions; hotfix or raise `minBuild` |
 | `revenuecat` | error | today `rcUnauthorized > 0` (wrong `REVENUECAT_WEBHOOK_SECRET`) or `rcUnknownUser > 0` (`routes/plus.js`) | Compare the secret in RevenueCat and on Render; for unknown users find the purchase in RevenueCat and grant Plus by hand |
 | `agent_silent` | warn | the newest `AdDraft` is older than 36 hours (only once one ever existed) | GitHub → Actions → marketing-agent: re-enable the schedule (paused after 60 days without commits) or read the failed run |
-| `support_overdue` | warn | an open `SupportTicket` whose last message is from the user and older than 24 hours | Console → Support: answer |
+| `support_overdue` | warn | an open `SupportTicket` whose last message is from the user and older than 24 hours (`overdueTickets` in `lib/today.js`, the same count the morning push shows) | Console → Support: answer |
 | `social_token` | warn | a connected `MarketingChannel` whose token (TikTok: refresh token) expires within 7 days | Console → Freigabe → Kanäle: reconnect |
 | `no_talks` | error | yesterday's snapshot has `users.dau > 20` and `talks.count == 0` | Call delivery is broken: VoIP push, Agora certificate, `GET /api/push-health` |
 | `backup_stale` | warn | `AppConfig.ops.lastBackupAt` exists and is older than 8 days | GitHub → Actions → DB-Backup: failed or paused run, see Backup |

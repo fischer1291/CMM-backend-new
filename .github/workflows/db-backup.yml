@@ -142,13 +142,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # POST /ops/backup-done (routes/ops.js) with the dump's name and size;
-      # the backend stores the time and alerts when no dump reported for 8 days
+      # the backend stores the time and alerts when no dump reported for 8 days.
+      # Retries cover a Render cold start or a passing 502; a wrong key still
+      # fails the step after them.
       - name: Backend benachrichtigen
         if: ${{ env.BACKUP_PING_URL != '' && env.BACKUP_PING_KEY != '' }}
         env:
           NAME: ${{ steps.dump.outputs.name }}
           BYTES: ${{ steps.dump.outputs.bytes }}
         run: |
-          curl -fsS -X POST "$BACKUP_PING_URL" \
+          curl -fsS --retry 3 --retry-all-errors --retry-delay 10 --max-time 60 -X POST "$BACKUP_PING_URL" \
             -H "Authorization: Bearer $BACKUP_PING_KEY" -H "Content-Type: application/json" \
             -d "{\"name\":\"$NAME\",\"bytes\":$BYTES}"

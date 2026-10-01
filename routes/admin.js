@@ -878,7 +878,9 @@ module.exports = (io) => {
   router.get("/admin/config", requireAdmin("viewer"), async (req, res) => {
     const [config, spread] = await Promise.all([appConfig.getConfig(), appConfig.versionSpread()]);
     const flags = config.flags instanceof Map ? Object.fromEntries(config.flags) : config.flags || {};
-    res.json({ success: true, config: { ...config, flags, _id: undefined, __v: undefined }, ...spread });
+    // The owner's private alert number stays with the owner; others see only whether one is set
+    const ops = req.admin.role === "owner" ? config.ops : { ...config.ops, alertPhone: config.ops?.alertPhone ? "•••" : null };
+    res.json({ success: true, config: { ...config, flags, ops, _id: undefined, __v: undefined }, ...spread });
   });
 
   router.put("/admin/config", requireAdmin("owner"), async (req, res) => {

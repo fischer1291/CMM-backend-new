@@ -108,14 +108,15 @@ async function main() {
     await tickMomentsWaiting();
   };
   // The minute tick also renews the lease, so the leader keeps it while it's
-  // alive; every finished job stamps lastRunAt on the lock for /healthz.
+  // alive; every finished job stamps lastRunAt on the lock for /healthz, the
+  // tick additionally tickAt for the alert tick_late (lib/alerts.js).
   let leading = false;
   const asJobLeader = async (name, fn) => {
     const result = await asLeader(JOBS, async () => {
       if (!leading) console.log(`👑 ${INSTANCE} runs the background jobs`);
       leading = true;
       return fn();
-    });
+    }, { tick: name === "tick" });
     if (result === undefined && leading) {
       console.log(`👋 ${INSTANCE} lost the background jobs to another instance`);
       leading = false;
