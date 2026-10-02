@@ -1113,8 +1113,39 @@ const LIMIT_LABELS = {
 };
 const INTEREST_LABELS = { hd_video: 'Video in HD', bigger_circles: 'Größere Kreise', longer_rounds: 'Längere Runden', memories: 'Erinnerungen für immer', year_review: 'Jahresrückblick', icons: 'App-Icons & Themen', rituals: 'Mehr Rituale', family: 'Familien-Abo', support: 'Unterstützen' };
 
+// Revenue steers decisions only from this many active store plans on (plan 2.4, assumption)
+const REVENUE_MIN_PLANS = 30;
+const EXPORTS = [
+  ['metrics', 'Kennzahlen'],
+  ['plus', 'Abo-Ereignisse'],
+  ['marketing-spend', 'Marketing-Kosten'],
+  ['support', 'Support-Tickets'],
+];
+const eur = (cents) => (cents == null ? '–' : `${nf.format(Math.round(cents / 100))} €`);
+
+/** The "Umsatz" row: MRR, active store plans and the movement of the last 7 days, from the daily snapshots. */
+function RevenueKpis({ series }) {
+  if (!series) return html`<p class="note">Lade Umsatz …</p>`;
+  const final = series.filter((d) => !d.partial);
+  const yesterday = final[final.length - 1]?.plus || null;
+  const today = series[series.length - 1]?.plus || null;
+  const week = series.slice(-7);
+  const moved = (key) => sum(week, (d) => d.plus?.[key]);
+  const trialsStarted = moved('trialsStarted'), trialsConverted = moved('trialsConverted');
+  const active = today?.activeStore ?? yesterday?.activeStore ?? null;
+  return html`
+    <div class="kpis">
+      <${Kpi} label="MRR gestern" value=${eur(yesterday?.mrrCents)} sub=${today?.mrrCents != null ? `heute ${eur(today.mrrCents)}` : 'noch kein Tag abgeschlossen'} color="var(--violet)" />
+      <${Kpi} label="Aktive Store-Abos" value=${num(active)} sub=${`${num(today?.activeGift ?? 0)} geschenkt · ${num(today?.activeSandbox ?? 0)} Sandbox`} color="var(--cyan)" />
+      <${Kpi} label="Bewegung 7 Tage" value=${`+${num(moved('newPaid'))}`} sub=${`${num(moved('cancelled'))} gekündigt · ${num(moved('expired'))} abgelaufen · ${num(moved('refunds'))} erstattet`} color="var(--pink)" />
+      <${Kpi} label="Trial → Paid" value=${num(trialsConverted)} sub=${`${num(trialsStarted)} Trials gestartet (7 Tage)`} />
+    </div>
+    ${active != null && active < REVENUE_MIN_PLANS ? html`<p class="note">Steuernd erst ab ${REVENUE_MIN_PLANS} aktiven Store-Abos (Annahme): bis dahin lesen, nicht urteilen.</p>` : null}`;
+}
+
 function PlusPanel({ role }) {
   const [data, setData] = useState(null);
+  const [series, setSeries] = useState(null);
   const [form, setForm] = useState(null);
   const [flash, setFlash] = useState(null);
   const load = useCallback(() => {
@@ -1122,6 +1153,7 @@ function PlusPanel({ role }) {
       setData(d);
       setForm(JSON.parse(JSON.stringify(d.limits)));
     }).catch(() => setData(false));
+    api('/metrics?days=30').then((m) => setSeries(m.series)).catch(() => setSeries([]));
   }, []);
   useEffect(load, [load]);
   if (data === false) return html`<div class="card">Plus-Daten konnten nicht geladen werden.</div>`;
@@ -1157,6 +1189,20 @@ function PlusPanel({ role }) {
       <${Kpi} label="Käufe" value=${data.webhookConfigured ? 'verbunden' : 'noch nicht'} sub=${data.webhookConfigured ? 'RevenueCat-Webhook aktiv' : 'REVENUECAT_WEBHOOK_SECRET fehlt'} />
     </div>
     ${data.sandbox > 0 ? html`<p class="note">${num(data.sandbox)} davon ${data.sandbox === 1 ? 'ist ein Sandbox-Kauf' : 'sind Sandbox-Käufe'} von Testern: Plus aktiv, aber nirgends als zahlend gezählt.</p>` : null}
+    <div class="section">Umsatz</div>
+    <${RevenueKpis} series=${series} />
+    ${series && series.length ? html`<div class="grid2">
+      <${Chart} title="MRR" subtitle="Summe der monatlich normalisierten Preise aktiver Store-Abos, in Euro" type="line" series=${series} keys=${[{ label: 'MRR €', color: 'var(--violet)', value: (d) => Math.round((d.plus?.mrrCents || 0) / 100) }]} />
+      <${Chart} title="Abo-Bewegung" subtitle="Ereignisse je Tag (Produktion)" series=${series} keys=${[
+        { label: 'neu', color: 'var(--cyan)', value: (d) => d.plus?.newPaid },
+        { label: 'gekündigt', color: 'var(--pink)', value: (d) => d.plus?.cancelled },
+        { label: 'abgelaufen', color: 'var(--violet)', value: (d) => d.plus?.expired },
+      ]} />
+    </div>` : null}
+    ${owner ? html`<div class="inline" style="flex-wrap:wrap;gap:8px;margin:6px 0 14px">
+      <span class="muted">Export (CSV):</span>
+      ${EXPORTS.map(([name, label]) => html`<a class="btn small ghost" href=${`/admin/export/${name}.csv`}>${label}</a>`)}
+    </div>` : null}
     <div class="grid3">
       <div class="card">
         <div class="label">Grenzen</div>

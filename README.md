@@ -419,7 +419,69 @@ reported (active, trial, cancelled, billing_issue, paused, expired).
 `POST /me/plus/sync` (authenticated) asks RevenueCat's REST API for the
 caller's subscriptions and sets Plus from the answer, for the moment right
 after a purchase or restore when the webhook may still be on its way; it
-needs `REVENUECAT_API_KEY`.
+needs `REVENUECAT_API_KEY`. The rules of that answer live in
+`lib/plusReconcile.js` `applyStoreState`, shared with the nightly job below.
+
+### Revenue as a time series (plan 2.4)
+
+`lib/metrics.js` `plusDay` writes `MetricsDaily.plus` for every day from the
+production events of the day (sandbox never counts): `newPaid`
+(INITIAL_PURCHASE outside a trial), `trialsStarted` (with TRIAL),
+`trialsConverted` (a RENEWAL whose user's latest earlier paid event was a
+TRIAL), `renewed`, `cancelled`, `billingIssue`, `expired`, `refunds`
+(CANCELLATION with `cancel_reason` CUSTOMER_SUPPORT), the active plans at
+the end of the day by source (`activeStore`, `activeGift` = admin,
+referral, waitlist, gift; `activeSandbox`) and `mrrCents`: for every active
+store plan the price of the user's last paid event (purchase currency, else
+USD), yearly products divided by twelve; assumption: everyone pays in EUR,
+so the sum is shown as euros (a purchase in another currency would be added
+at face value). `giftDaysGranted` and
+`giftToStore` are reserved for plan 2.12 (gift budget) and 0 until then.
+`User.plus` has no history, so a day recomputed later gets today's active
+counts; the event counts stay exact. Rule: these numbers steer decisions
+only from about 30 active store plans on (assumption); the console says so
+below that.
+
+`MetricsDaily.version` is the `METRICS_VERSION` of `lib/metrics.js`; when
+it is raised, `runSnapshots` recomputes finished days of the last 30 days
+with an older version, five per run, so a new column reaches the recent
+past. Only within the raw data's life: a column whose rows have expired
+(`RAW_TTL_DAYS`: `push.*` after 3 days, `rituals.nudges` after 7, `calls.*`
+and `circles.rooms`/`ritualRooms` after 30, each a day early to be safe)
+keeps the stored value, so a recount never turns a real number into a
+zero. `retention()` adds `paid30` per cohort (share with a production
+INITIAL_PURCHASE within 30 days of signing up; null until the cohort's 30
+days are over), `funnel()` the onboarding steps per sign-up week from
+`User.milestones` (`GET /admin/metrics/funnel`, viewer), `density()` the
+histogram `c0 · c1_2 · c3_5 · c6plus`. The console shows the "Umsatz" row
+and the MRR chart in the Plus tab; the morning push adds "Plus: +2 neu ·
+1 gekündigt · MRR 84 €" on days with subscription events or MRR.
+
+### Nightly reconcile
+
+`lib/plusReconcile.js` `reconcile` compares every user with
+`plus.source` store or sandbox against `GET /v1/subscribers/{id}` and
+corrects `active`, `until` and `status` where they differ (a missed webhook,
+a refund that never reached us); the status only counts when ours is one
+the store can report (not null from before the field existed, not
+`paused`), otherwise such users would be "corrected" every night. A
+subscriber RevenueCat no longer knows ends the store Plus. Per-user errors are logged and the run continues. Day
+counters `plusReconcileChecked`, `plusReconcileFixed` and
+`plusReconcileFailed` (`lib/opsCounters.js`, in `MetricsDaily.ops`) show
+the drift; the goal is 0 fixed. `runDue` runs it once a day between 03:00
+and 05:00 Europe/Berlin on the job leader (`index.js`, checked every 15
+minutes), booked in `AppConfig.ops.plusReconcileFor`; without
+`REVENUECAT_API_KEY` nothing runs.
+
+### Exports
+
+`GET /admin/export/:name.csv` (`routes/adminExport.js`, owner, audited as
+`export_<name>`) with `metrics` (one row per `MetricsDaily` day, flat, the
+`plus.*` columns included), `plus` (one row per `SubscriptionEvent`, users by
+id, no app user ids), `marketing-spend` (`MarketingSpend`) and `support`
+(`SupportTicket` without phone numbers or message texts: id, category,
+status, times, message counts, app version). Same CSV dialect as
+`GET /admin/waitlist/export` (BOM, semicolon); the links sit in the Plus tab.
 
 ## Pseudonymous data
 

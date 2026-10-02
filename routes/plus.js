@@ -3,7 +3,8 @@
  * and the RevenueCat webhook that keeps subscriptions in sync (lib/plan.js).
  * Every webhook event is stored first (models/SubscriptionEvent.js), so a
  * retry is a duplicate and nothing is applied twice; /me/plus/sync asks
- * RevenueCat's REST API when the app wants the truth right after a purchase.
+ * RevenueCat's REST API when the app wants the truth right after a purchase
+ * (lib/plusReconcile.js applyStoreState, shared with the nightly job).
  */
 const crypto = require("crypto");
 const express = require("express");
@@ -16,14 +17,13 @@ const { referralOf } = require("../lib/referral");
 const { yearReview } = require("../lib/yearReview");
 const revenuecat = require("../lib/revenuecat");
 const opsCounters = require("../lib/opsCounters");
+const { PRODUCT_IDS, STORE_SOURCES, hasOpenAdminGrant, applyStoreState } = require("../lib/plusReconcile");
 
 // Webhook trouble is counted per day for the alert revenuecat (lib/alerts.js)
 const countOps = (name) => opsCounters.count(name).catch((err) => console.error("❌ opsCounters:", err.message));
 
 // What people can say they're interested in (the paywall's feature list)
 const INTEREST = ["hd_video", "bigger_circles", "longer_rounds", "memories", "year_review", "icons", "rituals", "family", "support"];
-
-const PRODUCT_IDS = ["wannayap_plus_monthly", "wannayap_plus_yearly"];
 
 /** Our RevenueCat app user id is the user's Mongo id. */
 async function userForIds(ids) {
@@ -38,13 +38,8 @@ const userForEvent = (event) => userForIds([event.app_user_id, event.original_ap
 const ACTIVE_EVENTS = ["INITIAL_PURCHASE", "RENEWAL", "PRODUCT_CHANGE", "UNCANCELLATION", "NON_RENEWING_PURCHASE", "SUBSCRIPTION_EXTENDED", "TEMPORARY_ENTITLEMENT_GRANT"];
 // Cancelled or billing trouble: still Plus until the period runs out
 const UNTIL_EXPIRY_EVENTS = ["CANCELLATION", "BILLING_ISSUE", "SUBSCRIPTION_PAUSED"];
-// Plus that came from the store, in production or from a test account
-const STORE_SOURCES = ["store", "sandbox"];
-
 const cents = (amount) => (typeof amount === "number" && Number.isFinite(amount) ? Math.round(amount * 100) : null);
 const dateOf = (ms) => (ms ? new Date(ms) : null);
-// An admin grant without end date stays whatever the store says
-const hasOpenAdminGrant = (user) => user.plus?.source === "admin" && user.plus?.active && !user.plus?.until;
 
 /**
  * Store the event before anything is applied. Null when it was stored before
@@ -199,18 +194,7 @@ module.exports = (io) => {
       console.error("❌ RevenueCat sync:", err.message);
       return res.status(502).json({ success: false, error: "revenuecat_unavailable" });
     }
-    const now = new Date();
-    const own = STORE_SOURCES.includes(me.plus?.source);
-    if (found && (found.active || own) && !hasOpenAdminGrant(me)) {
-      me.plus = { ...me.plus?.toObject?.(), active: found.active, until: found.until, productId: found.productId, status: found.status, source: found.sandbox ? "sandbox" : "store", since: me.plus?.since || now, eventAt: now };
-      await me.save();
-      io?.to(`user:${me.phone}`).emit("planChanged", {});
-    } else if (!found && own && me.plus.active) {
-      // The store knows nothing about a subscription: whatever we had is gone
-      me.plus = { ...me.plus.toObject(), active: false, status: "expired", eventAt: now };
-      await me.save();
-      io?.to(`user:${me.phone}`).emit("planChanged", {});
-    }
+    if (await applyStoreState(me, found, new Date())) io?.to(`user:${me.phone}`).emit("planChanged", {});
     res.json(await planBody(me));
   });
 

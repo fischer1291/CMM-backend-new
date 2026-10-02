@@ -347,6 +347,17 @@ module.exports = (io) => {
     }
   });
 
+  // Onboarding steps by sign-up week (lib/metrics.js funnel, from User.milestones)
+  router.get("/admin/metrics/funnel", requireAdmin("viewer"), async (req, res) => {
+    const weeks = Math.min(Math.max(parseInt(req.query.weeks, 10) || 8, 2), 16);
+    try {
+      res.json({ success: true, steps: metrics.FUNNEL_STEPS.map(([name]) => name), weeks: await metrics.funnel(weeks) });
+    } catch (err) {
+      console.error("❌ admin funnel:", err.message);
+      res.status(500).json({ success: false });
+    }
+  });
+
   // App errors (routes/diagnostics.js), most recent first
   router.get("/admin/errors", requireAdmin("viewer"), async (req, res) => {
     const errors = await ClientError.find({}, { _id: 0, __v: 0 }).sort({ lastAt: -1 }).limit(50).lean();
@@ -361,6 +372,8 @@ module.exports = (io) => {
   });
 
   // Confirmed addresses as CSV, e.g. for a newsletter tool. Owner only, audited.
+  // The other exports (metrics, plus, marketing-spend, support) live in
+  // routes/adminExport.js under GET /admin/export/:name.csv, same dialect.
   router.get("/admin/waitlist/export", requireAdmin("owner"), async (req, res) => {
     const entries = await WaitlistEntry.find({ status: "confirmed" }).sort({ confirmedAt: 1 }).lean();
     await audit(req, "waitlist_exported", { meta: { count: entries.length } });

@@ -207,6 +207,10 @@ const userSchema = new mongoose.Schema({
   },
 });
 
+// The Plus counts of the day (lib/metrics.js plusDay) and the nightly
+// reconcile (lib/plusReconcile.js) select by source and active
+userSchema.index({ "plus.source": 1, "plus.active": 1 });
+
 userSchema.statics.hashPhone = (phone) =>
   crypto.createHash("sha256").update(phone).digest("hex");
 

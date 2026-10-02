@@ -109,6 +109,8 @@ function createApp({ ringTimeoutMs } = {}) {
 
   // Admin console: its own sign-in (cookie + TOTP), static files at /console
   app.use(require("./routes/admin")(io));
+  // CSV exports for owners (metrics, plus, marketing-spend, support)
+  app.use(require("./routes/adminExport")());
   const marketingRoutes = require("./routes/marketing");
   app.use(marketingRoutes.adminRoutes());
   // The daily marketing agent (GitHub Action), with its own key

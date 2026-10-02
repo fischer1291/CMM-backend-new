@@ -223,6 +223,13 @@ async function main() {
       .catch((err) => console.error("❌ dead-man check:", err.message));
   }, 60 * 60 * 1000);
 
+  // Nightly: every store Plus against RevenueCat, once a day between 03:00
+  // and 05:00 Europe/Berlin (lib/plusReconcile.js); checked every 15 minutes
+  const plusReconcile = require("./lib/plusReconcile");
+  setInterval(() => {
+    asJobLeader("plus-reconcile", () => plusReconcile.runDue(new Date(), io)).catch((err) => console.error("❌ plus-reconcile:", err.message));
+  }, 15 * 60 * 1000);
+
   // Every 15 minutes: delivery receipts of sent pushes
   setInterval(() => {
     asJobLeader("receipts", checkReceipts)
