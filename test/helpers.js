@@ -6,6 +6,8 @@ const Module = require("module");
 
 process.env.NODE_ENV = "test";
 process.env.JWT_SECRET = "test-secret";
+// Keyed phone pseudonyms (models/User.js hmacPhone); a test-only value
+process.env.PHONE_HASH_PEPPER = "test-pepper-0123456789abcdef0123456789abcdef";
 process.env.ADMIN_API_KEY = "admin-key";
 // Test-only value; real certificates only come from the deployment environment
 process.env.AGORA_APP_CERTIFICATE = "0123456789abcdef0123456789abcdef";

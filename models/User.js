@@ -31,7 +31,12 @@ const userSchema = new mongoose.Schema({
   mood: { type: String, default: null },
 
   // SHA-256 of the E.164 phone number, for privacy-preserving contact matching
+  // (the app computes the same hash, so it has no pepper)
   phoneHash: { type: String, index: true },
+  // HMAC-SHA256 of the number with the server's pepper (hmacPhone below): the
+  // key of the analytics rows (ActiveDay.who), never shared with the app.
+  // Set on sign-up and, for older accounts, by index.js migrate()
+  phoneHmac: { type: String, index: true },
   // Registered users found in this user's address book (E.164). Used to limit
   // status updates and the CallMoments feed to people who know each other.
   contacts: { type: [String], default: [], index: true },
@@ -204,5 +209,24 @@ const userSchema = new mongoose.Schema({
 
 userSchema.statics.hashPhone = (phone) =>
   crypto.createHash("sha256").update(phone).digest("hex");
+
+/**
+ * The pepper for hmacPhone: PHONE_HASH_PEPPER, set once and never changed (a
+ * new pepper orphans every ActiveDay row, README "Pseudonymous data").
+ * Without it a value derived from JWT_SECRET, so a deployment that forgot
+ * the variable still works; index.js warns about it at start.
+ */
+userSchema.statics.phonePepperConfigured = () => !!process.env.PHONE_HASH_PEPPER;
+const phonePepper = () =>
+  process.env.PHONE_HASH_PEPPER || crypto.createHash("sha256").update(`${process.env.JWT_SECRET || ""}:phone-hash`).digest("hex");
+
+/**
+ * Keyed hash of the E.164 number for the analytics collections (ActiveDay):
+ * unlike hashPhone it cannot be computed offline over the German number
+ * space without the pepper. Not for /contacts/match, Invite.toHash,
+ * Circle.invites.hash or BannedNumber.hash: those stay SHA-256, because the
+ * app computes them and a re-keying would break invites and the ban list.
+ */
+userSchema.statics.hmacPhone = (phone) => crypto.createHmac("sha256", phonePepper()).update(phone).digest("hex");
 
 module.exports = mongoose.model("User", userSchema);

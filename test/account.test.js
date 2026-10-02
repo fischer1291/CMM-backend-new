@@ -8,13 +8,19 @@ const Nudge = require("../models/Nudge");
 const CallMoment = require("../models/CallMoment");
 const MomentUnlock = require("../models/MomentUnlock");
 const SubscriptionEvent = require("../models/SubscriptionEvent");
+const ActiveDay = require("../models/ActiveDay");
+const revenuecat = require("../lib/revenuecat");
 
 let ctx;
 before(async () => {
   ctx = await setup();
 });
 after(teardown);
-beforeEach(reset);
+beforeEach(async () => {
+  await reset();
+  delete process.env.REVENUECAT_API_KEY;
+  revenuecat.setDeleteSubscriber(null);
+});
 
 const ANNA = "+4915111111111";
 const BEN = "+4915222222222";
@@ -51,11 +57,30 @@ test("delete account: removes the user, their moments, talks, nudges and every t
   await Talk.create({ callId: "t2", participants: [BEN, CARL], startedAt: new Date(), seconds: 300 });
   await Nudge.create({ from: ANNA, to: BEN });
   await MomentUnlock.create([{ phone: ANNA, day: "2026-10-01", via: "talk" }, { phone: BEN, day: "2026-10-01", via: "talk" }]);
+  // Activity rows under the keyed hash (today's from the sign-in), under the
+  // stored field and under the SHA-256 of older rows no migration reached
+  const annaBefore = await User.findOne({ phone: ANNA });
+  assert.equal(annaBefore.phoneHmac, User.hmacPhone(ANNA));
+  await ActiveDay.create([
+    { day: "2026-09-01", who: User.hmacPhone(ANNA) },
+    { day: "2026-09-02", who: User.hashPhone(ANNA) },
+    { day: "2026-09-01", who: User.hmacPhone(BEN) },
+  ]);
+  // RevenueCat forgets the subscriber (our user id), when the key is configured
+  process.env.REVENUECAT_API_KEY = "rc-api-key";
+  const forgotten = [];
+  revenuecat.setDeleteSubscriber(async (id) => {
+    forgotten.push(id);
+    return true;
+  });
 
   await request(ctx.app).delete("/me").expect(401);
   await request(ctx.app).delete("/me").set(auth(anna)).expect(200);
 
   assert.equal(await User.countDocuments({ phone: ANNA }), 0);
+  assert.equal(await ActiveDay.countDocuments({ who: { $in: [User.hmacPhone(ANNA), User.hashPhone(ANNA)] } }), 0, "no activity row of the account is left");
+  assert.equal(await ActiveDay.countDocuments({ who: User.hmacPhone(BEN), day: "2026-09-01" }), 1, "other people keep their rows");
+  assert.deepEqual(forgotten, [String(annaBefore._id)]);
   const moments = await CallMoment.find();
   assert.deepEqual(moments.map((m) => m.targetPhone), [CARL]);
   assert.equal(moments[0].totalReactions, 0);
@@ -71,6 +96,32 @@ test("delete account: removes the user, their moments, talks, nudges and every t
   await request(ctx.app).delete("/me").set(auth(anna)).expect(404);
   await login(ANNA, "Anna neu");
   assert.equal((await User.findOne({ phone: ANNA })).contacts.length, 0);
+});
+
+test("delete account: a failing RevenueCat call is logged, the account still goes; without the key nothing is called", async () => {
+  const anna = await login(ANNA, "Anna");
+  process.env.REVENUECAT_API_KEY = "rc-api-key";
+  revenuecat.setDeleteSubscriber(async () => {
+    throw new Error("revenuecat_503");
+  });
+  const errors = [];
+  const original = console.error;
+  console.error = (...args) => errors.push(args.join(" "));
+  try {
+    await request(ctx.app).delete("/me").set(auth(anna)).expect(200);
+  } finally {
+    console.error = original;
+  }
+  assert.equal(await User.countDocuments({ phone: ANNA }), 0);
+  assert.ok(errors.some((e) => e.includes("RevenueCat subscriber") && e.includes("revenuecat_503")), errors.join("\n"));
+
+  delete process.env.REVENUECAT_API_KEY;
+  const ben = await login(BEN, "Ben");
+  revenuecat.setDeleteSubscriber(async () => {
+    throw new Error("must not be called without the key");
+  });
+  await request(ctx.app).delete("/me").set(auth(ben)).expect(200);
+  assert.equal(await User.countDocuments({ phone: BEN }), 0);
 });
 
 test("export: everything stored about the user, as JSON", async () => {
@@ -94,6 +145,12 @@ test("export: everything stored about the user, as JSON", async () => {
   assert.equal(data.moments.length, 1);
   assert.equal(data.moments[0].image, "(Bild in der Datenbank)");
   assert.deepEqual(data.conversations.map((c) => [c.with, c.seconds]), [[BEN, 600]]);
+  // The days the app was used, from the keyed rows and from older SHA-256 rows
+  await ActiveDay.create([{ day: "2026-09-02", who: User.hashPhone(ANNA) }, { day: "2026-09-01", who: User.hmacPhone(ANNA) }]);
+  const again = (await request(ctx.app).get("/me/export").set(auth(anna)).expect(200)).body.data;
+  const today = require("../lib/metrics").todayKey();
+  assert.deepEqual(again.activeDays, ["2026-09-01", "2026-09-02", today]);
+  assert.ok(!JSON.stringify(again).includes(User.hmacPhone(ANNA)), "no hashes in the export");
   assert.ok(!JSON.stringify(data).includes("ExponentPushToken"), "no push tokens in the export");
   // Onboarding milestones are about the person and belong in the export
   assert.deepEqual(Object.keys(data.milestones), ["verifiedAt", "contactsSyncedAt", "firstRegisteredContactAt", "pushGrantedAt", "firstCallAt", "firstTalkAt", "firstInviteAt"]);

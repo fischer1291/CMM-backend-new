@@ -12,9 +12,28 @@ Die Rechtsgrundlagen sind Vorschläge und **vom Anwalt zu prüfen** (Plan 1.6,
 Anwaltspaket). "prüfen" markiert, was der Code nicht beantwortet. Zahlen und
 Fristen stammen aus den TTL-Indizes der Modelle und aus `index.js`.
 
-Telefonnummern stehen im Format E.164 (`+49…`). "Hash" ist SHA-256 der
-E.164-Nummer ohne Salz (`User.hashPhone`): pseudonym, nicht anonym, also
-personenbezogen. Admins sind die Personen mit Konsolenzugang (`Admin`), ihre
+Telefonnummern stehen im Format E.164 (`+49…`). Zwei Hashes der Nummer gibt
+es (Plan 2.8, README "Pseudonymous data"), beide pseudonym, nicht anonym,
+also personenbezogen:
+
+- "Hash" (SHA-256): `User.hashPhone`, SHA-256 der E.164-Nummer ohne Salz,
+  über den kleinen deutschen Nummernraum offline berechenbar. Die App bildet
+  denselben Hash aus dem Adressbuch, deshalb ist er der Schlüssel von
+  `User.phoneHash` (`POST /contacts/match`), `Invite.toHash`,
+  `Circle.invites.hash`, `BannedNumber.hash` und `WaitlistEntry.claimedBy`.
+  Er wird nicht umgeschlüsselt: Einladungen, Kreis-Einladungen und der
+  Bann-Abgleich hängen daran.
+- "HMAC" (HMAC-SHA256 mit Pepper): `User.hmacPhone`, Schlüssel
+  `PHONE_HASH_PEPPER` als Render-Secret, einmal gesetzt und nie gewechselt
+  (weicht der gespeicherte `phoneHmac` eines Kontos vom aktuellen Pepper ab,
+  schlüsselt der Start Feld und `ActiveDay`-Zeilen des Kontos um); ohne den
+  Pepper nicht berechenbar. Schlüssel von `User.phoneHmac` und der
+  Analytik-Zeilen (`ActiveDay.who`; künftige Ereignis- und Umfrage-Hashes
+  ebenso). Zeilen von vor Plan 2.8 wurden beim ersten Start einmal von SHA-256
+  auf HMAC umgeschlüsselt (`index.js migrate()`, `lib/pseudonyms.js`,
+  Marker `AppConfig.migrations.activeDayHmac`).
+
+Admins sind die Personen mit Konsolenzugang (`Admin`), ihre
 E-Mail-Adresse taucht als `by`, `decidedBy`, `updatedBy` in Betriebsdaten auf.
 
 ## Einwilligung und Mindestalter
@@ -38,7 +57,7 @@ die Daten mit dem Konto (ja / nein / n. a. = kein Bezug zu App-Nutzern).
 
 | Collection | Zweck | Personenbezogene Felder | Rechtsgrundlage (vom Anwalt prüfen) | Aufbewahrung / TTL | Löschpfad `lib/account.js` |
 |---|---|---|---|---|---|
-| `ActiveDay` | Aktive Tage je Person für DAU/WAU/MAU und Retention (`lib/metrics.js`) | `who` (Hash), `day` | Art. 6 Abs. 1 lit. f (Reichweitenmessung ohne Klartext) | TTL 400 Tage (`at`) | nein: Hash bleibt bis zur TTL; prüfen, ob bei Kontolöschung zu entfernen |
+| `ActiveDay` | Aktive Tage je Person für DAU/WAU/MAU und Retention (`lib/metrics.js`) | `who` (HMAC, bis Plan 2.8 Hash), `day` | Art. 6 Abs. 1 lit. f (Reichweitenmessung ohne Klartext) | TTL 400 Tage (`at`); 400 Tage statt 3 Jahre als bewusste Wahl: Retention braucht 13 Monate, mehr nicht (prüfen) | ja (seit Plan 2.8): Zeilen unter `phoneHmac`, dem neu berechneten HMAC und dem alten Hash. Zeilen von Konten, die vor der Umschlüsselung gelöscht wurden, hat niemand mehr zuordnen können; sie bleiben unlesbar bis zur TTL. Export: ja (`activeDays`, nur die Tage) |
 | `AdDraft` | Werbevideos des Marketing-Agenten, Freigabe in der Konsole | nur Admin-Daten: `decidedBy`, `edited.by`; keine Nutzerdaten | Art. 6 Abs. 1 lit. f (Betrieb) | keine TTL | n. a. |
 | `Admin` | Zugänge zur Admin-Konsole | `email`, `passwordHash`, `totpSecret`, `passkeys` (öffentliche Schlüssel, Gerätename), `invitedBy`, `lastLoginAt`, `lastAckAt`, `failedLogins`, `notify` | Art. 6 Abs. 1 lit. b/f (Beauftragte, Zugangssicherung) | keine TTL; deaktivierte Konten bleiben für den Audit-Trail (`active: false`) | n. a. (Admins, nicht App-Nutzer; Deaktivieren über `DELETE /admin/admins/:id`) |
 | `AdminAudit` | Jede Admin-Aktion und jede Einsichtnahme in Personendaten | `admin` (E-Mail), `target` (z. B. Telefonnummer eines Nutzers), `ip`, `meta` | Art. 6 Abs. 1 lit. c/f (Rechenschaftspflicht Art. 5 Abs. 2, Art. 32) | TTL 365 Tage (`at`) | nein, bewusst: Nachweis bleibt bis zur TTL, auch nach Kontolöschung; prüfen |
@@ -73,7 +92,7 @@ die Daten mit dem Konto (ja / nein / n. a. = kein Bezug zu App-Nutzern).
 | `SubscriptionEvent` | Jedes Abo-Ereignis, wie RevenueCat es geschickt hat: Grundlage für MRR, Churn, Nachweis der Käufe (`routes/plus.js`) | `userId`, `appUserId` (= unsere User-ID), `transferredFrom`/`transferredTo` (App-User-IDs), Produkt, Preis, Währung, Laufzeit, Kündigungsgrund, Sandbox-Kennzeichen; keine Zahlungsdaten | Art. 6 Abs. 1 lit. b (Vertrag) und lit. c (Aufbewahrung von Buchungsbelegen, § 147 AO / § 257 HGB: 10 Jahre, prüfen) | keine TTL; bleibt nach Kontolöschung als Nachweis | nein, bewusst (Nachweis; die User-ID verweist dann ins Leere); Export: ja (`subscriptions`, `plus`) |
 | `SupportTicket` | Hilfe & Feedback aus der App, Antworten aus der Konsole (`routes/support.js`) | `phone`, `messages.text`, `messages.by` (Admin), `app` (Version, Gerät) | Art. 6 Abs. 1 lit. b (Support) | keine TTL, bis Kontolöschung; prüfen, ob geschlossene Tickets eine TTL brauchen | ja |
 | `Talk` | Ein beantwortetes und beendetes Gespräch für die persönliche Gesprächszeit-Statistik und Meilensteine | `participants`, `owner` (Nummern), `startedAt`, `seconds`, `circleId` | Art. 6 Abs. 1 lit. b | TTL 400 Tage (`startedAt`) | ja |
-| `User` | Das Konto: Identität, Erreichbarkeit, Kontakte, Einstellungen, Meilensteine, Plus, Einwilligung | `phone`, `phoneHash`, `name`, `avatarUrl`, `pushToken`/`voipToken` mit `deviceId` und Plattform, `contacts` und `connections` (Nummern anderer Nutzer), `invitedBy`, `inviteCode` (öffentlicher Code im eigenen Einladungslink; wer ihn kennt, kann über `POST /invites/visit` nur erfahren, dass er vergeben ist, nicht an wen), `locale` (Gerätesprache aus `Accept-Language`, nur zur Messung), `timezone`, `schedule`, `notificationPrefs`, `mood`, `lastOnline`, `isAvailable`, `milestones`, `research`, `consent` (`ageConfirmedAt`, `termsVersion`, `privacyVersion`), `plus`, `plusInterest`, `app` (Version, Gerät), `suspendedUntil`/`suspendReason`, `circles`, `availabilityAudience`, `statsSharing`, `badgeSeen`, `showcase`, `waitlist.code` | Art. 6 Abs. 1 lit. b (Vertrag); Einwilligung und Mindestalter Art. 7/8 (`consent`); Adressbuch-Abgleich (`contacts`, Hash-Verfahren in `routes/contacts.js`): lit. f oder lit. a, prüfen; Moderation (`suspendedUntil`): lit. f | keine TTL, bis Kontolöschung (`DELETE /me`, Konsole) | ja: Konto und jede Spur in anderen Konten (`contacts`, `connections`, `statsSharing.sharedWith`, Kreis-Mitgliedschaften), Avatar bei Cloudinary |
+| `User` | Das Konto: Identität, Erreichbarkeit, Kontakte, Einstellungen, Meilensteine, Plus, Einwilligung | `phone`, `phoneHash` (Hash), `phoneHmac` (HMAC), `name`, `avatarUrl`, `pushToken`/`voipToken` mit `deviceId` und Plattform, `contacts` und `connections` (Nummern anderer Nutzer), `invitedBy`, `inviteCode` (öffentlicher Code im eigenen Einladungslink; wer ihn kennt, kann über `POST /invites/visit` nur erfahren, dass er vergeben ist, nicht an wen), `locale` (Gerätesprache aus `Accept-Language`, nur zur Messung), `timezone`, `schedule`, `notificationPrefs`, `mood`, `lastOnline`, `isAvailable`, `milestones`, `research`, `consent` (`ageConfirmedAt`, `termsVersion`, `privacyVersion`), `plus`, `plusInterest`, `app` (Version, Gerät), `suspendedUntil`/`suspendReason`, `circles`, `availabilityAudience`, `statsSharing`, `badgeSeen`, `showcase`, `waitlist.code` | Art. 6 Abs. 1 lit. b (Vertrag); Einwilligung und Mindestalter Art. 7/8 (`consent`); Adressbuch-Abgleich (`contacts`, Hash-Verfahren in `routes/contacts.js`): lit. f oder lit. a, prüfen; Moderation (`suspendedUntil`): lit. f | keine TTL, bis Kontolöschung (`DELETE /me`, Konsole) | ja: Konto und jede Spur in anderen Konten (`contacts`, `connections`, `statsSharing.sharedWith`, Kreis-Mitgliedschaften), Avatar bei Cloudinary |
 | `WaitlistEntry` | Warteliste der Landing-Page und der Einladungsseite mit Double-Opt-in, Empfehlungen, Einlösen in der App (`lib/waitlist.js`) | `email`, `consent.at`/`ip`/`confirmedIp`/`text` (Nachweis der Einwilligung), `referredBy`, `source`, `campaign` (bei der Einladungsseite `invite-<Code des Einladenden>`), `platform` (iPhone oder Android, aus dem Formular oder dem User-Agent), `claimedBy` (Hash des einlösenden Nutzers) | Art. 6 Abs. 1 lit. a (Einwilligung, Double-Opt-in); Nachweis Art. 7 Abs. 1 | unbestätigte Einträge TTL 7 Tage (`createdAt`, nur `pending`); bestätigte bis zur Abmeldung (der Abmeldelink löscht den Eintrag) | n. a. für das App-Konto: eigener Abmeldelink in jeder Mail; `claimedBy` bleibt nach Kontolöschung als Hash, prüfen |
 
 Bilder (Avatare, Moment-Fotos) liegen bei Cloudinary, nicht in der Datenbank
@@ -100,7 +119,7 @@ Firmenordner). Sitz und Drittlandtransfer je Anbieter prüfen und in
 | Cloudinary | Avatare und Moment-Bilder (`app.js`, `lib/moments.js`) | Bilder, Public-ID mit Telefonnummer (`avatars/avatar_<nummer>`) | offen | Public-ID enthält die Nummer: ändern oder im AVV abdecken, prüfen |
 | Expo (EAS, Push-Dienst) | Push-Benachrichtigungen (`lib/push.js`), Builds | Expo-Push-Token, Push-Inhalt (Namen, Hinweise) | offen | Quittungen (`lib/receipts.js`) bleiben bei Expo etwa einen Tag |
 | Apple | APNs/VoIP-Push (`lib/push.js`), App Store, In-App-Abos | VoIP-Token, Anruf-Push (Nummer des Anrufers), Kaufdaten in Apples Hand | offen (Apple Developer Program License Agreement enthält Datenschutzbestimmungen; prüfen, ob ein eigener AVV nötig ist) | App-Privacy-Label in App Store Connect pflegen (`CMM/docs/RELEASE.md`) |
-| RevenueCat | Abo-Ereignisse und -Status (`routes/plus.js`, `lib/revenuecat.js`) | App-User-ID (= unsere User-ID), Produkt, Preis, Währung, Laufzeit, Kündigungsgrund | offen | Webhook mit Secret; `REVENUECAT_API_KEY` für die Abfrage je Nutzer |
+| RevenueCat | Abo-Ereignisse und -Status (`routes/plus.js`, `lib/revenuecat.js`) | App-User-ID (= unsere User-ID), Produkt, Preis, Währung, Laufzeit, Kündigungsgrund | offen | Webhook mit Secret; `REVENUECAT_API_KEY` für die Abfrage je Nutzer und das Löschen des Subscribers bei Kontolöschung (`deleteAccount`, seit Plan 2.8; ohne Schlüssel bleibt er bei RevenueCat, prüfen) |
 | Mailanbieter (`SMTP_URL`) | Wartelisten-, Alarm-, Einladungs- und Dead-Man-Mails (`lib/mailer.js`) | E-Mail-Adressen der Warteliste und der Admins, Mailinhalt | offen | Anbieter in `CMM/content/legal.ts` `MAIL_PROVIDER` eintragen, sobald gewählt |
 | Backup-Bucket (Backblaze B2 oder Cloudflare R2) | Wöchentlicher verschlüsselter Dump (`.github/workflows/db-backup.yml`, README "Backup") | der ganze Datenbestand, age-verschlüsselt; nur der Owner hat den Schlüssel | offen | Anbieter beim Einrichten festlegen und hier eintragen |
 | GitHub (Actions) | CI (`test.yml`, nur In-Memory-Datenbank, keine Produktionsdaten) und der Backup-Runner | beim Backup: der Dump kurzzeitig im Arbeitsspeicher des Runners, verschlüsselt vor dem Upload | offen | prüfen, ob der Backup-Lauf einen AVV mit GitHub braucht |

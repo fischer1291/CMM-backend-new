@@ -610,7 +610,7 @@ module.exports = (io) => {
       Block.countDocuments({ blocker: phone }),
       CallMoment.countDocuments({ userPhone: phone }),
       PushDecision.find({ to: phone }).sort({ at: -1 }).limit(30).lean(),
-      ActiveDay.find({ who: User.hashPhone(phone), day: { $gte: shiftDateKey(today, -27) } }, { day: 1 }).lean(),
+      ActiveDay.find({ who: User.hmacPhone(phone), day: { $gte: shiftDateKey(today, -27) } }, { day: 1 }).lean(),
     ]);
     const talkBy = Object.fromEntries(talks.map((t) => [String(!!t._id), t]));
     await audit(req, "user_view", { target: String(user._id) });

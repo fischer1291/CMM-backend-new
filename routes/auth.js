@@ -12,7 +12,7 @@ router.post("/register", async (req, res) => {
   const { pushToken } = req.body;
 
   try {
-    const update = { $setOnInsert: { phone, phoneHash: User.hashPhone(phone) } };
+    const update = { $setOnInsert: { phone, phoneHash: User.hashPhone(phone), phoneHmac: User.hmacPhone(phone) } };
     if (typeof pushToken === "string" && pushToken) update.$set = { pushToken };
     const user = await User.findOneAndUpdate({ phone }, update, { new: true, upsert: true });
     res.json({ success: true, user: { phone: user.phone, name: user.name || "" } });

@@ -167,7 +167,7 @@ router.post("/check", perPhone(10), async (req, res) => {
     const locale = localeOf(req.headers);
     const user = await User.findOneAndUpdate(
       { phone },
-      { $setOnInsert: { phone, phoneHash: User.hashPhone(phone) }, ...(locale ? { $set: { locale } } : {}) },
+      { $setOnInsert: { phone, phoneHash: User.hashPhone(phone), phoneHmac: User.hmacPhone(phone) }, ...(locale ? { $set: { locale } } : {}) },
       { new: true, upsert: true },
     );
 

@@ -25,6 +25,7 @@ npm start       # needs the environment below
 | `lib/phone.js` | E.164 phone normalization |
 | `lib/push.js` | Expo and VoIP (APNs) push |
 | `lib/agora.js` | Agora RTC tokens |
+| `lib/pseudonyms.js` | Keyed phone pseudonyms (`User.phoneHmac`) and their one-off migration, see Pseudonymous data |
 | `COMPLIANCE.md` | Record of processing per collection, processors, the privacy change process; `test/compliance.test.js` fails when a model has no row |
 
 What is still missing on the way to a profitable, scalable company (processes,
@@ -420,12 +421,64 @@ caller's subscriptions and sets Plus from the answer, for the moment right
 after a purchase or restore when the webhook may still be on its way; it
 needs `REVENUECAT_API_KEY`.
 
+## Pseudonymous data
+
+Two hashes of the phone number exist, for two reasons (plan 2.8,
+`COMPLIANCE.md`):
+
+- `User.phoneHash` = SHA-256 of the E.164 number (`User.hashPhone`). The app
+  computes the same hash from the address book, so it is the key of
+  `POST /contacts/match`, `Invite.toHash`, `Circle.invites.hash` and
+  `BannedNumber.hash`. It has no secret and never gets one: over the small
+  German number space it can be computed offline, so it is pseudonymous,
+  not anonymous, and every row under it has its deletion path.
+- `User.phoneHmac` = HMAC-SHA256 of the number with the server's pepper
+  (`User.hmacPhone`, `PHONE_HASH_PEPPER`). Only the server knows the pepper,
+  so the hash cannot be computed without it. It is the key of the analytics
+  rows that outlive the request (`ActiveDay.who`, kept 400 days) and of
+  every future analytics collection; it is never sent to the app.
+
+The pepper is set once and never changed: a new pepper gives every number a
+new `phoneHmac`. Without the variable the pepper is derived from
+`JWT_SECRET` (which then must not change either); the start logs
+`PHONE_HASH_PEPPER not set`. Set it on Render **before the first deploy of
+this version** (plan 2.8), keep it in the password manager with the other
+secrets, and treat a rotation of `JWT_SECRET` as harmless only once
+`PHONE_HASH_PEPPER` is set. Should the variable arrive late anyway, the
+start repairs it: an account whose stored `phoneHmac` no longer matches the
+current pepper has its `ActiveDay` rows moved to the new value and the
+field updated (the start logs `phoneHmac re-keyed for N user(s)`). That
+makes the one switch that happens in practice (fallback → real pepper)
+lossless; any later change still costs the history of accounts deleted in
+between and is not meant to happen.
+
+Migration (`index.js` `migrate()`, `lib/pseudonyms.js`): on every start,
+accounts without `phoneHmac` get it; once, marked in
+`AppConfig.migrations.activeDayHmac`, the `ActiveDay` rows written under the
+SHA-256 are re-keyed to the HMAC account by account (a day that exists under
+both keys keeps the new row). Rows of accounts deleted before that run have
+no account left to re-key them: they stay unreadable and expire with the
+TTL. Rows the old instance still writes with the SHA-256 during the deploy
+overlap stay as they are: deletion and export reach them through the three
+keys, the active-user counts see that person twice for the windows that
+contain the deploy day, once. `ActiveDay` has an index on `who` alone so the
+migration, deletion and export never scan the collection; `migrate()`
+creates it before the first run. No script to run by hand.
+
+Deletion (`lib/account.js` `deleteAccount`): the `ActiveDay` rows go under
+all three keys (the stored `phoneHmac`, the HMAC computed now and the
+SHA-256), and with `REVENUECAT_API_KEY` set the subscriber is deleted at
+RevenueCat (`DELETE /v1/subscribers/{our user id}`); a failure there is
+logged and never stops the deletion. The export (`GET /me/export`) lists the
+days under `activeDays`.
+
 ## Environment
 
 | Variable | Required | Purpose |
 |---|---|---|
 | `MONGODB_URI` | yes | MongoDB connection |
 | `JWT_SECRET` | yes | Signs auth tokens; without it no tokens are issued |
+| `PHONE_HASH_PEPPER` | recommended | Pepper of the keyed phone pseudonyms (`User.hmacPhone`, `ActiveDay.who`), at least 32 random characters (`openssl rand -hex 32`); set once, before the first deploy of plan 2.8, and never changed, see Pseudonymous data. Without it the pepper is derived from `JWT_SECRET` and the start logs a warning |
 | `AUTH_REQUIRED` | later | `true` rejects requests without a token |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SID` | yes | SMS verification |
 | `TWILIO_SMS_FROM` | alerts | A Twilio phone number (`+49…`) or Messaging Service SID (`MG…`) for alert SMS to `AppConfig.ops.alertPhone` (`lib/twilio.js`); without it alerts go out as push and mail only |
@@ -445,7 +498,7 @@ needs `REVENUECAT_API_KEY`.
 | `ADMIN_RP_ID`, `ADMIN_ORIGIN` | no | Passkeys (Face ID) for the console: the host and origin the console runs on, default the host of `PUBLIC_API_URL` and `https://` + that host |
 | `ADMIN_PUSH_CONTACT` | no | Contact address sent to the push services, default `hallo@wannayap.app` |
 | `REVENUECAT_WEBHOOK_SECRET` | purchases | The Authorization value RevenueCat sends to `POST /webhooks/revenuecat`; without it the webhook refuses everything |
-| `REVENUECAT_API_KEY` | no | RevenueCat secret API key (v1) for `GET /v1/subscribers/{id}`: `POST /me/plus/sync` after a purchase in the app, and a TRANSFER whose source we don't know. Without it sync answers 501 and such a transfer grants Plus without end date (logged) |
+| `REVENUECAT_API_KEY` | no | RevenueCat secret API key (v1) for `GET /v1/subscribers/{id}`: `POST /me/plus/sync` after a purchase in the app, and a TRANSFER whose source we don't know; also `DELETE /v1/subscribers/{id}` when an account is deleted (see Pseudonymous data). Without it sync answers 501, such a transfer grants Plus without end date (logged) and the subscriber stays at RevenueCat |
 | `POST_SLOTS` | no | When approved ad videos go out, Europe/Berlin, default `12:00,18:00` (one video per slot) |
 | `PORT` | no | Set by Render |
 | `TEST_MONGODB_URI` | no | Tests only: `npm test` runs against this cluster (in its own `wannayap-test-<pid>` database) instead of the in-memory MongoDB; used in the restore drill, see Backup |

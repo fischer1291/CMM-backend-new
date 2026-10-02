@@ -18,6 +18,7 @@ const { runRules } = require("./lib/alerts");
 const { tickMomentsWaiting } = require("./lib/unlock");
 const { asLeader, releaseLease, INSTANCE } = require("./lib/leader");
 const { migratePrivateCircles, tickRituals, endStaleRooms } = require("./lib/circles");
+const { backfillPhoneHmac, rekeyActiveDays } = require("./lib/pseudonyms");
 
 const PORT = process.env.PORT || 3000;
 // Background jobs run on one instance only (lib/leader.js)
@@ -42,6 +43,17 @@ async function migrate() {
     await User.updateOne({ _id: user._id }, { phoneHash: User.hashPhone(user.phone) });
   }
   if (missingHash.length) console.log(`🔧 Added phoneHash to ${missingHash.length} users`);
+
+  // Keyed pseudonyms (plan 2.8, lib/pseudonyms.js): phoneHmac for every
+  // account, then ActiveDay re-keyed from SHA-256 to the HMAC, once. Both
+  // query ActiveDay by `who`; the index must exist before they run (this
+  // happens before server.listen, so a collection scan would hold /healthz)
+  await require("./models/ActiveDay").createIndexes();
+  const { added: addedHmac, rekeyed: rekeyedUsers } = await backfillPhoneHmac();
+  if (addedHmac) console.log(`🔧 Added phoneHmac to ${addedHmac} users`);
+  if (rekeyedUsers) console.log(`🔧 Re-keyed phoneHmac and the ActiveDay rows of ${rekeyedUsers} users`);
+  const rekeyed = await rekeyActiveDays();
+  if (rekeyed !== null) console.log(`🔧 Re-keyed ${rekeyed} ActiveDay row(s) to phoneHmac`);
 
   // Private circle lists became shared circles (lib/circles.js)
   const migrated = await migratePrivateCircles();
@@ -76,6 +88,9 @@ async function main() {
 
   if (!process.env.JWT_SECRET) {
     console.warn("⚠️ JWT_SECRET not set: no auth tokens are issued (legacy mode)");
+  }
+  if (!User.phonePepperConfigured()) {
+    console.warn("⚠️ PHONE_HASH_PEPPER not set: phone pseudonyms are keyed from JWT_SECRET; set it once before this version is deployed and never change it (README \"Pseudonymous data\")");
   }
   if (agoraCredentials().usingLegacyCertificate) {
     console.error("❌ AGORA_APP_CERTIFICATE not set: calls will fail (no RTC tokens)");
