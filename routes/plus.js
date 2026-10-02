@@ -13,11 +13,11 @@ const User = require("../models/User");
 const Circle = require("../models/Circle");
 const SubscriptionEvent = require("../models/SubscriptionEvent");
 const { planOf, limits } = require("../lib/plan");
-const { referralOf } = require("../lib/referral");
+const { referralOf, twoSidedOn, PAIR_DAYS } = require("../lib/referral");
 const { yearReview } = require("../lib/yearReview");
 const revenuecat = require("../lib/revenuecat");
 const opsCounters = require("../lib/opsCounters");
-const { PRODUCT_IDS, STORE_SOURCES, hasOpenAdminGrant, applyStoreState } = require("../lib/plusReconcile");
+const { PRODUCT_IDS, STORE_SOURCES, hasOpenAdminGrant, applyStoreState, previousSourceFor } = require("../lib/plusReconcile");
 
 // Webhook trouble is counted per day for the alert revenuecat (lib/alerts.js)
 const countOps = (name) => opsCounters.count(name).catch((err) => console.error("❌ opsCounters:", err.message));
@@ -104,7 +104,7 @@ async function applyTransfer(event, now) {
       moved = { until: null, productId: to.plus?.productId || null, status: "active", source: "store" };
     }
   }
-  to.plus = { ...to.plus?.toObject?.(), ...moved, eventAt, active: true, since: to.plus?.since || now, source: sandbox ? "sandbox" : moved.source };
+  to.plus = { ...to.plus?.toObject?.(), ...moved, eventAt, active: true, since: to.plus?.since || now, source: sandbox ? "sandbox" : moved.source, previousSource: previousSourceFor(to.plus) };
   await to.save();
   return { result: "ok", users };
 }
@@ -123,7 +123,7 @@ async function apply(event, now) {
 
   if (ACTIVE_EVENTS.includes(event.type) || UNTIL_EXPIRY_EVENTS.includes(event.type)) {
     if (hasOpenAdminGrant(user)) return { result: "admin_grant_kept", users: [] };
-    user.plus = { ...user.plus?.toObject?.(), ...base, active: true, until, source, since: user.plus?.since || now };
+    user.plus = { ...user.plus?.toObject?.(), ...base, active: true, until, source, previousSource: previousSourceFor(user.plus), since: user.plus?.since || now };
   } else if (event.type === "EXPIRATION") {
     if (STORE_SOURCES.includes(user.plus?.source)) user.plus = { ...user.plus.toObject(), ...base, active: false, until };
   } else {
@@ -160,7 +160,7 @@ module.exports = (io) => {
 
   /** The /me/plan body: my plan, both plans' limits for the comparison, my usage. */
   async function planBody(me) {
-    const [plan, all, founded] = await Promise.all([planOf(me), limits(), Circle.countDocuments({ createdBy: me.phone })]);
+    const [plan, all, founded, twoSided] = await Promise.all([planOf(me), limits(), Circle.countDocuments({ createdBy: me.phone }), twoSidedOn()]);
     return {
       success: true,
       ...plan,
@@ -168,7 +168,8 @@ module.exports = (io) => {
       all,
       usage: { circlesFounded: founded },
       products: PRODUCT_IDS,
-      referral: referralOf(me),
+      // twoSided: the experiment of plan 2.12 is on, pairDays for each of a pair after their first talk
+      referral: { ...referralOf(me), twoSided, pairDays: PAIR_DAYS },
       interest: me.plusInterest?.at ? { at: me.plusInterest.at, features: me.plusInterest.features } : null,
     };
   }

@@ -108,6 +108,11 @@ const userSchema = new mongoose.Schema({
     referrals: { type: Number, default: 0 },
   },
   referralRewards: { type: Number, default: 0 },
+  // Two-sided invite experiment (plan 2.12, lib/referral.js rewardPair): the
+  // inviters (E.164) with whom this invitee's first talk already gave both
+  // of them Plus days, once per pair. Removed from here when they delete
+  // their account (lib/account.js)
+  referralPairRewards: { type: [String], default: [] },
   // Onboarding milestones (activation funnel): each is set once, by a
   // conditional update on the empty field, and never overwritten.
   // verifiedAt: routes/verify.js · contactsSyncedAt, firstRegisteredContactAt
@@ -162,6 +167,11 @@ const userSchema = new mongoose.Schema({
     productId: { type: String, default: null },
     // RevenueCat's last event, to ignore older ones arriving late
     eventAt: { type: Date, default: null },
+    // For a store Plus: the source before it came from the store (a gift
+    // source or null), set when the source switches to store/sandbox
+    // (lib/plusReconcile.js previousSourceFor); counts gift -> store
+    // conversions (plan 2.12, MetricsDaily.plus.giftToStore)
+    previousSource: { type: String, default: null },
     // What the store last said (routes/plus.js); null for admin, gift, referral
     status: { type: String, enum: ["active", "trial", "cancelled", "billing_issue", "paused", "expired"], default: null },
   },

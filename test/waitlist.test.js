@@ -107,6 +107,10 @@ test("redeem in the app: badge for everyone, Plus days for three confirmed frien
   const user = await User.findOne({ phone: ANNA });
   assert.equal(user.plus.source, "waitlist");
   assert.ok(Math.abs(user.plus.until - Date.now() - 30 * DAY) < 60 * 1000);
+  // The gift budget (plan 2.12)
+  const { countsOf } = require("../lib/opsCounters");
+  const { todayKey } = require("../lib/metrics");
+  assert.equal((await countsOf(todayKey(new Date()))).giftDays_waitlist, 30);
   const { badges } = (await request(ctx.app).get("/me/badges").set(auth).expect(200)).body;
   assert.equal(badges.find((b) => b.id === "pioneer").earned, true);
 

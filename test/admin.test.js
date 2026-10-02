@@ -504,6 +504,10 @@ test("plus: owner grants and revokes, stats count subscribers and interest, limi
 
   await request(ctx.app).post(`/admin/users/${anna.id}/plus`).set(admin(cookie)).send({ days: 0 }).expect(400);
   await request(ctx.app).post(`/admin/users/${anna.id}/plus`).set(admin(cookie)).send({ days: 30 }).expect(200);
+  // The gift budget (plan 2.12): a grant with an end counts its days
+  const { countsOf } = require("../lib/opsCounters");
+  const { todayKey } = require("../lib/metrics");
+  assert.equal((await countsOf(todayKey(new Date()))).giftDays_admin, 30);
   let stats = (await request(ctx.app).get("/admin/plus").set("Cookie", cookie).expect(200)).body;
   assert.equal(stats.active, 1);
   assert.equal(stats.bySource.admin, 1);
@@ -515,6 +519,10 @@ test("plus: owner grants and revokes, stats count subscribers and interest, limi
   await request(ctx.app).post(`/admin/users/${anna.id}/plus`).set(admin(cookie)).send({ revoke: true }).expect(200);
   stats = (await request(ctx.app).get("/admin/plus").set("Cookie", cookie)).body;
   assert.equal(stats.active, 0);
+  // Without end (a tester) or a revoke: no budget question
+  await request(ctx.app).post(`/admin/users/${anna.id}/plus`).set(admin(cookie)).send({ days: null }).expect(200);
+  await request(ctx.app).post(`/admin/users/${anna.id}/plus`).set(admin(cookie)).send({ revoke: true }).expect(200);
+  assert.equal((await countsOf(todayKey(new Date()))).giftDays_admin, 30);
 
   await request(ctx.app).put("/admin/config").set(admin(cookie)).send({ limits: { free: { circles: 0 } } }).expect(400);
   await request(ctx.app).put("/admin/config").set(admin(cookie)).send({ limits: { free: { circleMembers: 999 } } }).expect(400);

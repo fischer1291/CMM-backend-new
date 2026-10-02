@@ -36,6 +36,7 @@ const EXPORTS = {
       "plus_zahlungsproblem", "plus_abgelaufen", "plus_erstattungen", "plus_trials_gestartet", "plus_trials_konvertiert", "mrr_cent",
       "sms_gestartet", "sms_geprueft", "sms_fehlgeschlagen", "reconcile_geprueft", "reconcile_korrigiert",
       "agora_audio_min", "agora_video_min", "cloudinary_uploads", "voip_gesendet", "kosten_variabel_cent", "kosten_je_mau_cent",
+      "geschenk_tage_einladung", "geschenk_tage_warteliste", "geschenk_tage_konsole", "geschenk_zu_store",
     ],
     async rows() {
       const days = await MetricsDaily.find({}, { _id: 0, __v: 0 }).sort({ day: 1 }).lean();
@@ -53,6 +54,7 @@ const EXPORTS = {
           x.billingIssue, x.expired, x.refunds, x.trialsStarted, x.trialsConverted, x.mrrCents,
           o.smsStarted, o.smsChecked, o.smsFailed, o.plusReconcileChecked, o.plusReconcileFixed,
           cost.agoraAudioMinutes, cost.agoraVideoMinutes, cost.cloudinaryUploads, cost.voipSent, cost.variableEurCents, cost.perMauEurCents,
+          x.giftDaysGranted?.referral, x.giftDaysGranted?.waitlist, x.giftDaysGranted?.admin, x.giftToStore,
         ];
       });
     },

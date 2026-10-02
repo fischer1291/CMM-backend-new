@@ -25,6 +25,7 @@ const appConfig = require("../lib/appConfig");
 const plan = require("../lib/plan");
 const { INTEREST } = require("./plus");
 const { notify } = require("../lib/notify");
+const { countGiftDays } = require("../lib/referral");
 const moderation = require("../lib/moderation");
 const { deleteMoment } = require("../lib/moments");
 const { maskPhone } = moderation;
@@ -829,6 +830,9 @@ module.exports = (io) => {
       };
     }
     await user.save();
+    // The gift budget (plan 2.12): a grant with an end counts its days; one
+    // without end (a tester, the team) is no budget question
+    if (!req.body?.revoke && req.body?.days) await countGiftDays("admin", Number(req.body.days));
     io?.to(`user:${user.phone}`).emit("planChanged", {});
     await audit(req, req.body?.revoke ? "plus_revoked" : "plus_granted", { target: String(user._id), meta: { days: req.body?.days ?? null } });
     res.json({ success: true, plus: user.plus });

@@ -130,6 +130,44 @@ first talk raises `invitesActivated` on each inviter and grants what is due.
 `/me/plan` returns `referral: { joined, activated, earned, toNext, ... }`,
 `toNext` counted on `activated`.
 
+**Gift budget (plan 2.12).** Every Plus day given as a present is booked
+as a day counter (`lib/opsCounters.js`, `lib/referral.js` `countGiftDays`):
+`giftDays_referral` (the ladder above and the two-sided experiment),
+`giftDays_waitlist` (`lib/waitlist.js` redeem) and `giftDays_admin`
+(`POST /admin/users/:id/plus` with `days`; a grant without end, for testers
+and the team, and a revoke count nothing). The snapshot copies them into
+`MetricsDaily.plus.giftDaysGranted { referral, waitlist, admin }`, the Plus
+tab shows the last 7 days ("Geschenk-Tage 7 Tage"), the metrics CSV has
+them as `geschenk_tage_*`. The alert `gift_days` fires when the sum of the
+last 7 days (today and the six days before) is over
+`AppConfig.goals.giftDaysPerWeek` (Console → App → Ziele, default 200, an
+assumption: gift Plus should stay under 20 % of the MRR). Gift to store:
+`MetricsDaily.plus.giftToStore` counts the day's production
+INITIAL_PURCHASE (a trial start included) of people whose Plus was a gift
+before. The source before the store is kept in `User.plus.previousSource`
+when the source switches to `store`/`sandbox` (webhook, TRANSFER, sync and
+nightly reconcile, `lib/plusReconcile.js` `previousSourceFor`), so it
+survives whichever of webhook and sync comes first; an expired gift still
+counts as the gift before. Approximation: someone whose store plan lapsed
+and who buys again with a new INITIAL_PURCHASE counts again. Gifts never
+touch Plus from the store (also `sandbox`) or an admin grant without end.
+
+**Two-sided experiment (flag `referral_two_sided`, off by default).** With
+the flag on (Console → App → Feature-Flags: add `referral_two_sided`, tick
+"an"), an invitee and their inviter each get 7 days of Plus (`referral`,
+on top of a running gift, booked as `giftDays_referral`) after their first
+1:1 talk of at least 60 seconds (`lib/calls.js` recordTalk →
+`lib/referral.js` `rewardPair`). "First" is literal: a pair that already
+had such a talk, also from before the flag, gets nothing. Once per pair:
+the inviter's number goes into the invitee's `User.referralPairRewards` by
+a conditional update (removed when the inviter deletes the account). Both
+get the push `referral_pair_reward` (opens `/plus`), someone with a store
+plan or an open admin grant keeps it and gets neither days nor push. The
+ladder above runs on as before. `/me/plan` adds `referral.twoSided`
+(boolean, the flag) and `referral.pairDays` (7) for the app's card. Judge it
+by gift days per week and gift to store, against the self-referral
+suspicion (invitees without a talk) under 10 % (assumptions, plan 2.12).
+
 ## Invite links
 
 Every account has a personal invite code (`User.inviteCode`, 8 characters
@@ -210,7 +248,8 @@ snapshot (`MetricsDaily.users`):
 The goals they are judged against live in the app config
 (Console → App → Ziele, `AppConfig.goals`, `lib/appConfig.js`
 DEFAULT_GOALS): `activationPct` (default 40) and `densityPct` (default 50),
-whole percentages, never sent to the app. The "Heute" card shows both
+whole percentages, and `giftDaysPerWeek` (default 200, an assumption, 1 to
+100,000; the gift budget, see Invite rewards), never sent to the app. The "Heute" card shows both
 numbers with a traffic light, the Marketing-Budget card (Freigabe) turns red
 with "Keine bezahlte Reichweite unter 40 %" while activation is under goal
 on a sample of at least 100, and `GET /marketing/context` gives the agent
@@ -387,7 +426,7 @@ any database without that prefix.
 
 ## Alerts
 
-`lib/alerts.js` runs 13 rules every 30 minutes on the job leader, right
+`lib/alerts.js` runs 14 rules every 30 minutes on the job leader, right
 after the metrics snapshots (`index.js`). A hit goes out through
 `alert(tag, text, { level })`: at most once an hour per tag, and only once
 a day while the text is unchanged (one `AlertState` document per tag keeps
@@ -417,6 +456,7 @@ owners, others get `•••`). The "Heute" card lists the last alerts
 | `no_talks` | error | yesterday's snapshot has `users.dau > 20` and `talks.count == 0` | Call delivery is broken: VoIP push, Agora certificate, `GET /api/push-health` |
 | `backup_stale` | warn | `AppConfig.ops.lastBackupAt` exists and is older than 8 days | GitHub → Actions → DB-Backup: failed or paused run, see Backup |
 | `sms_cap` | warn | today's `smsStarted` is at 80 % of `ops.smsPerDay` | Real demand: raise the cap (Console → App → Betrieb); otherwise suspect SMS pumping and narrow `smsRegions` |
+| `gift_days` | warn | the gift days of the last 7 days (today and the six before; day counters `giftDays_referral`, `giftDays_waitlist`, `giftDays_admin`, see Invite rewards) are over `AppConfig.goals.giftDaysPerWeek` (default 200, assumption) | Console → Plus: where the days come from (Geschenk-Tage 7 Tage). A wave of real invites: raise the budget (Console → App → Ziele); a single source running away (one inviter, console grants): look at it; the experiment `referral_two_sided` too expensive: switch the flag off |
 | `pepper_changed` | warn | not a rule here but `lib/pseudonyms.js` at start: the stored `phoneHmac` of accounts did not match the current `PHONE_HASH_PEPPER` and was re-keyed together with their `ActiveDay` rows (see Pseudonymous data) | Expected once, right after `PHONE_HASH_PEPPER` was set on Render after the first deploy. Otherwise: the variable or `JWT_SECRET` changed, or something ran against the production database with another env; restore the old value, the next start re-keys back |
 | `owner_silent` | warn | not a rule here but the dead-man check in `lib/adminPush.js` (see Team): no owner acknowledged the morning push or signed in for 7 days; once per 7 days | Owner: open the console. Emergency contact: `CMM/docs/EMERGENCY.md` |
 
@@ -506,8 +546,8 @@ referral, waitlist, gift; `activeSandbox`) and `mrrCents`: for every active
 store plan the price of the user's last paid event (purchase currency, else
 USD), yearly products divided by twelve; assumption: everyone pays in EUR,
 so the sum is shown as euros (a purchase in another currency would be added
-at face value). `giftDaysGranted` and
-`giftToStore` are reserved for plan 2.12 (gift budget) and 0 until then.
+at face value). `giftDaysGranted { referral, waitlist, admin }` and
+`giftToStore` are the gift budget of plan 2.12 (see Invite rewards).
 `User.plus` has no history, so a day recomputed later gets today's active
 counts; the event counts stay exact. Rule: these numbers steer decisions
 only from about 30 active store plans on (assumption); the console says so
@@ -548,7 +588,8 @@ minutes), booked in `AppConfig.ops.plusReconcileFor`; without
 
 `GET /admin/export/:name.csv` (`routes/adminExport.js`, owner, audited as
 `export_<name>`) with `metrics` (one row per `MetricsDaily` day, flat, the
-`plus.*` columns included), `plus` (one row per `SubscriptionEvent`, users by
+`plus.*` columns included, the gift budget as `geschenk_tage_einladung`,
+`geschenk_tage_warteliste`, `geschenk_tage_konsole`, `geschenk_zu_store`), `plus` (one row per `SubscriptionEvent`, users by
 id, no app user ids), `marketing-spend` (`MarketingSpend`) and `support`
 (`SupportTicket` without phone numbers or message texts: id, category,
 status, times, message counts, app version). Same CSV dialect as

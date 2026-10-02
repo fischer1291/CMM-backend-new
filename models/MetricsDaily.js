@@ -45,8 +45,9 @@ const metricsDailySchema = new mongoose.Schema(
     // day's SubscriptionEvents in PRODUCTION (sandbox never counts), the
     // active plans at the end of the day by source, and the MRR in cents as
     // the sum of the monthly normalised prices of the active store plans.
-    // giftDaysGranted and giftToStore are filled from plan 2.12 on (gift
-    // budget); until then they are 0.
+    // giftDaysGranted: Plus days given that day by source (plan 2.12, the
+    // day counters giftDays_*); giftToStore: first store purchases of the
+    // day by people whose Plus was a gift before (User.plus.previousSource).
     plus: {
       activeStore: Number,
       activeGift: Number,

@@ -956,7 +956,7 @@ function AppSettings({ role }) {
         banner: { enabled: !!c.banner?.enabled, text: c.banner?.text || '', level: c.banner?.level || 'info', until: c.banner?.until ? c.banner.until.slice(0, 16) : '' },
         flags: { ...(c.flags || {}) },
         ops: { smsPerDay: String(c.ops?.smsPerDay ?? 100), smsPaused: !!c.ops?.smsPaused, smsRegions: (c.ops?.smsRegions || ['DE', 'AT', 'CH']).join(', '), alertPhone: c.ops?.alertPhone || '', emergencyContact: c.ops?.emergencyContact || '' },
-        goals: { activationPct: String(c.goals?.activationPct ?? 40), densityPct: String(c.goals?.densityPct ?? 50) },
+        goals: { activationPct: String(c.goals?.activationPct ?? 40), densityPct: String(c.goals?.densityPct ?? 50), giftDaysPerWeek: String(c.goals?.giftDaysPerWeek ?? 200) },
         // Only changed prices are sent: untouched keys keep following DEFAULT_PRICES
         prices,
         pricesLoaded: prices,
@@ -1004,7 +1004,7 @@ function AppSettings({ role }) {
           banner: { ...form.banner, until: form.banner.until ? new Date(form.banner.until).toISOString() : null },
           flags: form.flags,
           ops: { smsPerDay: Number(form.ops.smsPerDay), smsPaused: form.ops.smsPaused, smsRegions: form.ops.smsRegions.toUpperCase().split(/[\s,]+/).filter(Boolean), alertPhone: form.ops.alertPhone.trim() || null, emergencyContact: form.ops.emergencyContact.trim() || null, bankBalanceEurCents: bank },
-          goals: { activationPct: Number(form.goals.activationPct), densityPct: Number(form.goals.densityPct) },
+          goals: { activationPct: Number(form.goals.activationPct), densityPct: Number(form.goals.densityPct), giftDaysPerWeek: Number(form.goals.giftDaysPerWeek) },
           ...(Object.keys(prices).length ? { prices } : {}),
           fixedCosts,
         },
@@ -1012,7 +1012,7 @@ function AppSettings({ role }) {
       setFlash('Gespeichert. Offene Apps bekommen es sofort, alle anderen beim nächsten Start.');
       load();
     } catch (err) {
-      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH), Alarm-Nummer mit Ländervorwahl (+49…), Notfallkontakt als E-Mail-Adresse', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100', invalid_prices: 'Preise: Zahlen ab 0 (Freiminuten und Listenpreise ganzzahlig, Provision bis 100 %)', invalid_fixed_costs: 'Fixkosten: Name bis 60 Zeichen, Betrag in Euro (Gutschriften negativ), höchstens 50 Posten' };
+      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH), Alarm-Nummer mit Ländervorwahl (+49…), Notfallkontakt als E-Mail-Adresse', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100, Geschenk-Tage als ganze Zahl ab 1', invalid_prices: 'Preise: Zahlen ab 0 (Freiminuten und Listenpreise ganzzahlig, Provision bis 100 %)', invalid_fixed_costs: 'Fixkosten: Name bis 60 Zeichen, Betrag in Euro (Gutschriften negativ), höchstens 50 Posten' };
       setFlash(`Fehler: ${msg[err.code] || err.code || err.message}`);
     }
   };
@@ -1065,6 +1065,8 @@ function AppSettings({ role }) {
         <p class="note" style="margin-top:0">Der Nordstern: Heute-Karte, Morgen-Push und Marketing-Budget zeigen eine Ampel gegen diese Werte. Unter dem Aktivierungsziel keine bezahlte Reichweite.</p>
         <label class="field"><span>Aktivierung in 7 Tagen, rollierend 4 Wochen (%)</span><input value=${form.goals.activationPct} onInput=${(e) => set({ goals: { ...form.goals, activationPct: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
         <label class="field"><span>Neue Nutzer mit ≥ 3 registrierten Kontakten (%)</span><input value=${form.goals.densityPct} onInput=${(e) => set({ goals: { ...form.goals, densityPct: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
+        <label class="field"><span>Geschenk-Plus-Tage je Woche (Budget, Annahme; darüber Alarm gift_days)</span><input value=${form.goals.giftDaysPerWeek} onInput=${(e) => set({ goals: { ...form.goals, giftDaysPerWeek: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
+        <p class="note" style="margin:0">Geschenkt zählt: Einladungen, Warteliste und Plus aus der Konsole mit Enddatum. Faustregel (Annahme): Geschenk-Plus unter 20 % des MRR. Der Versuch "beide bekommen 7 Tage" läuft über das Flag referral_two_sided.</p>
       </div>
       <div class="card">
         <div class="label">Preise</div>
@@ -1206,6 +1208,9 @@ function RevenueKpis({ series }) {
   const week = series.slice(-7);
   const moved = (key) => sum(week, (d) => d.plus?.[key]);
   const trialsStarted = moved('trialsStarted'), trialsConverted = moved('trialsConverted');
+  // The gift budget (plan 2.12): days given by source, budget in App → Ziele
+  const giftBy = (source) => sum(week, (d) => d.plus?.giftDaysGranted?.[source]);
+  const giftDays = giftBy('referral') + giftBy('waitlist') + giftBy('admin');
   const active = today?.activeStore ?? yesterday?.activeStore ?? null;
   return html`
     <div class="kpis">
@@ -1213,6 +1218,7 @@ function RevenueKpis({ series }) {
       <${Kpi} label="Aktive Store-Abos" value=${num(active)} sub=${`${num(today?.activeGift ?? 0)} geschenkt · ${num(today?.activeSandbox ?? 0)} Sandbox`} color="var(--cyan)" />
       <${Kpi} label="Bewegung 7 Tage" value=${`+${num(moved('newPaid'))}`} sub=${`${num(moved('cancelled'))} gekündigt · ${num(moved('expired'))} abgelaufen · ${num(moved('refunds'))} erstattet`} color="var(--pink)" />
       <${Kpi} label="Trial → Paid" value=${num(trialsConverted)} sub=${`${num(trialsStarted)} Trials gestartet (7 Tage)`} />
+      <${Kpi} label="Geschenk-Tage 7 Tage" value=${num(giftDays)} sub=${`${num(moved('giftToStore'))} Geschenk → Store · Einladungen ${num(giftBy('referral'))} · Warteliste ${num(giftBy('waitlist'))} · Konsole ${num(giftBy('admin'))}`} />
     </div>
     ${active != null && active < REVENUE_MIN_PLANS ? html`<p class="note">Steuernd erst ab ${REVENUE_MIN_PLANS} aktiven Store-Abos (Annahme): bis dahin lesen, nicht urteilen.</p>` : null}`;
 }
