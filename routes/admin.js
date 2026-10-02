@@ -49,6 +49,7 @@ const {
   findByInviteToken,
 } = require("../lib/adminAuth");
 const metrics = require("../lib/metrics");
+const { acquisitionOf } = require("../lib/acquisition");
 const ClientError = require("../models/ClientError");
 const waitlist = require("../lib/waitlist");
 const WaitlistEntry = require("../models/WaitlistEntry");
@@ -372,6 +373,20 @@ module.exports = (io) => {
     }
   });
 
+  // Where people come from (plan 2.10, lib/metrics.js): activation per
+  // acquisition answer over the last full weeks (measured windows only, with
+  // the sample) and the last 30 days of sign-ups by answer
+  router.get("/admin/metrics/acquisition", requireAdmin("viewer"), async (req, res) => {
+    const weeks = Math.min(Math.max(parseInt(req.query.weeks, 10) || 4, 1), 12);
+    try {
+      const [activation, last30] = await Promise.all([metrics.activationBySource(weeks), metrics.acquisitionLast30()]);
+      res.json({ success: true, ...activation, last30 });
+    } catch (err) {
+      console.error("❌ admin acquisition:", err.message);
+      res.status(500).json({ success: false });
+    }
+  });
+
   // App errors (routes/diagnostics.js), most recent first
   router.get("/admin/errors", requireAdmin("viewer"), async (req, res) => {
     const errors = await ClientError.find({}, { _id: 0, __v: 0 }).sort({ lastAt: -1 }).limit(50).lean();
@@ -657,6 +672,8 @@ module.exports = (io) => {
         contacts: user.contacts.length,
         invitesJoined: user.invitesJoined || 0,
         joinedViaInvite: !!user.joinedViaInvite,
+        // "Woher kennst du Wanna yap?" (plan 2.10), null without an answer
+        acquisition: acquisitionOf(user),
         push: {
           expo: !!user.pushToken,
           expoRegisteredAt: user.pushTokenMetadata?.registeredAt || null,

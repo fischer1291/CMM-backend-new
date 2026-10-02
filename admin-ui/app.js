@@ -474,6 +474,8 @@ function Dashboard({ onGo }) {
 
     <div class="section">Bleiben die Leute?</div>
     <${Retention} />
+    <div class="section">Herkunft</div>
+    <${Origin} />
     <div class="section">App-Fehler</div>
     <${AppErrors} />
     <p class="note" style="margin-top:20px">Stand ${new Date(today.computedAt || Date.now()).toLocaleTimeString('de-DE')} · Tage nach ${data.zone} · heute noch unvollständig (blassere Balken)</p>
@@ -2266,6 +2268,186 @@ function Notify() {
 
 // The open page lives in the URL hash (#users/<id>, #support/<ticket>, …), so a
 // reload, the home-screen app coming back and the back button keep it.
+// --- Campaigns (plan 2.10) -------------------------------------------------------
+
+const CHANNEL_LABELS = { tiktok: 'TikTok', instagram: 'Instagram', flyer: 'Flyer', campus: 'Campus', creator: 'Creator', press: 'Presse', other: 'Sonstiges' };
+const CAMPAIGN_STATUS = { planned: 'geplant', running: 'läuft', ended: 'beendet' };
+const SOURCE_LABELS = { friend: 'Freund·in', tiktok: 'TikTok', instagram: 'Instagram', flyer: 'Flyer', press: 'Presse', other: 'Sonstiges', none: 'ohne Antwort' };
+const CAMPAIGN_ERRORS = {
+  invalid_slug: 'Kurzname: 2 bis 40 Zeichen, nur a–z, 0–9 und Bindestrich.',
+  invalid_channel: 'Bitte einen Kanal wählen.',
+  invalid_title: 'Titel: höchstens 80 Zeichen.',
+  invalid_partner: 'Partner: höchstens 80 Zeichen.',
+  invalid_notes: 'Notizen: höchstens 1.000 Zeichen.',
+  invalid_dates: 'Datum als Tag (JJJJ-MM-TT), das Ende nicht vor dem Start.',
+  invalid_budget: 'Budget in Euro, ab 0 (z. B. 150 oder 150,50).',
+  invalid_status: 'Unbekannter Status.',
+  slug_taken: 'Diesen Kurznamen gibt es schon.',
+  slug_fixed: 'Der Kurzname bleibt, wie er ist.',
+};
+const dayOf = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+const NEW_CAMPAIGN = { slug: '', channel: 'tiktok', title: '', status: 'planned', startedAt: '', endedAt: '', budget: '', partner: '', notes: '' };
+
+function CampaignForm({ campaign, onSaved, onCancel }) {
+  const [form, setForm] = useState(() => (campaign
+    ? { ...campaign, startedAt: dayOf(campaign.startedAt), endedAt: dayOf(campaign.endedAt), budget: campaign.budgetEurCents == null ? '' : String(campaign.budgetEurCents / 100).replace('.', ',') }
+    : NEW_CAMPAIGN));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const set = (patch) => setForm({ ...form, ...patch });
+  const save = async (e) => {
+    e.preventDefault();
+    const budget = form.budget.trim() === '' ? null : toCents(form.budget);
+    if (budget !== null && !(Number.isInteger(budget) && budget >= 0)) return setError(CAMPAIGN_ERRORS.invalid_budget);
+    const body = { channel: form.channel, title: form.title, status: form.status, startedAt: form.startedAt || null, endedAt: form.endedAt || null, budgetEurCents: budget, partner: form.partner, notes: form.notes };
+    setBusy(true);
+    setError(null);
+    try {
+      await (campaign
+        ? api(`/campaigns/${encodeURIComponent(campaign.slug)}`, { method: 'PUT', body })
+        : api('/campaigns', { method: 'POST', body: { ...body, slug: form.slug.trim().toLowerCase() } }));
+      onSaved();
+    } catch (err) {
+      setError(CAMPAIGN_ERRORS[err.code] || message(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return html`<form class="card" onSubmit=${save}>
+    <div class="label">${campaign ? `Kampagne ${campaign.slug} bearbeiten` : 'Neue Kampagne'}</div>
+    ${campaign ? null : html`<label class="field"><span>Kurzname (steht im Link: wannayap.app/k/kurzname; später nicht änderbar)</span><input value=${form.slug} onInput=${(e) => set({ slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') })} placeholder="campus-leipzig" maxlength="40" required /></label>`}
+    <label class="field"><span>Kanal</span><select value=${form.channel} onChange=${(e) => set({ channel: e.target.value })}>${Object.entries(CHANNEL_LABELS).map(([k, v]) => html`<option value=${k}>${v}</option>`)}</select></label>
+    <label class="field"><span>Titel</span><input value=${form.title} onInput=${(e) => set({ title: e.target.value })} maxlength="80" placeholder="Flyer Mensa Uni Leipzig" /></label>
+    <label class="field"><span>Status</span><select value=${form.status} onChange=${(e) => set({ status: e.target.value })}>${Object.entries(CAMPAIGN_STATUS).map(([k, v]) => html`<option value=${k}>${v}</option>`)}</select></label>
+    <div class="grid2" style="margin-top:0">
+      <label class="field"><span>Start</span><input type="date" value=${form.startedAt} onInput=${(e) => set({ startedAt: e.target.value })} /></label>
+      <label class="field"><span>Ende</span><input type="date" value=${form.endedAt} onInput=${(e) => set({ endedAt: e.target.value })} /></label>
+    </div>
+    <label class="field"><span>Budget gesamt in Euro (Media, Druck, Creator; leer = keins)</span><input value=${form.budget} onInput=${(e) => set({ budget: e.target.value })} inputmode="decimal" placeholder="150" /></label>
+    <label class="field"><span>Partner (Creator, Druckerei, Fachschaft …)</span><input value=${form.partner} onInput=${(e) => set({ partner: e.target.value })} maxlength="80" /></label>
+    <label class="field"><span>Notizen</span><textarea rows="3" value=${form.notes} onInput=${(e) => set({ notes: e.target.value })} maxlength="1000"></textarea></label>
+    ${error ? html`<p class="error">${error}</p>` : null}
+    <div class="inline"><button class="btn small" disabled=${busy || (!campaign && form.slug.length < 2)}>${campaign ? 'Speichern' : 'Anlegen'}</button><button class="btn small ghost" type="button" onClick=${onCancel}>Abbrechen</button></div>
+  </form>`;
+}
+
+function CampaignLinks({ campaign }) {
+  const qr = `/admin/campaigns/${encodeURIComponent(campaign.slug)}/qr.svg`;
+  return html`<div class="grid2" style="margin-top:10px">
+    <div>
+      <div class="kv"><span>Store-Link (QR, Flyer, Bio)</span><span class="inline"><code style="overflow-wrap:anywhere">${campaign.links.store}</code><${CopyButton} text=${campaign.links.store} /></span></div>
+      <div class="kv"><span>Landing-Link (Posts, Werbung)</span><span class="inline"><code style="overflow-wrap:anywhere">${campaign.links.landing}</code><${CopyButton} text=${campaign.links.landing} /></span></div>
+      <p class="note" style="margin:8px 0 0">Der Store-Link geht über Apples Kampagnen-Token in den App Store; Downloads je Kampagne siehst du nur in App Store Connect (App-Analyse → Kampagnen). Hier zählen Besuche der Landing Page, Warteliste und Neue, die in der App eine Kampagne zugeordnet bekommen haben.</p>
+    </div>
+    <div class="inline" style="align-items:flex-start">
+      <img src=${qr} alt=${`QR-Code für ${campaign.links.store}`} width="140" height="140" style="background:#fff;border-radius:8px;padding:6px" />
+      <a class="btn small ghost" href=${qr} download=${`wannayap-${campaign.slug}.svg`}>QR als SVG laden</a>
+    </div>
+  </div>`;
+}
+
+function Campaigns({ role }) {
+  const owner = role === 'owner';
+  const [data, setData] = useState(null);
+  const [editing, setEditing] = useState(null); // null | 'new' | slug
+  const [open, setOpen] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const load = useCallback(() => api('/campaigns').then(setData).catch(() => setData({ error: true })), []);
+  useEffect(() => { load(); }, [load]);
+  const setSeed = async (slug) => {
+    setMsg(null);
+    try {
+      await api('/config', { method: 'PUT', body: { goals: { seedCampaign: slug } } });
+      setMsg(slug ? `${slug} ist jetzt die Seed-Kampagne.` : 'Keine Seed-Kampagne mehr.');
+      load();
+    } catch {
+      setMsg('Hat nicht geklappt.');
+    }
+  };
+  if (!data) return html`<div class="card note">Lade Kampagnen …</div>`;
+  if (data.error) return html`<div class="card">Die Kampagnen konnten nicht geladen werden. <button class="btn small ghost" onClick=${load}>Erneut</button></div>`;
+  const saved = () => { setEditing(null); load(); };
+  return html`
+    <div class="now">
+      <span class="note">Zahlen der letzten ${data.days} Tage je Kurzname. Neue: haben in der App „Woher kennst du Wanna yap?“ beantwortet und eine Kampagne bekommen (über den Wartelisten-Code oder die laufende Seed-Kampagne).</span>
+      <span class="spacer"></span>
+      ${owner && editing !== 'new' ? html`<button class="btn small" onClick=${() => setEditing('new')}>Neue Kampagne</button>` : null}
+    </div>
+    ${editing === 'new' ? html`<${CampaignForm} onSaved=${saved} onCancel=${() => setEditing(null)} />` : null}
+    ${msg ? html`<p class="note">${msg}</p>` : null}
+    ${data.campaigns.length ? html`<div class="card scroll" style="margin-top:12px">
+      <table>
+        <thead><tr><th>Kampagne</th><th>Status</th><th style="text-align:right">Besuche</th><th style="text-align:right" title="Tipp auf einen Store-Button der Landing Page">Store-Klicks</th><th style="text-align:right" title="bestätigte Eintragungen">Warteliste</th><th style="text-align:right">Neue</th><th style="text-align:right" title="erstes Gespräch innerhalb von 7 Tagen">Aktiviert 7 T.</th><th style="text-align:right" title="KI-Kosten des Marketing-Agenten (abgerechnet, sonst Schätzung)">KI-Kosten</th><th style="text-align:right">Budget</th></tr></thead>
+        <tbody>${data.campaigns.map((c) => html`<tr style="cursor:pointer" onClick=${() => setOpen(open === c.slug ? null : c.slug)}>
+          <td><strong>${c.title || c.slug}</strong>${data.seedCampaign === c.slug ? html` <span class="pill on">Seed</span>` : null}<div class="muted" style="font-size:12px">${c.slug} · ${CHANNEL_LABELS[c.channel] || c.channel}${c.partner ? ` · ${c.partner}` : ''}</div></td>
+          <td><span class=${`pill ${c.status === 'running' ? 'on' : ''}`}>${CAMPAIGN_STATUS[c.status] || c.status}</span><div class="muted" style="font-size:12px">${c.startedAt ? date(c.startedAt) : '–'} bis ${c.endedAt ? date(c.endedAt) : 'offen'}</div></td>
+          <td style="text-align:right">${num(c.numbers.visits)}</td>
+          <td style="text-align:right">${num(c.numbers.storeClicks)}</td>
+          <td style="text-align:right">${num(c.numbers.waitlist)}</td>
+          <td style="text-align:right">${num(c.numbers.users)}</td>
+          <td style="text-align:right">${num(c.numbers.activatedD7)} <span class="muted">${pct(c.numbers.users ? c.numbers.activatedD7 / c.numbers.users : null)}</span></td>
+          <td style="text-align:right">${cents(c.numbers.spendEurCents)}</td>
+          <td style="text-align:right">${c.budgetEurCents == null ? '–' : eur(c.budgetEurCents)}</td>
+        </tr>`)}</tbody>
+      </table>
+      <p class="note" style="margin:10px 0 0">Zeile antippen für Links, QR-Code und Bearbeiten. Aktiviert zählt erst, wenn die 7 Tage um sind; unter 50 Neuen ist die Quote noch kein Urteil.</p>
+    </div>` : html`<div class="card note" style="margin-top:12px">Noch keine Kampagne angelegt.${owner ? ' Leg eine an, bevor Flyer oder Links rausgehen: der Kurzname im Link ordnet die Zahlen zu.' : ''}</div>`}
+    ${data.campaigns.filter((c) => c.slug === open).map((c) => html`<div class="card" style="margin-top:12px">
+      <div class="inline"><strong>${c.title || c.slug}</strong><span class="spacer"></span>
+        ${owner ? html`<button class="btn small ghost" onClick=${() => setSeed(data.seedCampaign === c.slug ? null : c.slug)}>${data.seedCampaign === c.slug ? 'Nicht mehr Seed-Kampagne' : 'Als Seed-Kampagne markieren'}</button>
+        <button class="btn small ghost" onClick=${() => setEditing(c.slug)}>Bearbeiten</button>` : null}</div>
+      ${c.notes ? html`<p class="note" style="white-space:pre-wrap">${c.notes}</p>` : null}
+      <${CampaignLinks} campaign=${c} />
+      ${owner ? html`<p class="note" style="margin:10px 0 0">Seed-Kampagne: solange sie läuft, bekommen neue Antworten, die zum Kanal passen (Campus: Freund·in und Flyer; Creator: TikTok und Instagram), diese Kampagne. Das ist eine Annahme, keine Messung; es gibt immer nur eine.</p>` : null}
+      ${editing === c.slug ? html`<div style="margin-top:12px"><${CampaignForm} campaign=${c} onSaved=${saved} onCancel=${() => setEditing(null)} /></div>` : null}
+    </div>`)}
+
+    <div class="section">Nicht angelegte Kurznamen</div>
+    <div class="card scroll">
+      ${data.unregistered.length ? html`<table>
+        <thead><tr><th>Kurzname</th><th style="text-align:right">Besuche</th><th style="text-align:right">Warteliste</th><th style="text-align:right">Neue</th>${owner ? html`<th></th>` : null}</tr></thead>
+        <tbody>${data.unregistered.map((u) => html`<tr>
+          <td><code>${u.slug}</code></td><td style="text-align:right">${num(u.visits)}</td><td style="text-align:right">${num(u.waitlist)}</td><td style="text-align:right">${num(u.users)}</td>
+          ${owner ? html`<td style="text-align:right">${/^[a-z0-9-]{2,40}$/.test(u.slug) ? html`<button class="btn small ghost" onClick=${() => api('/campaigns', { method: 'POST', body: { slug: u.slug, channel: 'other' } }).then(() => { setOpen(u.slug); setEditing(u.slug); load(); }).catch((err) => setMsg(CAMPAIGN_ERRORS[err.code] || message(err)))}>Anlegen</button>` : html`<span class="muted" title="Nur a–z, 0–9 und Bindestrich lassen sich anlegen">–</span>`}</td>` : null}
+        </tr>`)}</tbody>
+      </table>` : html`<p class="note" style="margin:0">Keine. Jeder Kurzname aus Links der letzten ${data.days} Tage ist angelegt.</p>`}
+      <p class="note" style="margin:10px 0 0">Kurznamen aus <code>utm_campaign</code> und Wartelisten-Einträgen, die niemand angelegt hat: Tippfehler oder ein Link, der ohne Kampagne rausging. Einladungslinks und die Videos des Marketing-Agenten (Freigabe) stehen hier nicht.</p>
+    </div>
+  `;
+}
+
+// Where the new people come from (plan 2.10): the dashboard card
+function Origin() {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    api('/metrics/acquisition?weeks=4').then(setData).catch(() => setData({ error: true }));
+  }, []);
+  if (!data) return html`<div class="card note">Lade Herkunft …</div>`;
+  if (data.error) return html`<div class="card">Die Herkunft konnte nicht geladen werden.</div>`;
+  const l = data.last30;
+  const keys = Object.keys(SOURCE_LABELS);
+  return html`<div class="card scroll">
+    <div class="kpis">
+      <${Kpi} label="Mit Antwort" value=${pct(l.total ? l.answered / l.total : null)} sub=${`${num(l.answered)} von ${num(l.total)} Neuen (30 Tage), Ziel über 70 %`} color="var(--cyan)" />
+      <${Kpi} label="Android im Freundeskreis" value=${l.androidFriendsAvg == null ? '–' : `${l.androidFriendsAvg.toLocaleString('de-DE', { maximumFractionDigits: 1 })} von 5`} sub=${`Mittel aus ${num(l.androidFriendsAnswers)} Antworten`} color="var(--violet)" />
+    </div>
+    <table>
+      <thead><tr><th>Quelle</th><th style="text-align:right">Neue (30 Tage)</th><th style="text-align:right" title=${`Anmeldungen ${shortDay(data.from)} bis ${shortDay(data.to)}`}>Aktiviert in 7 Tagen</th><th style="text-align:right">Stichprobe</th></tr></thead>
+      <tbody>${keys.map((k) => {
+        const a = data.bySource[k];
+        const thin = a.measured < data.minSample;
+        return html`<tr>
+          <td>${SOURCE_LABELS[k]}</td>
+          <td style="text-align:right">${num(l.bySource[k])}</td>
+          <td style="text-align:right">${a.pct == null ? '–' : `${a.pct} %`}${a.pct != null && thin ? html` <span class="muted">(zu wenig Daten)</span>` : null}</td>
+          <td style="text-align:right">${num(a.measured)}</td>
+        </tr>`;
+      })}</tbody>
+    </table>
+    <p class="note" style="margin:10px 0 0">Aus der freiwilligen Frage „Woher kennst du Wanna yap?“ im Onboarding. Aktiviert: erstes Gespräch innerhalb von 7 Tagen, Anmeldungen der letzten ${data.weeks} vollen Wochen, nur wer seine 7 Tage hinter sich hat. Unter ${data.minSample} je Quelle zeigt die Quote eine Richtung, kein Urteil.</p>
+  </div>`;
+}
+
 const readRoute = () => {
   const [tab, id] = decodeURIComponent(location.hash.slice(1)).split('/');
   return { tab: tab || 'dashboard', id: id || null };
@@ -2351,7 +2533,7 @@ function App() {
   }
 
   const role = state.admin.role;
-  const tabs = ['dashboard', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'approvals', 'app', ...(role === 'owner' ? ['audit', 'team'] : []), 'notify'];
+  const tabs = ['dashboard', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'campaigns', 'approvals', 'app', ...(role === 'owner' ? ['audit', 'team'] : []), 'notify'];
   const tab = tabs.includes(route.tab) ? route.tab : 'dashboard';
   const nav = (next, id = null) => {
     const hash = id ? `#${next}/${encodeURIComponent(id)}` : `#${next}`;
@@ -2385,6 +2567,8 @@ function App() {
     body = html`<${Team} me=${state.admin} />`;
   } else if (tab === 'waitlist') {
     body = html`<${Waitlist} role=${role} />`;
+  } else if (tab === 'campaigns') {
+    body = html`<${Campaigns} role=${role} />`;
   } else if (tab === 'approvals') {
     body = html`<${Approvals} role=${role} onCount=${setOpenApprovals} />`;
   } else if (tab === 'notify') {
@@ -2403,6 +2587,7 @@ function App() {
         <button class=${tab === 'moments' ? 'on' : ''} onClick=${() => { setMomentsOf(null); go('moments'); }}>Moments</button>
         <button class=${tab === 'support' ? 'on' : ''} onClick=${() => go('support')}>Support${openTickets ? html` <span class="count">${openTickets}</span>` : null}</button>` : null}
         <button class=${tab === 'waitlist' ? 'on' : ''} onClick=${() => go('waitlist')}>Warteliste</button>
+        <button class=${tab === 'campaigns' ? 'on' : ''} onClick=${() => go('campaigns')}>Kampagnen</button>
         <button class=${tab === 'approvals' ? 'on' : ''} onClick=${() => go('approvals')}>Freigabe${openApprovals ? html` <span class="count">${openApprovals}</span>` : null}</button>
         <button class=${tab === 'app' ? 'on' : ''} onClick=${() => go('app')}>App</button>
         ${role === 'owner' ? html`<button class=${tab === 'audit' ? 'on' : ''} onClick=${() => go('audit')}>Protokoll</button>

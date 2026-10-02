@@ -194,6 +194,8 @@ async function reset() {
   // Unique event ids: the webhook relies on the 11000 for a retried event
   await require("../models/SubscriptionEvent").syncIndexes();
   await require("../models/ArchivedAccount").syncIndexes();
+  // Unique campaign slugs: POST /admin/campaigns relies on the 11000 for a taken one
+  await require("../models/Campaign").syncIndexes();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
   fakes.failExpo = false;

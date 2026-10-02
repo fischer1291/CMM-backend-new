@@ -35,8 +35,18 @@ const metricsDailySchema = new mongoose.Schema(
     talks: { count: Number, minutes: Number, people: Number },
     circles: { total: Number, new: Number, rooms: Number, ritualRooms: Number, roomMinutes: Number },
     rituals: { dailyJoined: Number, moments: Number, nudges: Number },
-    // inviteVisits: the personal invite link opened (InviteVisit), by platform
-    growth: { invites: Number, joinedViaInvite: Number, inviteVisits: { total: Number, ios: Number, android: Number, other: Number } },
+    // inviteVisits: the personal invite link opened (InviteVisit), by platform.
+    // Plan 2.10 (lib/metrics.js acquisitionDay): the day's sign-ups by their
+    // acquisition answer (none: no answer), by campaign slug ({ <slug>: { new } }),
+    // and the mean androidFriends of their answers (null without any)
+    growth: {
+      invites: Number,
+      joinedViaInvite: Number,
+      inviteVisits: { total: Number, ios: Number, android: Number, other: Number },
+      bySource: { friend: Number, tiktok: Number, instagram: Number, flyer: Number, press: Number, other: Number, none: Number },
+      byCampaign: { type: mongoose.Schema.Types.Mixed, default: undefined },
+      androidFriendsAvg: { type: Number, default: undefined },
+    },
     // Waitlist confirmations of the day by the platform they told us (WaitlistEntry.platform)
     waitlist: { byPlatform: { ios: Number, android: Number, unknown: Number } },
     push: { sent: Number, skipped: Number, failed: Number },

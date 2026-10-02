@@ -149,6 +149,23 @@ const userSchema = new mongoose.Schema({
     termsVersion: { type: String, default: null },
     privacyVersion: { type: String, default: null },
   },
+  // "Woher kennst du Wanna yap?" (plan 2.10, POST /me/acquisition, lib/
+  // acquisition.js): the person's own, voluntary answer in onboarding.
+  // source: friend | tiktok | instagram | flyer | press | other;
+  // androidFriends: how many of their five closest friends have Android
+  // (0–5, null when skipped). code and campaign come from the server, never
+  // from the app: code is the invite code of the first inviter (invitedBy[0])
+  // when the account joined through an invite, campaign a Campaign slug when
+  // the account's way in names one (the redeemed waitlist entry, or the
+  // running seed campaign, AppConfig.goals.seedCampaign). at is the first
+  // answer; a second one within 24 hours replaces it, later ones get 409.
+  acquisition: {
+    source: { type: String, default: null },
+    androidFriends: { type: Number, default: null },
+    campaign: { type: String, default: null },
+    code: { type: String, default: null },
+    at: { type: Date, default: null },
+  },
 
   // Moderation (admin console): no sign-in until then; tokens issued before
   // tokensValidAfter are rejected (lib/accessGate.js)

@@ -86,17 +86,17 @@ test("density: of people 7 to 35 days in, the share with three registered contac
 });
 
 test("goals: validated on their own, defaults filled in, never sent to the app", async () => {
-  assert.deepEqual(await goalsConfig(), { activationPct: 40, densityPct: 50, giftDaysPerWeek: 200 });
+  assert.deepEqual(await goalsConfig(), { activationPct: 40, densityPct: 50, giftDaysPerWeek: 200, seedCampaign: null });
   for (const bad of [{ activationPct: 0 }, { activationPct: 101 }, { activationPct: 1.5 }, { activationPct: "40" }, { densityPct: null }, { retentionPct: 20 }, { giftDaysPerWeek: 0 }, { giftDaysPerWeek: 100001 }, { giftDaysPerWeek: 2.5 }]) {
     assert.equal((await saveConfig({ goals: bad }, "owner@test")).error, "invalid_goals", JSON.stringify(bad));
   }
   await saveConfig({ goals: { activationPct: 30, giftDaysPerWeek: 500 } }, "owner@test");
-  assert.deepEqual((await getConfig()).goals, { activationPct: 30, densityPct: 50, giftDaysPerWeek: 500 });
+  assert.deepEqual((await getConfig()).goals, { activationPct: 30, densityPct: 50, giftDaysPerWeek: 500, seedCampaign: null });
   assert.equal("goals" in (await publicConfig()), false);
   assert.equal("goals" in (await request(ctx.app).get("/app-config").expect(200)).body, false);
   // Other settings leave the block alone
   await saveConfig({ ops: { smsPerDay: 50 } }, "owner@test");
-  assert.deepEqual(await goalsConfig(), { activationPct: 30, densityPct: 50, giftDaysPerWeek: 500 });
+  assert.deepEqual(await goalsConfig(), { activationPct: 30, densityPct: 50, giftDaysPerWeek: 500, seedCampaign: null });
 });
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 50));

@@ -39,11 +39,12 @@ const EXPORTS = {
       "geschenk_tage_einladung", "geschenk_tage_warteliste", "geschenk_tage_konsole", "geschenk_zu_store",
       "paywall_aufrufe", "kauf_gestartet", "kauf_erfolgreich", "kauf_abgebrochen", "kauf_fehler",
       "wiederherstellen_ok", "wiederherstellen_fehler", "angebot_leer", "limit_treffer",
+      "herkunft_freund", "herkunft_tiktok", "herkunft_instagram", "herkunft_flyer", "herkunft_presse", "herkunft_sonstiges", "herkunft_ohne_antwort", "android_freunde_mittel",
     ],
     async rows() {
       const days = await MetricsDaily.find({}, { _id: 0, __v: 0 }).sort({ day: 1 }).lean();
       return days.map((d) => {
-        const u = d.users || {}, c = d.calls || {}, t = d.talks || {}, k = d.circles || {}, r = d.rituals || {}, g = d.growth || {}, p = d.push || {}, m = d.reports || {}, x = d.plus || {}, o = d.ops || {}, cost = d.costs || {}, f = x.funnel || {};
+        const u = d.users || {}, c = d.calls || {}, t = d.talks || {}, k = d.circles || {}, r = d.rituals || {}, g = d.growth || {}, p = d.push || {}, m = d.reports || {}, x = d.plus || {}, o = d.ops || {}, cost = d.costs || {}, f = x.funnel || {}, src = g.bySource || {};
         return [
           d.day, d.partial ? "ja" : "nein", d.version,
           u.total, u.new, u.dau, u.wau, u.mau, u.activation4w, u.activationSample,
@@ -61,6 +62,8 @@ const EXPORTS = {
           // source and per limit they are in the console
           f.paywallView, f.purchaseStart, f.purchaseSuccess, f.purchaseCancel, f.purchaseError,
           f.restoreSuccess, f.restoreError, f.offeringEmpty, x.limitHits ? Object.values(x.limitHits).reduce((a, n) => a + (n || 0), 0) : "",
+          // Where the day's sign-ups came from (plan 2.10); per campaign in the console
+          src.friend, src.tiktok, src.instagram, src.flyer, src.press, src.other, src.none, g.androidFriendsAvg,
         ];
       });
     },

@@ -1,7 +1,8 @@
 /**
  * The own profile and what belongs to it: GET /me, the research answer, the
- * device's permission state, profile edits, and since plan 2.9 the device
- * list and "Überall abmelden".
+ * device's permission state, profile edits, since plan 2.9 the device
+ * list and "Überall abmelden", and since plan 2.10 the answer to "Woher
+ * kennst du Wanna yap?".
  */
 const express = require("express");
 const User = require("../models/User");
@@ -13,6 +14,7 @@ const { localeOf } = require("../lib/appConfig");
 const { endSessions } = require("../lib/moderation");
 const { deviceIdOf, listDevices, forgetDevices } = require("../lib/devices");
 const opsCounters = require("../lib/opsCounters");
+const acquisition = require("../lib/acquisition");
 
 const router = express.Router();
 
@@ -40,7 +42,9 @@ const consentOf = (user) => ({
   privacyVersion: user.consent?.privacyVersion || null,
 });
 
-// GET /me            -> own profile (authenticated), with `inviteCode`, `research` and `consent`
+// GET /me            -> own profile (authenticated), with `inviteCode`, `research`, `consent`,
+//                       `acquisition` (the answer or null) and `joinedViaInvite` (plan 2.10: the
+//                       app preselects "Über Freund·in" and asks only once)
 // GET /me?phone=...  -> profile of that user (name, avatar, last online)
 router.get("/", async (req, res) => {
   let phone;
@@ -64,7 +68,18 @@ router.get("/", async (req, res) => {
     if (own && !user.inviteCode) await ensureInviteCode(user).catch((err) => console.error("❌ ensureInviteCode:", err.message));
     res.json({
       success: true,
-      user: { ...profileOf(user), ...(own ? { inviteCode: user.inviteCode || null, research: researchOf(user), consent: consentOf(user) } : {}) },
+      user: {
+        ...profileOf(user),
+        ...(own
+          ? {
+              inviteCode: user.inviteCode || null,
+              research: researchOf(user),
+              consent: consentOf(user),
+              acquisition: acquisition.acquisitionOf(user),
+              joinedViaInvite: !!user.joinedViaInvite,
+            }
+          : {}),
+      },
     });
   } catch (err) {
     res.status(500).json({ success: false, error: "Profil konnte nicht geladen werden" });
@@ -127,6 +142,27 @@ router.post("/state", async (req, res) => {
     res.json({ success: true, device: deviceOf(updated) });
   } catch (err) {
     res.status(500).json({ success: false, error: "Status konnte nicht gespeichert werden" });
+  }
+});
+
+// POST /me/acquisition { source, androidFriends? } (plan 2.10,
+// lib/acquisition.js): "Woher kennst du Wanna yap?" with source friend |
+// tiktok | instagram | flyer | press | other, and how many of the five
+// closest friends have Android (0–5, or null when skipped). Voluntary. The
+// server adds code (the first inviter's invite code) and campaign (a slug
+// when it knows one); the app sends neither, it cannot know the campaign
+// (no deferred deep link without a tracking SDK). The first answer counts, a
+// second within 24 hours replaces it, after that 409 already_answered.
+// A new route: token only.
+router.post("/acquisition", async (req, res) => {
+  if (!req.auth) return res.status(401).json({ success: false, error: "Authentication required" });
+  try {
+    const result = await acquisition.answer(req.auth.phone, req.body);
+    if (result.error) return res.status(result.status).json({ success: false, error: result.error });
+    res.json({ success: true, acquisition: acquisition.acquisitionOf({ acquisition: result.acquisition }) });
+  } catch (err) {
+    console.error("❌ acquisition:", err.message);
+    res.status(500).json({ success: false, error: "Antwort konnte nicht gespeichert werden" });
   }
 });
 

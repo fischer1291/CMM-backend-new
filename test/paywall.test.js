@@ -146,8 +146,9 @@ test("computeDay: plus.funnel with the sources and plus.limitHits from the day c
     if (n) await opsCounters.count(name, now, n);
   }
   const doc = await computeDay(todayKey(now), now);
-  assert.equal(METRICS_VERSION, 6);
-  assert.equal(doc.version, 6);
+  // 6 brought plus.funnel and plus.limitHits; later versions keep them
+  assert.ok(METRICS_VERSION >= 6);
+  assert.equal(doc.version, METRICS_VERSION);
   const { bySource, ...steps } = doc.plus.funnel;
   assert.deepEqual(steps, { paywallView: 12, purchaseStart: 4, purchaseSuccess: 2, purchaseCancel: 1, purchaseError: 1, restoreSuccess: 1, restoreError: 0, offeringEmpty: 3 });
   assert.deepEqual(bySource, { settings: { view: 7, success: 0 }, limit_circles: { view: 5, success: 2 } });

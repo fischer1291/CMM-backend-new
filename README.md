@@ -25,12 +25,14 @@ npm start       # needs the environment below
 | `lib/phone.js` | E.164 phone normalization |
 | `lib/push.js` | Expo and VoIP (APNs) push |
 | `lib/agora.js` | Agora RTC tokens |
+| `lib/acquisition.js` | "Woher kennst du Wanna yap?" (`User.acquisition`) and the campaigns with their numbers per slug, see Acquisition and campaigns |
 | `lib/devices.js` | Device list (`User.devices`, `X-Device-Id`/`X-Device-Model`), see Recycled numbers and devices |
 | `lib/economics.js` | Unit economics: costs, contribution, break-even, runway (`GET /admin/economics`), see Unit economics |
 | `lib/lifecycle.js` | Lifecycle pushes: onboarding days 1/3/7, inactivity, weekly series, Plus ending, billing, win-back (leader job every 30 min), see Lifecycle pushes |
 | `lib/pseudonyms.js` | Keyed phone pseudonyms (`User.phoneHmac`) and their one-off migration, see Pseudonymous data |
 | `lib/sentry.js` | Error tracking: Sentry init, scrubbing, crash reports, see Error tracking (Sentry) |
 | `routes/verify.js` | SMS sign-in, the review login, "Ist das dein Konto?" for recycled numbers (`/verify/account-check`) |
+| `routes/adminCampaigns.js` | Console tab Kampagnen: campaigns, numbers per slug, QR (`/admin/campaigns`) |
 | `routes/webhooks.js` | Webhooks signed over the raw body: `POST /webhooks/sentry` → alert `sentry_fatal` |
 | `COMPLIANCE.md` | Record of processing per collection, processors, the privacy change process; `test/compliance.test.js` fails when a model has no row |
 
@@ -279,6 +281,101 @@ The daily snapshot (`lib/metrics.js` computeDay) carries
 `growth.inviteVisits { total, ios, android, other }`,
 `waitlist.byPlatform { ios, android, unknown }` (confirmations of the day)
 and `users.byLocale` (the five most common locales of the day's sign-ups).
+
+## Acquisition and campaigns
+
+Plan 2.10, `lib/acquisition.js`: first-party attribution from the sign-up
+to the activated user, without a tracking SDK and without the ATT prompt.
+
+**The question in onboarding.** `POST /me/acquisition { source,
+androidFriends? }` (token only) stores "Woher kennst du Wanna yap?" as
+`User.acquisition`: `source` is one of `friend | tiktok | instagram | flyer
+| press | other`, `androidFriends` how many of the five closest friends
+have Android (integer 0–5, or null when skipped); anything else is 400
+(`invalid_source`, `invalid_android_friends`). The answer is voluntary.
+The server adds `code` (the `inviteCode` of the first inviter,
+`invitedBy[0]`, when the account joined through an invite) and `campaign`
+(see below); both are never taken from the body. `at` is the first answer:
+a second answer within 24 hours replaces the whole answer (a slip in
+onboarding) and keeps `at`, after that 409 `already_answered`. Answer
+`{ success: true, acquisition: { source, androidFriends, campaign, code,
+at } }`. The own `GET /me` carries `acquisition` (null before an answer)
+and `joinedViaInvite`, so the app preselects "Über Freund·in" and asks only
+once. The data export has `acquisition`; it goes with the account.
+
+**Why the app cannot send the campaign.** A `/k/<slug>` link goes through
+the download page to the App Store with Apple's campaign token `ct`; Apple
+reports it in App Store Connect (App Analytics → Campaigns), never to us,
+and without a tracking SDK there is no deferred deep link that would carry
+the slug through the install. So `acquisition.campaign` is set only where
+the server knows a campaign itself:
+
+1. the redeemed waitlist entry: its `campaign` (the landing page's
+   `utm_campaign`), lowercased, when it is a valid slug and not an invite
+   link (`invite-CODE`); a code redeemed after the answer fills an empty
+   `campaign` then (`lib/waitlist.js` redeem);
+2. the seed campaign, `AppConfig.goals.seedCampaign` (a registered slug or
+   null, set in the Kampagnen tab, audited as `config_changed`): while that
+   campaign runs (`status: running`, started, not ended) an answer that
+   fits its channel counts for it: tiktok → TikTok, instagram → Instagram,
+   flyer → Flyer, campus → Freund·in and Flyer, creator → TikTok and
+   Instagram, press → Presse, other → Sonstiges. An ASSUMPTION, not a
+   measurement; there is only ever one.
+
+Everything else stays null and is counted under its source only.
+
+**Campaigns.** `models/Campaign.js`: `slug` (unique, `[a-z0-9-]{2,40}`, the
+name in every link, fixed once created), `channel` (`tiktok | instagram |
+flyer | campus | creator | press | other`), `title` (≤ 80), `startedAt`,
+`endedAt`, `budgetEurCents` (integer ≥ 0 or null), `partner` (≤ 80),
+`status` (`planned | running | ended`, set by hand), `notes` (≤ 1000),
+`createdBy`, `createdAt`, `updatedAt`. Routes (`routes/adminCampaigns.js`):
+
+- `GET /admin/campaigns` (viewer): `{ days: 90, seedCampaign, campaigns:
+  [{ ...campaign, links: { store, landing }, numbers: { visits,
+  storeClicks, waitlist, users, activatedD7, spendEurCents } }],
+  unregistered: [{ slug, visits, waitlist, users }] }`, running campaigns
+  first. Numbers of the last 90 days: `visits` and `storeClicks` from
+  `LandingVisit.campaign`, `waitlist` from confirmed `WaitlistEntry`
+  (campaign lowercased), `users` the accounts created in that time with
+  that `acquisition.campaign`, `activatedD7` those of them with
+  `milestones.firstTalkAt` within 7 days of signing up, `spendEurCents` the
+  marketing agent's `MarketingSpend` with that campaign (settled: the cost,
+  reserved: the estimate, released: nothing). `unregistered` lists slugs
+  seen in those sources that nobody registered (typos, links that went out
+  without a campaign), at most 50; invite links and the agent's own video
+  campaigns (`AdDraft`, tab Freigabe) are left out.
+- `POST /admin/campaigns` (owner, audited `campaign_created`) and
+  `PUT /admin/campaigns/:slug` (owner, `campaign_updated`, partial, the
+  slug stays: 400 `slug_fixed`): 400 `invalid_slug | invalid_channel |
+  invalid_title | invalid_partner | invalid_notes | invalid_dates |
+  invalid_budget | invalid_status`, 409 `slug_taken`, 404
+  `campaign_not_found`. Dates as `YYYY-MM-DD` or ISO, the end not before
+  the start.
+- `GET /admin/campaigns/:slug/qr.svg` (viewer): the QR code of
+  `SITE_URL/k/<slug>` as SVG (package `qrcode`, already there for the
+  console's TOTP setup), for flyers and posters.
+
+The console's tab "Kampagnen" lists them with their numbers, has the form
+(owners), the link generator (store link `https://wannayap.app/k/<slug>`,
+landing link `https://wannayap.app/?utm_source=<channel>&utm_campaign=<slug>`,
+QR as SVG to download) and the section "Nicht angelegte Kurznamen" with a
+button to register one. Downloads per campaign stay in App Store Connect.
+
+**Numbers.** The daily snapshot (`lib/metrics.js` computeDay,
+METRICS_VERSION 7) carries `growth.bySource { friend, tiktok, instagram,
+flyer, press, other, none }` (the day's sign-ups by answer; none: no
+answer, a recount before the day is final picks up answers given later),
+`growth.byCampaign { <slug>: { new } }` and `growth.androidFriendsAvg` (mean
+of the day's answers, null without one); the metrics CSV has them as
+`herkunft_*` and `android_freunde_mittel`. `GET /admin/metrics/acquisition
+?weeks=4` (viewer, 1–12 weeks) returns `{ weeks, from, to, minSample: 50,
+bySource: { <source>: { size, measured, activated, pct } }, last30: {
+total, answered, bySource, androidFriendsAvg, androidFriendsAnswers } }`:
+activation within 7 days per answer over the last full weeks, only people
+whose 7 days are over (`measured`), and the last 30 days of sign-ups. The
+dashboard card "Herkunft" shows both; under 50 measured per source it says
+"zu wenig Daten" (the plan's goal: over 70 % of new people answer).
 
 ## User research
 
@@ -809,7 +906,7 @@ minutes), booked in `AppConfig.ops.plusReconcileFor`; without
 `GET /admin/export/:name.csv` (`routes/adminExport.js`, owner, audited as
 `export_<name>`) with `metrics` (one row per `MetricsDaily` day, flat, the
 `plus.*` columns included, the gift budget as `geschenk_tage_einladung`,
-`geschenk_tage_warteliste`, `geschenk_tage_konsole`, `geschenk_zu_store`, the paywall of plan 2.6a as `paywall_aufrufe`, `kauf_gestartet`, `kauf_erfolgreich`, `kauf_abgebrochen`, `kauf_fehler`, `wiederherstellen_ok`, `wiederherstellen_fehler`, `angebot_leer`, `limit_treffer`), `plus` (one row per `SubscriptionEvent`, users by
+`geschenk_tage_warteliste`, `geschenk_tage_konsole`, `geschenk_zu_store`, the paywall of plan 2.6a as `paywall_aufrufe`, `kauf_gestartet`, `kauf_erfolgreich`, `kauf_abgebrochen`, `kauf_fehler`, `wiederherstellen_ok`, `wiederherstellen_fehler`, `angebot_leer`, `limit_treffer`, and where the day's sign-ups came from (plan 2.10) as `herkunft_freund`, `herkunft_tiktok`, `herkunft_instagram`, `herkunft_flyer`, `herkunft_presse`, `herkunft_sonstiges`, `herkunft_ohne_antwort`, `android_freunde_mittel`), `plus` (one row per `SubscriptionEvent`, users by
 id, no app user ids), `marketing-spend` (`MarketingSpend`) and `support`
 (`SupportTicket` without phone numbers or message texts: id, category,
 status, times, message counts, app version). Same CSV dialect as
@@ -988,7 +1085,7 @@ days under `activeDays`.
 | `EXPO_ACCESS_TOKEN` | no | Expo push |
 | `SMTP_URL` | waitlist | SMTP for waitlist, alert, invitation and dead-man mails, e.g. `smtps://user:pass@smtp-relay.brevo.com:465`; without it no mail is sent |
 | `MAIL_FROM` | no | Sender, defaults to `Wanna yap? <hallo@wannayap.app>` (the domain needs SPF/DKIM at the mail provider) |
-| `SITE_URL`, `PUBLIC_API_URL` | no | Links in mails (waitlist, admin invitations, the TOTP reset script), default `https://wannayap.app` and `https://api.wannayap.app` |
+| `SITE_URL`, `PUBLIC_API_URL` | no | Links in mails (waitlist, admin invitations, the TOTP reset script) and the campaign links and QR codes of the console (`SITE_URL`, see Acquisition and campaigns), default `https://wannayap.app` and `https://api.wannayap.app` |
 | `WAITLIST_BATCH` | no | Launch mails per 15 s batch (default 40, max 200); keep under the provider's rate limit |
 | `MARKETING_AGENT_KEY` | agent | Bearer key of the daily marketing agent (CMM repo, `marketing/AGENT.md`), at least 24 characters; without it `/marketing/*` refuses everyone |
 | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` | posting | TikTok developer app (Login Kit + Content Posting API); its redirect URI is `https://api.wannayap.app/marketing/tiktok/callback`. Connected in the console (Freigabe → Kanäle) |
