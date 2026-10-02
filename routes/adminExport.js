@@ -37,11 +37,13 @@ const EXPORTS = {
       "sms_gestartet", "sms_geprueft", "sms_fehlgeschlagen", "reconcile_geprueft", "reconcile_korrigiert",
       "agora_audio_min", "agora_video_min", "cloudinary_uploads", "voip_gesendet", "kosten_variabel_cent", "kosten_je_mau_cent",
       "geschenk_tage_einladung", "geschenk_tage_warteliste", "geschenk_tage_konsole", "geschenk_zu_store",
+      "paywall_aufrufe", "kauf_gestartet", "kauf_erfolgreich", "kauf_abgebrochen", "kauf_fehler",
+      "wiederherstellen_ok", "wiederherstellen_fehler", "angebot_leer", "limit_treffer",
     ],
     async rows() {
       const days = await MetricsDaily.find({}, { _id: 0, __v: 0 }).sort({ day: 1 }).lean();
       return days.map((d) => {
-        const u = d.users || {}, c = d.calls || {}, t = d.talks || {}, k = d.circles || {}, r = d.rituals || {}, g = d.growth || {}, p = d.push || {}, m = d.reports || {}, x = d.plus || {}, o = d.ops || {}, cost = d.costs || {};
+        const u = d.users || {}, c = d.calls || {}, t = d.talks || {}, k = d.circles || {}, r = d.rituals || {}, g = d.growth || {}, p = d.push || {}, m = d.reports || {}, x = d.plus || {}, o = d.ops || {}, cost = d.costs || {}, f = x.funnel || {};
         return [
           d.day, d.partial ? "ja" : "nein", d.version,
           u.total, u.new, u.dau, u.wau, u.mau, u.activation4w, u.activationSample,
@@ -55,6 +57,10 @@ const EXPORTS = {
           o.smsStarted, o.smsChecked, o.smsFailed, o.plusReconcileChecked, o.plusReconcileFixed,
           cost.agoraAudioMinutes, cost.agoraVideoMinutes, cost.cloudinaryUploads, cost.voipSent, cost.variableEurCents, cost.perMauEurCents,
           x.giftDaysGranted?.referral, x.giftDaysGranted?.waitlist, x.giftDaysGranted?.admin, x.giftToStore,
+          // The paywall funnel and the sum of all limit hits (plan 2.6a); per
+          // source and per limit they are in the console
+          f.paywallView, f.purchaseStart, f.purchaseSuccess, f.purchaseCancel, f.purchaseError,
+          f.restoreSuccess, f.restoreError, f.offeringEmpty, x.limitHits ? Object.values(x.limitHits).reduce((a, n) => a + (n || 0), 0) : "",
         ];
       });
     },

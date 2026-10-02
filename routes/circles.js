@@ -11,7 +11,7 @@ const { normalizePhone, regionOf } = require("../lib/phone");
 const { blockedWith } = require("../lib/relations");
 const { notifyMany } = require("../lib/notify");
 const { circleBadgesOf } = require("../lib/badges");
-const { planOfPhone, limits: planLimits, limitError } = require("../lib/plan");
+const { planOfPhone, limits: planLimits, limitError, countLimitHit } = require("../lib/plan");
 const {
   MAX_MEMBERS,
   MAX_CIRCLES,
@@ -45,14 +45,22 @@ module.exports = (io) => {
 
   // A circle's size and its rounds follow the founder's plan (lib/plan.js)
   const founderLimits = async (circle) => (await planOfPhone(circle.createdBy)).limits;
-  const circleFull = async (circle) => circle.members.length >= Math.min(MAX_MEMBERS, (await founderLimits(circle)).circleMembers);
+  // Both are asked only to refuse, so a "full" is counted as a limit hit
+  // (plan 2.6a, limitHitCircleMembers / limitHitRoomParticipants)
+  const circleFull = async (circle) => {
+    const full = circle.members.length >= Math.min(MAX_MEMBERS, (await founderLimits(circle)).circleMembers);
+    if (full) countLimitHit("circleMembers");
+    return full;
+  };
   const founderCanUpgrade = async (circle) => {
     const [mine, all] = await Promise.all([founderLimits(circle), planLimits()]);
     return all.plus.circleMembers > mine.circleMembers;
   };
   const roomFull = async (circle, room, phone) => {
     const inside = room.participants.filter((p) => !p.leftAt && p.phone !== phone).length;
-    return inside >= (await founderLimits(circle)).roomParticipants;
+    const full = inside >= (await founderLimits(circle)).roomParticipants;
+    if (full) countLimitHit("roomParticipants");
+    return full;
   };
   const roomOut = (room, circle) => ({
     id: String(room._id),

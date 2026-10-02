@@ -48,6 +48,7 @@ const metricsDailySchema = new mongoose.Schema(
     // giftDaysGranted: Plus days given that day by source (plan 2.12, the
     // day counters giftDays_*); giftToStore: first store purchases of the
     // day by people whose Plus was a gift before (User.plus.previousSource).
+    // funnel and limitHits: the paywall and the plan limits (plan 2.6a).
     plus: {
       activeStore: Number,
       activeGift: Number,
@@ -63,6 +64,23 @@ const metricsDailySchema = new mongoose.Schema(
       mrrCents: Number,
       giftDaysGranted: { referral: Number, waitlist: Number, admin: Number },
       giftToStore: Number,
+      // Paywall funnel (plan 2.6a, lib/paywall.js funnelOf): the steps the
+      // app reported that day (POST /me/plus/funnel), and per source
+      // (/plus?from=...) the views and purchases: { settings: { view, success } }
+      funnel: {
+        paywallView: Number,
+        purchaseStart: Number,
+        purchaseSuccess: Number,
+        purchaseCancel: Number,
+        purchaseError: Number,
+        restoreSuccess: Number,
+        restoreError: Number,
+        offeringEmpty: Number,
+        bySource: { type: mongoose.Schema.Types.Mixed, default: undefined },
+      },
+      // Refusals by a plan limit that day, by limit (lib/paywall.js
+      // limitHitsOf): { circles: 2, roomMinutes: 1, video: 4, ... }
+      limitHits: { type: mongoose.Schema.Types.Mixed, default: undefined },
     },
     // Variable costs of the day (plan 2.5, lib/metrics.js computeDay and
     // priceCosts): the quantities (SMS from the day counters, Agora

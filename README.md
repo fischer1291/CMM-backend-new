@@ -279,6 +279,7 @@ stage names in `lib/notify.js` CATALOG:
 
 | Stage | When | Opens |
 |---|---|---|
+| `trial_ending` | a free trial ends: `plus.status` is `trial` and `plus.until` is one to two days ahead, once per end date (plan 2.6a). "Deine Probezeit endet übermorgen" (or "morgen"), the store price follows, cancelling works any time in the iPhone settings. Transactional: outside the cap, see below | `/plus?from=trial_ending` |
 | `billing_issue` | `plus.status` is `billing_issue`, or `cancelled` by a CANCELLATION with `cancel_reason` `BILLING_ERROR` (RevenueCat sends both for one failed payment, the later one wins the status); once per problem (`plus.eventAt`, last 14 days, no second push for an event within 14 days of one sent); the text points to the Apple ID's payment settings, the app opens only its own routes | `/plus?from=billing_issue` |
 | `plus_expiring` | 3 days before `plus.until` of a present (source `referral`, `gift`, `waitlist`, `admin`), once per end date | `/plus?from=plus_expiring` |
 | `cancel_survey` | `plus.status` is `cancelled` and the person cancelled: the CANCELLATION at `plus.eventAt` (`SubscriptionEvent`) has `cancel_reason` `UNSUBSCRIBE` or `UNKNOWN`, or there is none (a status the reconcile set); not for `BILLING_ERROR` (billing_issue) or `CUSTOMER_SUPPORT` (an Apple refund, nothing). Once per event (last 7 days): "warum?" | `/plus?from=cancel` |
@@ -318,6 +319,10 @@ together, the second follows on a later tick inside its window; skip reason
 `lifecycle_spacing`), not counted towards the daily social cap, never in quiet hours,
 and none within 24 hours of a `contact_available` push (a friend free right
 now has precedence). The tone stays without pressure: no "streak breaks".
+`trial_ending` is marked `transactional` in the CATALOG: a notice like a
+receipt, so it neither counts towards nor waits for the cap, the spacing or
+the `contact_available` precedence (no `lifecycle:` PushLog row); the
+switch `lifecycle` and the quiet hours still hold.
 
 `POST /me/state { notifications?, contactsPermission? }` (token only, 401
 without; each `granted`, `denied` or `undetermined`, anything else 400) stores what the device says
@@ -507,7 +512,7 @@ any database without that prefix.
 
 ## Alerts
 
-`lib/alerts.js` runs 15 rules every 30 minutes on the job leader, right
+`lib/alerts.js` runs 16 rules every 30 minutes on the job leader, right
 after the metrics snapshots (`index.js`). A hit goes out through
 `alert(tag, text, { level })`: at most once an hour per tag, and only once
 a day while the text is unchanged (one `AlertState` document per tag keeps
@@ -531,6 +536,7 @@ owners, others get `•••`). The "Heute" card lists the last alerts
 | `moment_missing` | warn | after 21:30 Berlin time today's `DailyMoment` for Europe/Berlin has no `sentAt` | Check `tickDailyMoments` errors in the logs; the tick may be stalled (see `tick_late`) |
 | `client_errors` | warn | a new `ClientError` with `fatal` (kept only from a signed-in app, the report carries the token) in the last 60 minutes, or today's reported errors are more than three times yesterday's with at least 10 (`clientErrors` day counter, `routes/diagnostics.js`) | Console → Fehler: message, stack, versions and OTA updates (`ClientError.updates`); hotfix (OTA) or raise `minBuild` |
 | `revenuecat` | error | today `rcUnauthorized > 0` (wrong `REVENUECAT_WEBHOOK_SECRET`) or `rcUnknownUser > 0` (`routes/plus.js`) | Compare the secret in RevenueCat and on Render; for unknown users find the purchase in RevenueCat and grant Plus by hand |
+| `purchase_failures` | warn | today's paywall failures `purchaseError + restoreError + offeringEmpty > 3` (day counters from `POST /me/plus/funnel`, `lib/paywall.js`; `purchaseCancel` is the person's choice and does not count) | Console → Plus (Paywall row: which failure); App Store Connect status (agreements, tax, banking; products "Ready to Submit"/approved), RevenueCat dashboard (offering `default` current, products attached, App Store key valid); a single build: Console → Fehler |
 | `agent_silent` | warn | the newest `AdDraft` is older than 36 hours (only once one ever existed) | GitHub → Actions → marketing-agent: re-enable the schedule (paused after 60 days without commits) or read the failed run |
 | `support_overdue` | warn | an open `SupportTicket` whose last message is from the user and older than 24 hours (`overdueTickets` in `lib/today.js`, the same count the morning push shows) | Console → Support: answer |
 | `social_token` | warn | a connected `MarketingChannel` whose token (TikTok: refresh token) expires within 7 days | Console → Freigabe → Kanäle: reconnect |
@@ -651,6 +657,61 @@ histogram `c0 · c1_2 · c3_5 · c6plus`. The console shows the "Umsatz" row
 and the MRR chart in the Plus tab; the morning push adds "Plus: +2 neu ·
 1 gekündigt · MRR 84 €" on days with subscription events or MRR.
 
+### Paywall funnel, limit hits, trials (plan 2.6a)
+
+Without an event log the paywall is measured in day counters
+(`lib/opsCounters.js`, names camelCase without `_`), all in
+`lib/paywall.js`:
+
+- `POST /me/plus/funnel { step, from }` (token, 401 without; 120 per hour
+  per user) answers `{ success: true }`. `step` is one of `paywall_view`,
+  `purchase_start`, `purchase_success`, `purchase_cancel`,
+  `purchase_error`, `restore_success`, `restore_error`, `offering_empty`,
+  anything else is 400 `{ success: false, error: "invalid_step" }`. `from`
+  is where the app opened the paywall (`/plus?from=...`): `settings`,
+  `memories`, `appicon`, `year`, `room`, `limit_circles`, `limit_rituals`,
+  `limit_members`, `limit_moments`, `referral`, `plus_expiring`,
+  `billing_issue`, `plus_winback_3`, `plus_winback_30`, `cancel`,
+  `trial_ending`, `push`, `other`; unknown or missing counts as `other`.
+  Each step raises its counter (`paywallView`, `purchaseStart`,
+  `purchaseSuccess`, `purchaseCancel`, `purchaseError`, `restoreSuccess`,
+  `restoreError`, `offeringEmpty`); views and purchases also per source
+  (`paywallViewFromLimitCircles`, `purchaseSuccessFromSettings`, ...). No
+  user is stored, testers are counted like everyone. The app also reports
+  purchase and restore errors as a ClientError (`POST /diagnostics/errors`)
+  for the details.
+- Limit hits: every refusal by a plan limit counts `limitHit<Limit>`
+  (fire and forget): `lib/plan.js` `limitError` (`circles`, `rituals`,
+  `momentsPerDay`; a moment refused at `/upload/moment` and again at
+  `/moment` counts twice, read it as attempts), a full circle
+  (`circleMembers`) and a full round (`roomParticipants`) in
+  `routes/circles.js`, a free round ended by time (`roomMinutes`,
+  `lib/circles.js` `endStaleRooms`) and a call started as audio by the
+  limit `video` (`lib/calls.js`).
+- `computeDay` writes `MetricsDaily.plus.funnel { paywallView,
+  purchaseStart, purchaseSuccess, purchaseCancel, purchaseError,
+  restoreSuccess, restoreError, offeringEmpty, bySource: { <from>: { view,
+  success } } }` (sources with a view or purchase only) and
+  `MetricsDaily.plus.limitHits { <limit>: n }` (`METRICS_VERSION` 6, so the
+  last 30 days are recounted from the counters). The metrics CSV adds
+  `paywall_aufrufe` ... `angebot_leer` and `limit_treffer` (the sum).
+- Console → Plus, section "Paywall": views → starts → purchases with the
+  rate for the last 30 days, cancels and failures, the table per source
+  and "Limit-Treffer 30 Tage" per limit. It steers only from 200 views a
+  week (plan, principle 6); below that the console says to read, not judge.
+- Trials: RevenueCat's `period_type` TRIAL sets `plus.status` `trial`;
+  `trialsStarted`/`trialsConverted` (above) count them, and the lifecycle
+  stage `trial_ending` tells the person two days before the store plan
+  starts (see Lifecycle pushes). The 7-day intro offer, the 16-day billing
+  grace period and Family Sharing for the yearly product are App Store
+  Connect settings, not code; during the grace period RevenueCat reports
+  BILLING_ISSUE and Plus stays on until `expiration_at_ms`.
+- Feature flag `plus_interest` (Console → App → Feature-Flags, default off): only
+  when it is on and the store is not live does the app's paywall show
+  "Interesse zeigen" (`POST /me/plus-interest`, unchanged); otherwise
+  without a store the paywall says "Plus kommt bald". The backend has no
+  logic for it; the app reads it from `GET /app-config` (`flags`).
+
 ### Nightly reconcile
 
 `lib/plusReconcile.js` `reconcile` compares every user with
@@ -672,7 +733,7 @@ minutes), booked in `AppConfig.ops.plusReconcileFor`; without
 `GET /admin/export/:name.csv` (`routes/adminExport.js`, owner, audited as
 `export_<name>`) with `metrics` (one row per `MetricsDaily` day, flat, the
 `plus.*` columns included, the gift budget as `geschenk_tage_einladung`,
-`geschenk_tage_warteliste`, `geschenk_tage_konsole`, `geschenk_zu_store`), `plus` (one row per `SubscriptionEvent`, users by
+`geschenk_tage_warteliste`, `geschenk_tage_konsole`, `geschenk_zu_store`, the paywall of plan 2.6a as `paywall_aufrufe`, `kauf_gestartet`, `kauf_erfolgreich`, `kauf_abgebrochen`, `kauf_fehler`, `wiederherstellen_ok`, `wiederherstellen_fehler`, `angebot_leer`, `limit_treffer`), `plus` (one row per `SubscriptionEvent`, users by
 id, no app user ids), `marketing-spend` (`MarketingSpend`) and `support`
 (`SupportTicket` without phone numbers or message texts: id, category,
 status, times, message counts, app version). Same CSV dialect as

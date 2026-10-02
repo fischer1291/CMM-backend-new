@@ -338,6 +338,9 @@ test("plus: purchases, trials, refunds and MRR from the day's production events;
     mrrCents: 499 + Math.round(2999 / 12),
     giftDaysGranted: { referral: 0, waitlist: 0, admin: 0 },
     giftToStore: 0,
+    // The paywall of plan 2.6a: nothing reported that day (test/paywall.test.js)
+    funnel: { paywallView: 0, purchaseStart: 0, purchaseSuccess: 0, purchaseCancel: 0, purchaseError: 0, restoreSuccess: 0, restoreError: 0, offeringEmpty: 0, bySource: {} },
+    limitHits: {},
   });
 
   // The next day: Ben's yearly plan expires (the webhook ended his Plus), Emma's

@@ -5,9 +5,12 @@
  * retry is a duplicate and nothing is applied twice; /me/plus/sync asks
  * RevenueCat's REST API when the app wants the truth right after a purchase
  * (lib/plusReconcile.js applyStoreState, shared with the nightly job).
+ * POST /me/plus/funnel counts the paywall's steps per source (plan 2.6a,
+ * lib/paywall.js).
  */
 const crypto = require("crypto");
 const express = require("express");
+const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
 const mongoose = require("mongoose");
 const User = require("../models/User");
 const Circle = require("../models/Circle");
@@ -17,6 +20,7 @@ const { referralOf, twoSidedOn, PAIR_DAYS } = require("../lib/referral");
 const { yearReview } = require("../lib/yearReview");
 const revenuecat = require("../lib/revenuecat");
 const opsCounters = require("../lib/opsCounters");
+const paywall = require("../lib/paywall");
 const { PRODUCT_IDS, STORE_SOURCES, hasOpenAdminGrant, applyStoreState, previousSourceFor } = require("../lib/plusReconcile");
 
 // Webhook trouble is counted per day for the alert revenuecat (lib/alerts.js)
@@ -197,6 +201,30 @@ module.exports = (io) => {
     }
     if (await applyStoreState(me, found, new Date())) io?.to(`user:${me.phone}`).emit("planChanged", {});
     res.json(await planBody(me));
+  });
+
+  // POST /me/plus/funnel { step, from }: one step of the paywall (plan
+  // 2.6a), counted per day and, for views and purchases, per source. An
+  // unknown or missing source counts as "other"; an unknown step is a 400.
+  // No user is stored: the counters are the whole record.
+  const funnelLimit = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: 120,
+    skip: () => process.env.NODE_ENV === "test",
+    keyGenerator: (req) => req.auth?.phone || ipKeyGenerator(req.ip),
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    message: { success: false, error: "Zu viele Meldungen. Versuch es später noch einmal." },
+  });
+  router.post("/me/plus/funnel", requireAuth, funnelLimit, async (req, res) => {
+    const step = req.body?.step;
+    if (!paywall.STEPS.includes(step)) return res.status(400).json({ success: false, error: "invalid_step" });
+    try {
+      await paywall.countStep(step, req.body?.from);
+    } catch (err) {
+      console.error("❌ paywall funnel:", err.message);
+    }
+    res.json({ success: true });
   });
 
   // POST /me/plus-interest { features: [...] }: "Interesse zeigen"

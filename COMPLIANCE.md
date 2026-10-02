@@ -85,7 +85,7 @@ die Daten mit dem Konto (ja / nein / n. a. = kein Bezug zu App-Nutzern).
 | `MetricsDaily` | Tages-Snapshot der Kennzahlen (`lib/metrics.js`), nur Summen | keine | – | keine TTL | n. a. |
 | `MomentUnlock` | Tage, an denen jemand die Moments der Freunde freigeschaltet hat: Streak und Badges (`lib/unlock.js`) | `phone`, `day`, `via` | Art. 6 Abs. 1 lit. b (Feature) | keine TTL, bis Kontolöschung | ja (seit Plan 1.6b) |
 | `Nudge` | "Anna würde gern reden": Anstupser mit Cooldown (`lib/nudges.js`) | `from`, `to` (Nummern), `message` (Plus: eigener Text), `status` | Art. 6 Abs. 1 lit. b | TTL 7 Tage (`createdAt`) | ja |
-| `OpsTally` | Betriebszähler je Tag (`lib/opsCounters.js`), nur Summen | keine | – | keine TTL | n. a. |
+| `OpsTally` | Betriebszähler je Tag (`lib/opsCounters.js`), nur Summen; auch Paywall-Schritte je Quelle und Limit-Treffer (Plan 2.6a, `lib/paywall.js`), ohne Bezug zur Person | keine | – | keine TTL | n. a. |
 | `PushDecision` | Was mit jedem Katalog-Push passiert ist (gesendet oder Grund für das Auslassen), für die App und zur Fehlersuche (`lib/notify.js`) | `to`, `about` (Nummern), `type`, `result`, `app` (Zustand der App), `delivery` | Art. 6 Abs. 1 lit. b/f | TTL 3 Tage (`at`) | ja (als Empfänger und als Anlass) |
 | `PushLog` | Drosselung sozialer Pushes je Empfänger und Tages-Cap, Cap der Lifecycle-Pushes (2 in 7 Tagen, `key` `lifecycle:<Stufe>`) | `to` (Nummer), `key` | Art. 6 Abs. 1 lit. f (Push-Hygiene) | TTL je Eintrag (`expiresAt`, bis 24 h, Lifecycle 7 Tage) | ja |
 | `PushTicket` | Expo-Push-Tickets, die auf ihre Quittung warten (`lib/receipts.js`) | `token` (Expo-Push-Token des Geräts), `type` | Art. 6 Abs. 1 lit. b/f | TTL 2 Tage (`createdAt`) | ja (über den Push-Token des Nutzers) |

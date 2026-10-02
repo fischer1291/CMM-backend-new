@@ -1224,6 +1224,57 @@ function RevenueKpis({ series }) {
     ${active != null && active < REVENUE_MIN_PLANS ? html`<p class="note">Steuernd erst ab ${REVENUE_MIN_PLANS} aktiven Store-Abos (Annahme): bis dahin lesen, nicht urteilen.</p>` : null}`;
 }
 
+// Where the paywall was opened (/plus?from=..., plan 2.6a, lib/paywall.js SOURCES)
+const PAYWALL_SOURCES = {
+  settings: 'Einstellungen', memories: 'Erinnerungen', appicon: 'App-Icon', year: 'Jahresrückblick', room: 'Runde',
+  limit_circles: 'Grenze Kreise', limit_rituals: 'Grenze Rituale', limit_members: 'Grenze Personen', limit_moments: 'Grenze Moments',
+  referral: 'Einladungen', plus_expiring: 'Push: Geschenk endet', billing_issue: 'Push: Zahlung', plus_winback_3: 'Push: Win-back 3 T.',
+  plus_winback_30: 'Push: Win-back 30 T.', cancel: 'Push: Kündigung', trial_ending: 'Push: Probezeit endet', push: 'Push', other: 'Sonstige',
+};
+const LIMIT_HIT_LABELS = {
+  circles: 'Kreise', circleMembers: 'Personen pro Kreis', roomParticipants: 'Personen pro Runde', roomMinutes: 'Rundenlänge',
+  rituals: 'Rituale', momentsPerDay: 'Moments pro Tag', video: 'Video',
+};
+// The paywall steers only from this many views a week (plan, principle 6)
+const PAYWALL_MIN_WEEKLY_VIEWS = 200;
+
+/**
+ * The paywall funnel and the limit hits of the last 30 days (plan 2.6a),
+ * from MetricsDaily.plus.funnel and plus.limitHits.
+ */
+function PaywallFunnel({ series }) {
+  if (!series) return html`<p class="note">Lade Paywall …</p>`;
+  const f = (key) => sum(series, (d) => d.plus?.funnel?.[key]);
+  const views = f('paywallView'), starts = f('purchaseStart'), bought = f('purchaseSuccess');
+  const weekViews = sum(series.slice(-7), (d) => d.plus?.funnel?.paywallView);
+  const bySource = {};
+  for (const d of series) {
+    for (const [from, row] of Object.entries(d.plus?.funnel?.bySource || {})) {
+      const t = (bySource[from] ??= { view: 0, success: 0 });
+      t.view += row.view || 0;
+      t.success += row.success || 0;
+    }
+  }
+  const sources = Object.entries(bySource).sort((a, b) => b[1].view - a[1].view || b[1].success - a[1].success);
+  const hits = {};
+  for (const d of series) for (const [limit, n] of Object.entries(d.plus?.limitHits || {})) hits[limit] = (hits[limit] || 0) + (n || 0);
+  const hitList = Object.entries(hits).sort((a, b) => b[1] - a[1]);
+  const failures = f('purchaseError') + f('restoreError') + f('offeringEmpty');
+  return html`
+    <div class="kpis">
+      <${Kpi} label="Paywall 30 Tage" value=${`${num(views)} → ${num(starts)} → ${num(bought)}`} sub=${`Aufrufe → Kauf gestartet → gekauft · Quote ${pct(views ? bought / views : null)}`} color="var(--violet)" />
+      <${Kpi} label="Abgebrochen / Fehler" value=${`${num(f('purchaseCancel'))} / ${num(failures)}`} sub=${`Kauf ${num(f('purchaseError'))} · Wiederherstellen ${num(f('restoreError'))} · kein Angebot ${num(f('offeringEmpty'))} · wiederhergestellt ${num(f('restoreSuccess'))}`} color="var(--pink)" />
+      <${Kpi} label="Limit-Treffer 30 Tage" value=${num(hitList.reduce((a, [, n]) => a + n, 0))} sub=${hitList.map(([k, n]) => `${LIMIT_HIT_LABELS[k] || k} ${num(n)}`).join(' · ') || 'noch keine'} color="var(--cyan)" />
+    </div>
+    ${sources.length ? html`<div class="card" style="margin-bottom:12px">
+      <div class="label">Paywall je Quelle (30 Tage)</div>
+      <table><thead><tr><th>Quelle</th><th>Aufrufe</th><th>Käufe</th><th>Quote</th></tr></thead><tbody>
+        ${sources.map(([from, t]) => html`<tr><td>${PAYWALL_SOURCES[from] || from}</td><td>${num(t.view)}</td><td>${num(t.success)}</td><td>${pct(t.view ? t.success / t.view : null)}</td></tr>`)}
+      </tbody></table>
+    </div>` : null}
+    <p class="note">Steuernd ab ${PAYWALL_MIN_WEEKLY_VIEWS} Aufrufen pro Woche (letzte 7 Tage: ${num(weekViews)}); darunter lesen, nicht urteilen, und lieber mit Leuten sprechen. Gezählt wird, was die App meldet (POST /me/plus/funnel), Tester eingeschlossen.</p>`;
+}
+
 const cents = (c, digits = 2) => (c == null ? '–' : `${(c / 100).toLocaleString('de-DE', { minimumFractionDigits: digits, maximumFractionDigits: digits })} €`);
 
 /**
@@ -1309,6 +1360,8 @@ function PlusPanel({ role }) {
     ${data.sandbox > 0 ? html`<p class="note">${num(data.sandbox)} davon ${data.sandbox === 1 ? 'ist ein Sandbox-Kauf' : 'sind Sandbox-Käufe'} von Testern: Plus aktiv, aber nirgends als zahlend gezählt.</p>` : null}
     <div class="section">Umsatz</div>
     <${RevenueKpis} series=${series} />
+    <div class="section">Paywall</div>
+    <${PaywallFunnel} series=${series} />
     <div class="section">Unit Economics</div>
     <${UnitEconomics} />
     ${series && series.length ? html`<div class="grid2">
