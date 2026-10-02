@@ -1,9 +1,17 @@
+# The whole suite on every pull request and every push to main. A green main
+# is what Render deploys: the second job tags it api/<date>-<short sha>
+# (date in Europe/Berlin), so every backend version that passed the tests is
+# findable by tag (rollback target, change-failure rate), as the app's
+# ios/v<version>-b<build> tags (CMM .github/workflows/ios-build.yml).
 name: Test
 
 on:
   pull_request:
   push:
     branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -16,3 +24,24 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+
+  tag:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Only this job may write, and only tags
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag api/<Datum>-<Commit>
+        run: |
+          tag="api/$(TZ=Europe/Berlin date +%F)-${GITHUB_SHA::7}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag gibt es schon"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Backend $GITHUB_SHA, Tests grün" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag"
+          echo "Tag: $tag" >> "$GITHUB_STEP_SUMMARY"

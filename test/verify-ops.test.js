@@ -120,3 +120,93 @@ test("ops config: validated on its own, defaults filled in, never sent to the ap
   await saveConfig({ flags: { group_calls: true } }, "owner@test");
   assert.equal((await opsConfig()).smsPerDay, 50);
 });
+
+// --- REVIEW_UNTIL: the demo login ends with its last day (plan 2.1) -----------
+
+const REVIEW = "+4915999999999";
+const { reviewLoginStatus, reviewUntil } = require("../routes/verify");
+const alerts = require("../lib/alerts");
+const { shiftDateKey } = require("../lib/localTime");
+const reviewRule = alerts.RULES.find((r) => r.tag === "review_login");
+/** Run `fn` with the REVIEW_* variables set, and remove them afterwards. */
+async function withReview(vars, fn) {
+  const keys = ["REVIEW_PHONE", "REVIEW_CODE", "REVIEW_UNTIL"];
+  for (const k of keys) delete process.env[k];
+  Object.assign(process.env, vars);
+  try {
+    await fn();
+  } finally {
+    for (const k of keys) delete process.env[k];
+  }
+}
+
+test("review login: on through the last day of REVIEW_UNTIL (Europe/Berlin), expired from the next midnight", async () => {
+  const env = { REVIEW_PHONE: REVIEW, REVIEW_CODE: "246810", REVIEW_UNTIL: "2026-10-02" };
+  // 23:59 and 00:00 Berlin time (CEST, UTC+2)
+  assert.equal(reviewLoginStatus(new Date("2026-10-02T21:59:00Z"), env), "on");
+  assert.equal(reviewLoginStatus(new Date("2026-10-02T22:00:00Z"), env), "expired");
+  // Without REVIEW_UNTIL it stays on, as before
+  assert.equal(reviewLoginStatus(new Date("2030-01-01T00:00:00Z"), { REVIEW_PHONE: REVIEW, REVIEW_CODE: "246810" }), "on");
+  // Not a real date: off, and said so
+  for (const bad of ["2026-02-30", "02.10.2026", "morgen", "2026-1-5"]) {
+    assert.equal(reviewLoginStatus(new Date("2026-01-01T12:00:00Z"), { ...env, REVIEW_UNTIL: bad }), "invalid_until", bad);
+    assert.equal(reviewUntil({ REVIEW_UNTIL: bad }), "invalid", bad);
+  }
+  assert.equal(reviewUntil({ REVIEW_UNTIL: " 2026-10-02 " }), "2026-10-02");
+  assert.equal(reviewUntil({}), null);
+  assert.equal(reviewLoginStatus(new Date(), {}), "off");
+});
+
+test("review login: after REVIEW_UNTIL the number gets an SMS like everyone and the demo code no longer signs in", async () => {
+  const today = todayKey();
+  await withReview({ REVIEW_PHONE: REVIEW, REVIEW_CODE: "246810", REVIEW_UNTIL: today }, async () => {
+    assert.equal((await request(ctx.app).get("/api/push-health").expect(200)).body.reviewLogin, "on");
+    await start(REVIEW).expect(200);
+    assert.deepEqual(fakes.sms, [], "no SMS while the demo login runs");
+    await request(ctx.app).post("/verify/check").send({ phone: REVIEW, code: "246810" }).expect(200);
+  });
+  await withReview({ REVIEW_PHONE: REVIEW, REVIEW_CODE: "246810", REVIEW_UNTIL: shiftDateKey(today, -1) }, async () => {
+    assert.equal((await request(ctx.app).get("/api/push-health").expect(200)).body.reviewLogin, "expired");
+    await start(REVIEW).expect(200);
+    assert.deepEqual(fakes.sms, [REVIEW], "an ordinary sign-up SMS");
+    const refused = await request(ctx.app).post("/verify/check").send({ phone: REVIEW, code: "246810" }).expect(200);
+    assert.equal(refused.body.success, false);
+    assert.equal(refused.body.error, "Code nicht korrekt");
+  });
+  await withReview({ REVIEW_PHONE: REVIEW, REVIEW_CODE: "246810", REVIEW_UNTIL: "bald" }, async () => {
+    assert.equal((await request(ctx.app).get("/api/push-health").expect(200)).body.reviewLogin, "invalid_until");
+  });
+});
+
+test("alert review_login: asks for an end date, then for removing the variables; quiet when off or dated", async () => {
+  const now = new Date();
+  const today = todayKey(now);
+  await withReview({}, async () => assert.equal(await reviewRule.check(now), null));
+  await withReview({ REVIEW_PHONE: REVIEW, REVIEW_CODE: "246810", REVIEW_UNTIL: today }, async () => assert.equal(await reviewRule.check(now), null));
+  await withReview({ REVIEW_PHONE: REVIEW, REVIEW_CODE: "246810" }, async () => {
+    assert.match(await reviewRule.check(now), /^Demo-Zugang ohne Ablaufdatum aktiv: REVIEW_UNTIL/);
+  });
+  await withReview({ REVIEW_PHONE: REVIEW, REVIEW_CODE: "246810", REVIEW_UNTIL: "2026-02-30" }, async () => {
+    assert.match(await reviewRule.check(now), /^REVIEW_UNTIL ist kein Datum/);
+  });
+  await withReview({ REVIEW_PHONE: REVIEW, REVIEW_CODE: "246810", REVIEW_UNTIL: shiftDateKey(today, -3) }, async () => {
+    const text = await reviewRule.check(now);
+    assert.match(text, /^Demo-Zugang abgelaufen: REVIEW_PHONE und REVIEW_CODE auf Render entfernen/);
+    assert.doesNotMatch(text, /4915999999999|246810/, "never the number or the code");
+    // Through runRules it goes out as a warning
+    await require("../models/AlertState").syncIndexes();
+    assert.deepEqual(await alerts.runRules(now), ["review_login"]);
+    const state = await require("../models/AlertState").findOne({ tag: "review_login" }).lean();
+    assert.equal(state.level, "warn");
+  });
+  // Expired with a broken leftover (code too short, number unparsable): still asks for removal
+  await withReview({ REVIEW_PHONE: REVIEW, REVIEW_CODE: "12", REVIEW_UNTIL: shiftDateKey(today, -3) }, async () => {
+    assert.equal(reviewLoginStatus(now), "expired");
+    assert.match(await reviewRule.check(now), /^Demo-Zugang abgelaufen/);
+  });
+  await withReview({ REVIEW_PHONE: "keine Nummer", REVIEW_UNTIL: shiftDateKey(today, -3) }, async () => {
+    assert.match(await reviewRule.check(now), /^Demo-Zugang abgelaufen/);
+  });
+  // Removed again: quiet
+  await withReview({ REVIEW_UNTIL: shiftDateKey(today, -3) }, async () => assert.equal(await reviewRule.check(now), null));
+});

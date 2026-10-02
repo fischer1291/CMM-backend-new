@@ -17,22 +17,46 @@ const skip = () => process.env.NODE_ENV === "test";
 
 /**
  * Demo login for App Store review: REVIEW_PHONE gets no SMS and signs in
- * with REVIEW_CODE. Off unless both are set (code at least 6 digits).
+ * with REVIEW_CODE. Off unless both are set (code at least 6 digits), and
+ * off after the day REVIEW_UNTIL ("YYYY-MM-DD", Europe/Berlin) has ended.
+ * Without REVIEW_UNTIL it stays on (as before plan 2.1); the alert
+ * review_login (lib/alerts.js) asks for an end date then, and for removing
+ * the variables once it has passed.
  */
-function reviewCodeFor(phone) {
-  const reviewPhone = normalizePhone(process.env.REVIEW_PHONE || "");
-  const code = process.env.REVIEW_CODE || "";
-  return reviewPhone && phone === reviewPhone && /^\d{6,10}$/.test(code) ? code : null;
+const REVIEW_ZONE = "Europe/Berlin";
+
+/** REVIEW_UNTIL as "YYYY-MM-DD", null when unset, "invalid" when it is no real date. */
+function reviewUntil(env = process.env) {
+  const value = String(env.REVIEW_UNTIL || "").trim();
+  if (!value) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return "invalid";
+  const day = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return day.toISOString().slice(0, 10) === value ? value : "invalid";
 }
 
-/** Whether the demo login works, for /api/push-health (never the values). */
-function reviewLoginStatus() {
-  const phone = process.env.REVIEW_PHONE || "";
-  const code = process.env.REVIEW_CODE || "";
+/**
+ * Whether the demo login works, for /api/push-health (never the values):
+ * off, invalid_until (REVIEW_UNTIL is no date: the login is off), expired
+ * (REVIEW_UNTIL has passed), invalid_phone, invalid_code or on.
+ */
+function reviewLoginStatus(now = new Date(), env = process.env) {
+  const phone = env.REVIEW_PHONE || "";
+  const code = env.REVIEW_CODE || "";
   if (!phone && !code) return "off";
+  // The end date first: a leftover, half-broken configuration after the
+  // review still reads "expired", so review_login asks for removing it
+  const until = reviewUntil(env);
+  if (until === "invalid") return "invalid_until";
+  if (until && localParts(now, REVIEW_ZONE).dateKey > until) return "expired";
   if (!normalizePhone(phone)) return "invalid_phone";
   if (!/^\d{6,10}$/.test(code)) return "invalid_code";
   return "on";
+}
+
+function reviewCodeFor(phone, now = new Date()) {
+  if (reviewLoginStatus(now) !== "on") return null;
+  return phone === normalizePhone(process.env.REVIEW_PHONE) ? process.env.REVIEW_CODE : null;
 }
 
 const sameCode = (a, b) =>
@@ -203,3 +227,4 @@ router.post("/check", perPhone(10), async (req, res) => {
 
 module.exports = router;
 module.exports.reviewLoginStatus = reviewLoginStatus;
+module.exports.reviewUntil = reviewUntil;

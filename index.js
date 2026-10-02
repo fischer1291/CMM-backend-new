@@ -1,4 +1,7 @@
 require("dotenv").config();
+// Before anything else loads express, so Sentry's integration hooks in (lib/sentry.js)
+const sentry = require("./lib/sentry");
+sentry.init();
 const mongoose = require("mongoose");
 const User = require("./models/User");
 const Call = require("./models/Call");
@@ -26,13 +29,15 @@ const PORT = process.env.PORT || 3000;
 const JOBS = "jobs";
 
 // A rejected promise nobody awaits or an exception outside a request leaves
-// the process in an unknown state: log it, hand the jobs over and exit; Render
-// restarts the service and the uptime monitor sees /healthz fail meanwhile.
+// the process in an unknown state: log it, report it to Sentry, hand the jobs
+// over and exit; Render restarts the service and the uptime monitor sees
+// /healthz fail meanwhile. The Sentry flush gets 800 ms of the 1 s budget.
 const crash = (kind) => (err) => {
   console.error(`💥 ${kind}:`, err);
   const exit = () => process.exit(1);
   setTimeout(exit, 1000);
-  releaseLease(JOBS).then(exit, exit);
+  sentry.captureException(err, { level: "fatal", tags: { crash: kind } });
+  Promise.all([releaseLease(JOBS), sentry.flush(800)]).then(exit, exit);
 };
 process.on("unhandledRejection", crash("unhandledRejection"));
 process.on("uncaughtException", crash("uncaughtException"));
@@ -256,6 +261,7 @@ async function main() {
   const shutdown = async (signal) => {
     console.log(`🛑 ${signal}: shutting down`);
     await releaseLease(JOBS);
+    await sentry.flush(2000);
     server.close();
     setTimeout(() => process.exit(0), 5000).unref();
   };
@@ -263,7 +269,9 @@ async function main() {
   process.once("SIGINT", () => shutdown("SIGINT"));
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("❌ Startup failed:", err);
+  sentry.captureException(err, { level: "fatal", tags: { crash: "startup" } });
+  await sentry.flush(800);
   process.exit(1);
 });

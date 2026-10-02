@@ -51,7 +51,6 @@ function createApp({ ringTimeoutMs } = {}) {
   app.use(helmet());
   // The native app sends no Origin; browsers only from our website
   app.use(cors({ origin: corsOrigin }));
-  app.use(express.json({ limit: "2mb" }));
   app.use(
     rateLimit({
       windowMs: 60 * 1000,
@@ -61,6 +60,10 @@ function createApp({ ringTimeoutMs } = {}) {
       legacyHeaders: false,
     }),
   );
+  // Webhooks signed over the raw body (Sentry): before the JSON parser, which
+  // would consume it; outside the app's token check
+  app.use(require("./routes/webhooks")());
+  app.use(express.json({ limit: "2mb" }));
 
   // Public routes
   app.use("/verify", require("./routes/verify"));
@@ -76,7 +79,8 @@ function createApp({ ringTimeoutMs } = {}) {
         authRequired: process.env.AUTH_REQUIRED === "true",
         // Only whether the certificate comes from the environment, never the value
         agoraCertificateFromEnv: !agoraCredentials().usingLegacyCertificate,
-        // App Store review demo login: on, off, invalid_phone or invalid_code
+        // App Store review demo login: on, off, invalid_phone, invalid_code,
+        // invalid_until or expired (REVIEW_UNTIL has passed)
         reviewLogin: require("./routes/verify").reviewLoginStatus(),
         // Which commit is deployed (set by Render)
         version: (process.env.RENDER_GIT_COMMIT || "dev").slice(0, 7),
@@ -453,6 +457,9 @@ function createApp({ ringTimeoutMs } = {}) {
   });
 
 
+  // Sentry reports 5xx errors before the handler below answers, when
+  // SENTRY_DSN is set (lib/sentry.js); after all routes, as Sentry requires
+  require("./lib/sentry").setupExpressErrorHandler(app);
   // Unknown routes and unexpected errors: JSON, never a stack trace
   app.use((req, res) => res.status(404).json({ success: false, error: "not_found" }));
   // eslint-disable-next-line no-unused-vars

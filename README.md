@@ -28,6 +28,8 @@ npm start       # needs the environment below
 | `lib/economics.js` | Unit economics: costs, contribution, break-even, runway (`GET /admin/economics`), see Unit economics |
 | `lib/lifecycle.js` | Lifecycle pushes: onboarding days 1/3/7, inactivity, weekly series, Plus ending, billing, win-back (leader job every 30 min), see Lifecycle pushes |
 | `lib/pseudonyms.js` | Keyed phone pseudonyms (`User.phoneHmac`) and their one-off migration, see Pseudonymous data |
+| `lib/sentry.js` | Error tracking: Sentry init, scrubbing, crash reports, see Error tracking (Sentry) |
+| `routes/webhooks.js` | Webhooks signed over the raw body: `POST /webhooks/sentry` → alert `sentry_fatal` |
 | `COMPLIANCE.md` | Record of processing per collection, processors, the privacy change process; `test/compliance.test.js` fails when a model has no row |
 
 What is still missing on the way to a profitable, scalable company (processes,
@@ -112,7 +114,10 @@ DEFAULT_OPS, cached 30 s), in this order:
   times the sign-ups you expect per day.
 
 The demo login for App Store review (`REVIEW_PHONE`) sends no SMS and skips
-all three. The day's counters `smsStarted`, `smsChecked` (code checks sent
+all three. It ends with the day `REVIEW_UNTIL` (`YYYY-MM-DD`, Europe/Berlin;
+`/api/push-health` then says `reviewLogin: "expired"` and the number gets an
+ordinary SMS); without `REVIEW_UNTIL` it stays on and the alert
+`review_login` asks for an end date, after it for removing the variables. The day's counters `smsStarted`, `smsChecked` (code checks sent
 to Twilio) and `smsFailed` (Twilio refused to send) land in
 `MetricsDaily.ops`; the daily push and the "Heute" card show
 "SMS x/Deckel". Still by hand: Twilio Verify Fraud Guard and an
@@ -367,6 +372,82 @@ Set up once, by hand (nothing in the repo does this):
       (≈ 20–30 $/month) only with an entry in `AppConfig.fixedCosts`
       (`CMM/docs/SCALE-PLAN.md`, 1.2 and 1.10).
 
+## Error tracking (Sentry)
+
+Crashes and unhandled request errors of the backend go to Sentry (EU region,
+free tier), next to the app's native crash reports (CMM `services/sentry.ts`,
+plan 2.1a). `lib/sentry.js` starts first thing in `index.js`, before express
+is loaded, and only when `SENTRY_DSN` is set (never under tests):
+
+- release = `RENDER_GIT_COMMIT`, environment = `SENTRY_ENVIRONMENT`
+  (default `production`), no performance tracing (`tracesSampleRate: 0`),
+  `sendDefaultPii: false`;
+- what is reported: errors that reach Express's error handler with a 5xx
+  (`setupExpressErrorHandler` in `app.js`), and the crash handlers in
+  `index.js` (`unhandledRejection`, `uncaughtException`, a failed start) as
+  `fatal`, flushed for at most 800 ms before the process exits (the exit
+  still comes after 1 s); Sentry's own handlers for those two are left out,
+  so a crash is reported once;
+- scrubbing (`scrub`, `beforeSend` and `beforeBreadcrumb`): no Sentry user
+  (the backend never sets one), no request body, cookies, query string or
+  headers except `user-agent`, `x-app-version`, `x-app-build`,
+  `x-app-update`, `x-platform`; in every string of the event phone numbers
+  (`+49…`, spaced, URL-encoded `%2B49…`, bare runs of 10–15 digits as in
+  Cloudinary ids) become `[Nummer]` and e-mail addresses `[E-Mail]`; URLs of
+  breadcrumbs lose their query string. `test/sentry.test.js` checks it.
+
+Alerts for new crashes come back through a webhook. Set up once, by hand:
+
+- [ ] Sentry → Settings → Custom Integrations → Create New Integration →
+      Internal Integration, name "Wanna yap? Alarme", Webhook URL
+      `https://api.wannayap.app/webhooks/sentry`, "Alert Rule Action" on,
+      **no** webhook subscriptions (leave `issue`, `error`, `comment` off);
+      permissions: Issue & Event "Read". Copy the Client Secret into
+      `SENTRY_WEBHOOK_SECRET` on Render.
+- [ ] Per project, the alert rules decide which level alerts: Alerts →
+      Create Alert → Issues, "A new issue is created", filter "The event's
+      level is equal to fatal", action "Send a notification via Wanna yap?
+      Alarme" (app project: only this rule, the app reports every handled
+      error as level `error`; backend project: a second rule with level
+      `error`, a 5xx there is worth a look).
+
+Why no `issue` subscription: those webhooks go out for every new issue of
+the whole organisation, past every alert rule and its filters. Each new
+handled error of the app (a network timeout, say) would become an SMS. If
+it is switched on anyway (as a fallback), `issue` / `created` alerts only at
+level `fatal`, in every project; `error` alerts only through a rule
+(`event_alert`).
+- [ ] `SENTRY_DSN` of the backend project on Render; data region EU, sign
+      the DPA in Sentry (Settings → Legal & Compliance), `COMPLIANCE.md`.
+
+`POST /webhooks/sentry` checks `sentry-hook-signature` (HMAC-SHA256, hex,
+over the raw body with `SENTRY_WEBHOOK_SECRET`, constant-time compare; the
+route sits before the JSON parser, body limit 256 kB). Without the secret or
+with a wrong signature it answers 401 and counts `sentryUnauthorized` (day
+counter). `sentry-hook-resource` `event_alert` (level `fatal` or `error`
+from `data.event`, filtered by the rule) and `issue` with action `created`
+(level `fatal` only, from `data.issue`) raise the alert `sentry_fatal`
+(level error: push, mail, SMS) after the answer; everything else is
+answered 200 and ignored. Only Sentry links (`https://sentry.io/…`,
+`https://<org>.sentry.io/…`) go into the text; the project is its slug
+(from `project.slug` or the event's API url `…/projects/<org>/<slug>/…`),
+a bare numeric project id is left out. `sentry-hook-timestamp` is not
+checked: Sentry does not sign it, so it would not stop a replay; a replayed
+call raises at most the same alert, at most once an hour.
+
+## Releases and deploys
+
+Render deploys `main`. `.github/workflows/test.yml` runs the suite on every
+pull request and push; after a green run on `main` its job `tag` sets an
+annotated tag `api/<YYYY-MM-DD>-<short sha>` (date in Europe/Berlin) on that
+commit. So every backend version that passed the tests is findable as a
+rollback target (Render → the service → Events → "Rollback" to that commit,
+or a revert on `main`), and Sentry's release (`RENDER_GIT_COMMIT`) matches
+it. Only that job has `contents: write`; a re-run skips an existing tag.
+The deploy window (never within ±15 minutes of the Yap Moment) is in
+`CMM/docs/RUNBOOK.md`. Optional, by hand: Render → the service → Settings →
+Auto-Deploy "After CI Checks Pass", so a red `main` is never deployed.
+
 ## Backup
 
 `.github/workflows/db-backup.yml` dumps the production database every Sunday
@@ -426,7 +507,7 @@ any database without that prefix.
 
 ## Alerts
 
-`lib/alerts.js` runs 14 rules every 30 minutes on the job leader, right
+`lib/alerts.js` runs 15 rules every 30 minutes on the job leader, right
 after the metrics snapshots (`index.js`). A hit goes out through
 `alert(tag, text, { level })`: at most once an hour per tag, and only once
 a day while the text is unchanged (one `AlertState` document per tag keeps
@@ -458,6 +539,8 @@ owners, others get `•••`). The "Heute" card lists the last alerts
 | `sms_cap` | warn | today's `smsStarted` is at 80 % of `ops.smsPerDay` | Real demand: raise the cap (Console → App → Betrieb); otherwise suspect SMS pumping and narrow `smsRegions` |
 | `gift_days` | warn | the gift days of the last 7 days (today and the six before; day counters `giftDays_referral`, `giftDays_waitlist`, `giftDays_admin`, see Invite rewards) are over `AppConfig.goals.giftDaysPerWeek` (default 200, assumption) | Console → Plus: where the days come from (Geschenk-Tage 7 Tage). A wave of real invites: raise the budget (Console → App → Ziele); a single source running away (one inviter, console grants): look at it; the experiment `referral_two_sided` too expensive: switch the flag off |
 | `pepper_changed` | warn | not a rule here but `lib/pseudonyms.js` at start: the stored `phoneHmac` of accounts did not match the current `PHONE_HASH_PEPPER` and was re-keyed together with their `ActiveDay` rows (see Pseudonymous data) | Expected once, right after `PHONE_HASH_PEPPER` was set on Render after the first deploy. Otherwise: the variable or `JWT_SECRET` changed, or something ran against the production database with another env; restore the old value, the next start re-keys back |
+| `review_login` | warn | the App Store review demo login (`REVIEW_PHONE`/`REVIEW_CODE`, `routes/verify.js`) is on without `REVIEW_UNTIL` ("Demo-Zugang ohne Ablaufdatum aktiv"), `REVIEW_UNTIL` has passed while `REVIEW_PHONE` or `REVIEW_CODE` is still set, valid or not ("Demo-Zugang abgelaufen"), or `REVIEW_UNTIL` is no date (the login is then off) | Render → Environment: set `REVIEW_UNTIL` to the last day the review needs it (a week after submitting is plenty), or remove `REVIEW_PHONE`, `REVIEW_CODE` and `REVIEW_UNTIL` once the review is through |
+| `sentry_fatal` | error | not a rule here but `POST /webhooks/sentry` (`routes/webhooks.js`): an alert rule with the action "Send a notification via Wanna yap? Alarme" fired (`event_alert`, level `fatal` or `error`; the rules decide per project: app fatal, backend fatal and error), or, only if the integration's `issue` webhooks are on, a new issue with level `fatal` in any project (`issue`, action `created`); signed with `SENTRY_WEBHOOK_SECRET`. The text names project, level, release, short issue id and the Sentry link, never the message. Like every tag at most once an hour: a second new crash within the hour shows only in Sentry | Open the link: which build/commit, how many users. App: OTA hotfix or raise `minBuild`, pause the phased release; backend: roll back on Render to the last `api/…` tag (see Releases and deploys) |
 | `owner_silent` | warn | not a rule here but the dead-man check in `lib/adminPush.js` (see Team): no owner acknowledged the morning push or signed in for 7 days; once per 7 days | Owner: open the console. Emergency contact: `CMM/docs/EMERGENCY.md` |
 
 ## Team
@@ -779,4 +862,10 @@ days under `activeDays`.
 | `REVENUECAT_API_KEY` | no | RevenueCat secret API key (v1) for `GET /v1/subscribers/{id}`: `POST /me/plus/sync` after a purchase in the app, the nightly reconcile of every store Plus (`lib/plusReconcile.js`, see Subscriptions), and a TRANSFER whose source we don't know; also `DELETE /v1/subscribers/{id}` when an account is deleted (see Pseudonymous data). Without it sync answers 501, the reconcile never runs, such a transfer grants Plus without end date (logged) and the subscriber stays at RevenueCat |
 | `POST_SLOTS` | no | When approved ad videos go out, Europe/Berlin, default `12:00,18:00` (one video per slot) |
 | `PORT` | no | Set by Render |
+| `SENTRY_DSN` | no | DSN of the backend's Sentry project (EU region); without it nothing is sent, see Error tracking (Sentry) |
+| `SENTRY_ENVIRONMENT` | no | Sentry environment, default `production` (e.g. `staging` for a second service) |
+| `SENTRY_WEBHOOK_SECRET` | sentry alerts | Client Secret of the Sentry Internal Integration that calls `POST /webhooks/sentry`; without it the webhook refuses everything (401) |
+| `REVIEW_PHONE`, `REVIEW_CODE` | no | App Store review demo login: this number signs in with this code (6–10 digits) without SMS; remove both after the review |
+| `REVIEW_UNTIL` | with `REVIEW_PHONE` | Last day of the demo login, `YYYY-MM-DD` (Europe/Berlin); from the next midnight it is off (`reviewLogin: "expired"` in `/api/push-health`). Missing: the login stays on and the alert `review_login` reminds you |
+| `RENDER_GIT_COMMIT` | no | Set by Render: the deployed commit, shown in `/healthz`/`/api/push-health` and used as Sentry release |
 | `TEST_MONGODB_URI` | no | Tests only: `npm test` runs against this cluster (in its own `wannayap-test-<pid>` database) instead of the in-memory MongoDB; used in the restore drill, see Backup |
