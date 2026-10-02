@@ -304,15 +304,16 @@ function AppErrors() {
   if (!errors.length) return html`<div class="card note">Keine App-Fehler in den letzten 30 Tagen.</div>`;
   return html`<div class="card scroll">
     <table>
-      <thead><tr><th>Fehler</th><th>Anzahl</th><th>Zuletzt</th><th>Versionen</th></tr></thead>
+      <thead><tr><th>Fehler</th><th>Anzahl</th><th>Zuletzt</th><th>Versionen</th><th>Updates</th></tr></thead>
       <tbody>${errors.map((e) => html`<tr>
         <td><details><summary>${e.fatal ? html`<span class="pill warn">Absturz</span> ` : null}${e.message}</summary><pre style="white-space:pre-wrap;font-size:11px">${e.stack}</pre></details></td>
         <td>${num(e.count)}</td>
         <td>${new Date(e.lastAt).toLocaleString('de-DE')}</td>
         <td>${e.versions.join(', ')}</td>
+        <td title=${(e.updates || []).join(', ')}>${(e.updates || []).map((u) => (u === 'embedded' ? 'Build' : u.slice(0, 8))).join(', ') || '–'}</td>
       </tr>`)}</tbody>
     </table>
-    <p class="note" style="margin:10px 0 0">JavaScript-Fehler aus der App, ohne Personenbezug gruppiert. Native Abstürze stehen in Xcode → Organizer.</p>
+    <p class="note" style="margin:10px 0 0">JavaScript-Fehler aus der App, ohne Personenbezug gruppiert. Updates: „Build“ ist das JavaScript aus dem Store-Build, sonst die ersten Zeichen der OTA-Update-ID. Native Abstürze stehen in Sentry und in Xcode → Organizer.</p>
   </div>`;
 }
 

@@ -422,13 +422,14 @@ test("app errors: reported without sign-in, grouped, listed for the console", as
   const { cookie } = await setUpAdmin();
   process.env.AUTH_REQUIRED = "true";
   try {
-    const report = (line, version) =>
+    const report = (line, version, update) =>
       request(ctx.app)
         .post("/diagnostics/errors")
-        .send({ message: "TypeError: x is undefined", stack: `TypeError: x is undefined\n    at StatusView (app.bundle:${line}:12)`, version, platform: "ios", fatal: true })
+        .send({ message: "TypeError: x is undefined", stack: `TypeError: x is undefined\n    at StatusView (app.bundle:${line}:12)`, version, update, platform: "ios", fatal: true })
         .expect(200);
-    await report(1200, "1.0.0 (21)");
-    await report(1300, "1.0.1 (22)"); // other line number, same place in the code
+    await report(1200, "1.0.0 (21)", "embedded");
+    await report(1300, "1.0.1 (22)", "0A1B2C3D-4E5F-4a6b-8c7d-9e0f1a2b3c4d"); // other line number, same place in the code
+    await report(1400, "1.0.1 (22)", "not an update id <script>"); // dropped, the report still counts
     await request(ctx.app).post("/diagnostics/errors").send({}).expect(400);
   } finally {
     delete process.env.AUTH_REQUIRED;
@@ -436,11 +437,13 @@ test("app errors: reported without sign-in, grouped, listed for the console", as
   const res = await request(ctx.app).get("/admin/errors").set("Cookie", cookie).expect(200);
   assert.equal(res.body.errors.length, 1);
   const [error] = res.body.errors;
-  assert.equal(error.count, 2);
+  assert.equal(error.count, 3);
   // Reports without a token can't mark an error fatal: a fatal error alerts the
   // owner (lib/alerts.js), so only a signed-in app may say so (test/alerts.test.js)
   assert.equal(error.fatal, false);
   assert.deepEqual(error.versions, ["1.0.0 (21)", "1.0.1 (22)"]);
+  // Which JavaScript ran: the bundle from the build and one OTA update, lower case; junk is dropped
+  assert.deepEqual(error.updates, ["embedded", "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"]);
   await request(ctx.app).get("/admin/errors").expect(401);
 });
 
