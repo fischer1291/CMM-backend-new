@@ -25,10 +25,12 @@ npm start       # needs the environment below
 | `lib/phone.js` | E.164 phone normalization |
 | `lib/push.js` | Expo and VoIP (APNs) push |
 | `lib/agora.js` | Agora RTC tokens |
+| `lib/devices.js` | Device list (`User.devices`, `X-Device-Id`/`X-Device-Model`), see Recycled numbers and devices |
 | `lib/economics.js` | Unit economics: costs, contribution, break-even, runway (`GET /admin/economics`), see Unit economics |
 | `lib/lifecycle.js` | Lifecycle pushes: onboarding days 1/3/7, inactivity, weekly series, Plus ending, billing, win-back (leader job every 30 min), see Lifecycle pushes |
 | `lib/pseudonyms.js` | Keyed phone pseudonyms (`User.phoneHmac`) and their one-off migration, see Pseudonymous data |
 | `lib/sentry.js` | Error tracking: Sentry init, scrubbing, crash reports, see Error tracking (Sentry) |
+| `routes/verify.js` | SMS sign-in, the review login, "Ist das dein Konto?" for recycled numbers (`/verify/account-check`) |
 | `routes/webhooks.js` | Webhooks signed over the raw body: `POST /webhooks/sentry` → alert `sentry_fatal` |
 | `COMPLIANCE.md` | Record of processing per collection, processors, the privacy change process; `test/compliance.test.js` fails when a model has no row |
 
@@ -57,6 +59,80 @@ means the flag is on; `false` means set it on Render now. `index.js` logs an
 error line at start while it is off. The legacy code paths (`lib/auth.js`,
 `socket.js`, `/rtcToken`, `phones` in `/contacts/match`) are removed once
 `minBuild` in the app config is at least the first build that sends tokens.
+
+## Recycled numbers and devices
+
+Plan 2.9. Prepaid numbers go back to the carrier and on to someone else;
+before, the new holder's first sign-in opened the old account.
+
+**Devices.** The app sends `X-Device-Id` (the iOS identifierForVendor, or a
+UUID it made once and keeps in SecureStore; `[A-Za-z0-9-]`, at most 64,
+never an advertising id) and `X-Device-Model` (expo-device `modelName`, cut
+to 40) with every request. `User.devices` keeps `{ id, model, platform,
+appVersion, appBuild, firstSeenAt, lastSeenAt }` for at most ten devices
+(the least recently seen fall out, `lib/devices.js`), written by
+`/verify/check`, `/verify/account-check`, `/user/push-token` (which also
+stores the id as `pushTokenMetadata.deviceId`) and, at most every six hours
+per device and instance, by any authenticated request (`lib/auth.js`, next
+to the app version). `User.lastVerifiedAt` is the last verification that
+issued a token. `GET /me/devices` lists them, most recent first, `current`
+marking the caller.
+
+**"Ist das dein Konto?"** `/verify/check` holds the token back when the
+account behind the number has been quiet for `RECYCLE_AFTER_DAYS` = 180
+days (an assumption; the latest `ActiveDay` under every key of the number,
+else `lastOnline`, else `milestones.verifiedAt`, else the account's
+creation; not the newest of all, because the schedule job and moderation
+write `lastOnline` without the person),
+the sign-in comes from a device not in `User.devices`, and the account has
+a name or a picture. It answers `200 { success: true, phone, accountCheck:
+{ name (first name only), avatarUrl, lastActiveMonth: "YYYY-MM" }, checkToken
+}`. The `checkToken` is an HMAC-SHA256 with `JWT_SECRET` over
+`phone|nonce|until`, valid ten minutes, once: the nonce sits in
+`User.accountCheck` and is cleared on redemption (a newer question replaces
+an older one). `POST /verify/account-check { phone, checkToken, answer:
+"mine" | "not_mine" }` (consent fields and `inviteCode` may ride along as
+with `/check`): `mine` signs in like `/check`; `not_mine` stores the old
+account's export as `ArchivedAccount` (30 days TTL, for support only: when
+someone chose it by mistake, support rebuilds the account from the export
+by hand; the avatar and moment images at Cloudinary and the RevenueCat
+subscriber are gone with the deletion, a store subscription comes back
+through "Käufe wiederherstellen", other Plus sources by hand), deletes it with `lib/account.js deleteAccount` (other people's
+contacts lose the number), creates a fresh account whose
+`tokensValidAfter` cuts off every token from the old holder's time, and
+signs in. An expired, used or foreign `checkToken` gets `401 { error:
+"check_expired" }`; the app starts over with a new SMS. Not asked: the
+review login (`REVIEW_PHONE`), accounts without name and picture, and
+everyone in legacy mode (no `JWT_SECRET`), and apps from before plan 2.9
+(no `X-Device-Id`): they cannot show the question and sign in as before,
+counted as `accountCheckNoDevice`. So there is no deploy order between
+backend and app, and a returning owner on an old app is never locked out;
+the new holder of a recycled number installs the current app, which sends
+the id, and once `minBuild` is at a build that sends it, old apps stop at
+the update screen anyway. Day counters (`MetricsDaily.ops`):
+`accountCheckAsked`, `accountCheckNoDevice`, `accountCheckMine`,
+`accountCheckNotMine`, `logoutAll`.
+
+**New device push.** When a device that sends `X-Device-Id` and is not in
+`User.devices` signs in, and the account's push token belongs to another
+device of the list (`pushTokenMetadata.deviceId` is listed there and
+differs), that token gets `new_device` ("Neue Anmeldung", deep link
+`/settings`) before the new device is stored: no switch, not social, silent
+at night like `missed_call`. Quiet when it is unclear whose the token is:
+sign-ins without `X-Device-Id`, accounts without a device list yet, and
+tokens still registered with the old body `deviceId` (until the updated
+app sends `/user/push-token` again), so the phone that signs in is never
+warned about itself.
+
+**Überall abmelden.** `POST /me/logout-all { pushToken?, voipToken? }` (token
+only) ends every session with `lib/moderation.js endSessions`
+(`tokensValidAfter`, the access cache, open sockets, the caller's too),
+removes push and VoIP tokens unless they equal the ones sent (the caller's
+own), keeps only the calling device in `User.devices`, and answers `{
+success: true, token }` with a fresh token for the caller, issued one second
+after the cut-off (tokens carry whole seconds; `lib/accessGate.js` refuses
+the cut-off's own second). JWT rotation with a key list stays a step of its
+own.
 
 ## Who may call whom
 

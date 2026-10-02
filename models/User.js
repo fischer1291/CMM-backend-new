@@ -199,6 +199,39 @@ const userSchema = new mongoose.Schema({
     sent: { type: Map, of: Date, default: undefined },
   },
 
+  // Devices signed in on this account (plan 2.9, lib/devices.js), at most
+  // ten, the least recently seen fall out. id: X-Device-Id, the iOS
+  // identifierForVendor or a UUID the app made once (no advertising id);
+  // model: expo-device modelName. Written by /verify/check,
+  // /verify/account-check, /user/push-token and, at most every six hours per
+  // device, by authenticated requests; POST /me/logout-all keeps only the
+  // calling one. A sign-in from an id not listed here counts as a new device
+  // (new_device push, the recycled-number question in routes/verify.js).
+  devices: {
+    type: [
+      {
+        _id: false,
+        id: String,
+        model: { type: String, default: null },
+        platform: { type: String, default: null },
+        appVersion: { type: String, default: null },
+        appBuild: { type: String, default: null },
+        firstSeenAt: Date,
+        lastSeenAt: Date,
+      },
+    ],
+    default: [],
+  },
+  // Last successful SMS verification that issued a token (routes/verify.js)
+  lastVerifiedAt: { type: Date, default: null },
+  // The open "Ist das dein Konto?" question of a recycled number
+  // (routes/verify.js): the nonce inside the checkToken and until when it
+  // holds. Cleared when the token is redeemed, so it works once.
+  accountCheck: {
+    nonce: { type: String, default: null },
+    until: { type: Date, default: null },
+  },
+
   // App version last seen (request headers), for support and min versions
   app: {
     version: { type: String, default: null },

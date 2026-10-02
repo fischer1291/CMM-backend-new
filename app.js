@@ -13,6 +13,7 @@ const Call = require("./models/Call");
 const Room = require("./models/Room");
 const Circle = require("./models/Circle");
 const { authenticate, actingPhone } = require("./lib/auth");
+const { deviceOf, rememberDevice } = require("./lib/devices");
 const { agoraCredentials, buildRtcToken } = require("./lib/agora");
 const { Expo, voipProviders } = require("./lib/push");
 const { registerSocketHandlers } = require("./socket");
@@ -305,6 +306,10 @@ function createApp({ ringTimeoutMs } = {}) {
       return res.status(400).json({ success: false, message: "Invalid Expo push token" });
     }
     const zone = isValidTimezone(timezone) ? { timezone } : {};
+    // Plan 2.9: the device from X-Device-Id names the token's device, so the
+    // new_device push (routes/verify.js) knows whether the token is on
+    // another one; older apps keep their body deviceId
+    const device = deviceOf(req.headers);
 
     try {
       // One device = one user: remove this token from anyone else
@@ -313,7 +318,7 @@ function createApp({ ringTimeoutMs } = {}) {
         { phone },
         {
           pushToken: token,
-          pushTokenMetadata: { deviceId, platform, registeredAt: new Date(), lastValidated: new Date() },
+          pushTokenMetadata: { deviceId: device?.id || deviceId, platform, registeredAt: new Date(), lastValidated: new Date() },
           lastOnline: new Date(),
           ...zone,
         },
@@ -324,6 +329,7 @@ function createApp({ ringTimeoutMs } = {}) {
       }
       // Milestone: the first time this person allowed pushes; never overwritten
       await User.updateOne({ phone, "milestones.pushGrantedAt": null }, { $set: { "milestones.pushGrantedAt": new Date() } });
+      if (device) await rememberDevice(phone, device).catch((err) => console.error("❌ rememberDevice:", err.message));
       res.json({ success: true });
     } catch (error) {
       console.error("❌ Error registering push token:", error.message);

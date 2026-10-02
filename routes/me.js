@@ -1,10 +1,18 @@
+/**
+ * The own profile and what belongs to it: GET /me, the research answer, the
+ * device's permission state, profile edits, and since plan 2.9 the device
+ * list and "Überall abmelden".
+ */
 const express = require("express");
 const User = require("../models/User");
-const { actingPhone } = require("../lib/auth");
+const { actingPhone, signToken } = require("../lib/auth");
 const { normalizePhone, regionOf } = require("../lib/phone");
 const { isBlocked } = require("../lib/relations");
 const { announceJoined, ensureInviteCode } = require("../lib/invites");
 const { localeOf } = require("../lib/appConfig");
+const { endSessions } = require("../lib/moderation");
+const { deviceIdOf, listDevices, forgetDevices } = require("../lib/devices");
+const opsCounters = require("../lib/opsCounters");
 
 const router = express.Router();
 
@@ -119,6 +127,58 @@ router.post("/state", async (req, res) => {
     res.json({ success: true, device: deviceOf(updated) });
   } catch (err) {
     res.status(500).json({ success: false, error: "Status konnte nicht gespeichert werden" });
+  }
+});
+
+// GET /me/devices (plan 2.9): the devices signed in on the account, most
+// recently seen first; `current` marks the calling one (X-Device-Id)
+router.get("/devices", async (req, res) => {
+  if (!req.auth) return res.status(401).json({ success: false, error: "Authentication required" });
+  try {
+    const user = await User.findOne({ phone: req.auth.phone }, { devices: 1 }).lean();
+    if (!user) return res.status(404).json({ success: false, error: "User not found" });
+    res.json({ success: true, devices: listDevices(user, deviceIdOf(req.headers)) });
+  } catch (err) {
+    res.status(500).json({ success: false, error: "Geräte konnten nicht geladen werden" });
+  }
+});
+
+// POST /me/logout-all { pushToken?, voipToken? } (plan 2.9, "Überall
+// abmelden"): every token issued until now stops working
+// (lib/moderation.js endSessions: tokensValidAfter, the access cache, open
+// sockets, the caller's too: it reconnects with the new token). Push and
+// VoIP tokens go unless they are the ones the caller sent (its own), the
+// device list keeps only the calling device. The answer carries a fresh
+// token for the caller, issued a second after the cut-off: tokens carry
+// whole seconds and lib/accessGate.js refuses the cut-off's own second.
+router.post("/logout-all", async (req, res) => {
+  if (!req.auth) return res.status(401).json({ success: false, error: "Authentication required" });
+  const phone = req.auth.phone;
+  const { pushToken, voipToken } = req.body || {};
+  try {
+    const user = await User.findOne({ phone }, { pushToken: 1, voipToken: 1 }).lean();
+    if (!user) return res.status(404).json({ success: false, error: "User not found" });
+    const now = new Date();
+    const current = deviceIdOf(req.headers);
+    const unset = {};
+    if (user.pushToken && user.pushToken !== pushToken) Object.assign(unset, { pushToken: 1, pushTokenMetadata: 1 });
+    if (user.voipToken && user.voipToken !== voipToken) Object.assign(unset, { voipToken: 1, voipTokenMetadata: 1 });
+    // $pull in place of a read-modify-write: a device stored meanwhile by a
+    // concurrent request does not bring the old list back
+    await User.updateOne(
+      { phone },
+      {
+        ...(current ? { $pull: { devices: { id: { $ne: current } } } } : { $set: { devices: [] } }),
+        ...(Object.keys(unset).length ? { $unset: unset } : {}),
+      },
+    );
+    await endSessions(phone, req.app.get("io"), now);
+    forgetDevices(phone);
+    opsCounters.count("logoutAll").catch((err) => console.error("❌ opsCounters:", err.message));
+    res.json({ success: true, token: signToken(phone, { issuedAt: new Date(now.getTime() + 1000) }) });
+  } catch (err) {
+    console.error("❌ logout-all failed:", err.message);
+    res.status(500).json({ success: false, error: "Abmelden hat nicht geklappt. Bitte versuch es noch einmal." });
   }
 });
 

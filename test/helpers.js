@@ -181,6 +181,7 @@ async function reset() {
   require("../lib/metrics").resetActivityCache();
   require("../lib/accessGate").reset();
   require("../lib/appConfig").resetAppCache();
+  require("../lib/devices").forgetDevices();
   require("../lib/appConfig").resetFlagsCache();
   require("../lib/appConfig").resetOpsCache();
   await require("../models/SupportTicket").syncIndexes();
@@ -192,6 +193,7 @@ async function reset() {
   await require("../models/InviteVisit").syncIndexes();
   // Unique event ids: the webhook relies on the 11000 for a retried event
   await require("../models/SubscriptionEvent").syncIndexes();
+  await require("../models/ArchivedAccount").syncIndexes();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
   fakes.failExpo = false;
