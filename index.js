@@ -4,6 +4,7 @@ const User = require("./models/User");
 const Call = require("./models/Call");
 const Talk = require("./models/Talk");
 const Admin = require("./models/Admin");
+const ActiveDay = require("./models/ActiveDay");
 const { createApp } = require("./app");
 const { initializeVoipPush } = require("./lib/push");
 const { agoraCredentials } = require("./lib/agora");
@@ -48,7 +49,7 @@ async function migrate() {
   // account, then ActiveDay re-keyed from SHA-256 to the HMAC, once. Both
   // query ActiveDay by `who`; the index must exist before they run (this
   // happens before server.listen, so a collection scan would hold /healthz)
-  await require("./models/ActiveDay").createIndexes();
+  await ActiveDay.createIndexes();
   const { added: addedHmac, rekeyed: rekeyedUsers } = await backfillPhoneHmac();
   if (addedHmac) console.log(`🔧 Added phoneHmac to ${addedHmac} users`);
   if (rekeyedUsers) console.log(`🔧 Re-keyed phoneHmac and the ActiveDay rows of ${rekeyedUsers} users`);

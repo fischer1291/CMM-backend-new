@@ -223,6 +223,10 @@ userSchema.statics.hashPhone = (phone) =>
 userSchema.statics.phonePepperConfigured = () => !!process.env.PHONE_HASH_PEPPER;
 const phonePepper = () =>
   process.env.PHONE_HASH_PEPPER || crypto.createHash("sha256").update(`${process.env.JWT_SECRET || ""}:phone-hash`).digest("hex");
+// SHA-256 of the pepper, never the pepper: stored as AppConfig.migrations
+// .phoneHmacKey so the start knows whether every phoneHmac still matches the
+// current pepper without reading all accounts (lib/pseudonyms.js)
+userSchema.statics.phonePepperFingerprint = () => crypto.createHash("sha256").update(`pepper:${phonePepper()}`).digest("hex");
 
 /**
  * Keyed hash of the E.164 number for the analytics collections (ActiveDay):

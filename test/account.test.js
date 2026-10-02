@@ -9,6 +9,7 @@ const CallMoment = require("../models/CallMoment");
 const MomentUnlock = require("../models/MomentUnlock");
 const SubscriptionEvent = require("../models/SubscriptionEvent");
 const ActiveDay = require("../models/ActiveDay");
+const WaitlistEntry = require("../models/WaitlistEntry");
 const revenuecat = require("../lib/revenuecat");
 
 let ctx;
@@ -66,6 +67,11 @@ test("delete account: removes the user, their moments, talks, nudges and every t
     { day: "2026-09-02", who: User.hashPhone(ANNA) },
     { day: "2026-09-01", who: User.hmacPhone(BEN) },
   ]);
+  // A redeemed waitlist code names the account by its SHA-256 (lib/waitlist.js)
+  await WaitlistEntry.create([
+    { email: "anna@example.com", code: "ANNA1", token: "t-anna", status: "confirmed", claimedBy: User.hashPhone(ANNA), claimedAt: new Date() },
+    { email: "ben@example.com", code: "BEN1", token: "t-ben", status: "confirmed", claimedBy: User.hashPhone(BEN), claimedAt: new Date() },
+  ]);
   // RevenueCat forgets the subscriber (our user id), when the key is configured
   process.env.REVENUECAT_API_KEY = "rc-api-key";
   const forgotten = [];
@@ -81,6 +87,9 @@ test("delete account: removes the user, their moments, talks, nudges and every t
   assert.equal(await ActiveDay.countDocuments({ who: { $in: [User.hmacPhone(ANNA), User.hashPhone(ANNA)] } }), 0, "no activity row of the account is left");
   assert.equal(await ActiveDay.countDocuments({ who: User.hmacPhone(BEN), day: "2026-09-01" }), 1, "other people keep their rows");
   assert.deepEqual(forgotten, [String(annaBefore._id)]);
+  assert.equal(await WaitlistEntry.countDocuments({ claimedBy: User.hashPhone(ANNA) }), 0, "no waitlist code names the account");
+  assert.equal((await WaitlistEntry.findOne({ code: "ANNA1" })).claimedBy, "deleted", "the code stays used");
+  assert.equal((await WaitlistEntry.findOne({ code: "BEN1" })).claimedBy, User.hashPhone(BEN));
   const moments = await CallMoment.find();
   assert.deepEqual(moments.map((m) => m.targetPhone), [CARL]);
   assert.equal(moments[0].totalReactions, 0);
@@ -145,10 +154,13 @@ test("export: everything stored about the user, as JSON", async () => {
   assert.equal(data.moments.length, 1);
   assert.equal(data.moments[0].image, "(Bild in der Datenbank)");
   assert.deepEqual(data.conversations.map((c) => [c.with, c.seconds]), [[BEN, 600]]);
-  // The days the app was used, from the keyed rows and from older SHA-256 rows
-  await ActiveDay.create([{ day: "2026-09-02", who: User.hashPhone(ANNA) }, { day: "2026-09-01", who: User.hmacPhone(ANNA) }]);
-  const again = (await request(ctx.app).get("/me/export").set(auth(anna)).expect(200)).body.data;
+  // The days the app was used, from the keyed rows and from older SHA-256
+  // rows. Today's row is what the login's markActive upserts (fire and
+  // forget); the same upsert here makes the test independent of its timing
   const today = require("../lib/metrics").todayKey();
+  await ActiveDay.create([{ day: "2026-09-02", who: User.hashPhone(ANNA) }, { day: "2026-09-01", who: User.hmacPhone(ANNA) }]);
+  await ActiveDay.updateOne({ day: today, who: User.hmacPhone(ANNA) }, { $setOnInsert: { day: today } }, { upsert: true });
+  const again = (await request(ctx.app).get("/me/export").set(auth(anna)).expect(200)).body.data;
   assert.deepEqual(again.activeDays, ["2026-09-01", "2026-09-02", today]);
   assert.ok(!JSON.stringify(again).includes(User.hmacPhone(ANNA)), "no hashes in the export");
   assert.ok(!JSON.stringify(data).includes("ExponentPushToken"), "no push tokens in the export");

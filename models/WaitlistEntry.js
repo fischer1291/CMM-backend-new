@@ -28,7 +28,9 @@ const waitlistEntrySchema = new mongoose.Schema({
   confirmedAt: { type: Date, default: null },
   confirmMailAt: { type: Date, default: null },
   launchMailAt: { type: Date, default: null },
-  // Redeemed in the app: by whom (phone hash), when, what it gave
+  // Redeemed in the app: by whom (User.hashPhone of the number; "deleted"
+  // once that account is gone, lib/account.js, so the code stays used
+  // without naming anyone), when
   claimedBy: { type: String, default: null },
   claimedAt: { type: Date, default: null },
 });

@@ -347,6 +347,7 @@ owners, others get `•••`). The "Heute" card lists the last alerts
 | `no_talks` | error | yesterday's snapshot has `users.dau > 20` and `talks.count == 0` | Call delivery is broken: VoIP push, Agora certificate, `GET /api/push-health` |
 | `backup_stale` | warn | `AppConfig.ops.lastBackupAt` exists and is older than 8 days | GitHub → Actions → DB-Backup: failed or paused run, see Backup |
 | `sms_cap` | warn | today's `smsStarted` is at 80 % of `ops.smsPerDay` | Real demand: raise the cap (Console → App → Betrieb); otherwise suspect SMS pumping and narrow `smsRegions` |
+| `pepper_changed` | warn | not a rule here but `lib/pseudonyms.js` at start: the stored `phoneHmac` of accounts did not match the current `PHONE_HASH_PEPPER` and was re-keyed together with their `ActiveDay` rows (see Pseudonymous data) | Expected once, right after `PHONE_HASH_PEPPER` was set on Render after the first deploy. Otherwise: the variable or `JWT_SECRET` changed, or something ran against the production database with another env; restore the old value, the next start re-keys back |
 | `owner_silent` | warn | not a rule here but the dead-man check in `lib/adminPush.js` (see Team): no owner acknowledged the morning push or signed in for 7 days; once per 7 days | Owner: open the console. Emergency contact: `CMM/docs/EMERGENCY.md` |
 
 ## Team
@@ -512,7 +513,15 @@ current pepper has its `ActiveDay` rows moved to the new value and the
 field updated (the start logs `phoneHmac re-keyed for N user(s)`). That
 makes the one switch that happens in practice (fallback → real pepper)
 lossless; any later change still costs the history of accounts deleted in
-between and is not meant to happen.
+between and is not meant to happen. Whenever that repair ran, the owners get
+the `pepper_changed` alert (see Alerts): expected exactly once, if the
+variable was set after the first deploy of this version; at any other time
+it means the variable or `JWT_SECRET` changed on Render, or a process with
+another env (a local run against the production database) touched the data.
+The start keeps a fingerprint of the pepper (SHA-256, never the pepper) in
+`AppConfig.migrations.phoneHmacKey`: while it matches, only accounts without
+`phoneHmac` are read, so the start does not grow with the user count; a
+different pepper reads every account once and stores the new fingerprint.
 
 Migration (`index.js` `migrate()`, `lib/pseudonyms.js`): on every start,
 accounts without `phoneHmac` get it; once, marked in
@@ -531,7 +540,9 @@ Deletion (`lib/account.js` `deleteAccount`): the `ActiveDay` rows go under
 all three keys (the stored `phoneHmac`, the HMAC computed now and the
 SHA-256), and with `REVENUECAT_API_KEY` set the subscriber is deleted at
 RevenueCat (`DELETE /v1/subscribers/{our user id}`); a failure there is
-logged and never stops the deletion. The export (`GET /me/export`) lists the
+logged and never stops the deletion. A waitlist code the account redeemed
+(`WaitlistEntry.claimedBy`, SHA-256) keeps `deleted` as its claimant: the
+code stays used, the hash is gone. The export (`GET /me/export`) lists the
 days under `activeDays`.
 
 ## Environment

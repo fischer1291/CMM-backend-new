@@ -21,7 +21,8 @@ const { activation4w, density, computeDay, todayKey, markActive, resetActivityCa
 const { shiftDateKey, weekKey } = require("../lib/localTime");
 const { signSession, hashPassword, newTotpSecret, COOKIE } = require("../lib/adminAuth");
 const adminPush = require("../lib/adminPush");
-const { backfillPhoneHmac, rekeyActiveDays } = require("../lib/pseudonyms");
+const { backfillPhoneHmac, rekeyActiveDays, migrationValue } = require("../lib/pseudonyms");
+const AlertState = require("../models/AlertState");
 const { saveConfig, getConfig, publicConfig, goalsConfig } = require("../lib/appConfig");
 
 let ctx;
@@ -186,6 +187,9 @@ test("migration: phoneHmac is added to older accounts, SHA-256 activity rows are
   const config = await AppConfig.findOne({ key: "app" }).lean();
   assert.ok(config.migrations.activeDayHmac instanceof Date);
   assert.ok(config.migrations.phoneHmac instanceof Date);
+  // The fingerprint of the pepper, never the pepper itself
+  assert.equal(config.migrations.phoneHmacKey, User.phonePepperFingerprint());
+  assert.ok(!config.migrations.phoneHmacKey.includes(process.env.PHONE_HASH_PEPPER));
   assert.equal(config.ops, undefined, "the marker creates no null subtrees on a fresh database");
 
   // Already done: a new SHA-256 row (an old instance still writing) is left alone
@@ -230,6 +234,43 @@ test("migration: a changed pepper re-keys phoneHmac and the activity rows under 
   assert.deepEqual(await days(User.hmacPhone(ben)), ["2026-09-01"]);
   assert.equal(await ActiveDay.countDocuments(), 3);
   assert.deepEqual(await backfillPhoneHmac(), { added: 0, rekeyed: 0 });
+  // Nobody reads the start log: the owners get the alert, once
+  const state = await AlertState.findOne({ tag: "pepper_changed" }).lean();
+  assert.equal(state.count, 1);
+  assert.match(state.lastText, /von 1 Konto wurden umgeschlüsselt/);
+  assert.equal(await migrationValue("phoneHmacKey"), User.phonePepperFingerprint());
+});
+
+test("migration: with the stored pepper fingerprint only accounts without phoneHmac are read; a new pepper reads them all", async () => {
+  const anna = "+4915111111111";
+  const ben = "+4915222222222";
+  await User.create({ phone: anna, phoneHash: User.hashPhone(anna), phoneHmac: User.hmacPhone(anna) });
+  assert.deepEqual(await backfillPhoneHmac(), { added: 0, rekeyed: 0 });
+  assert.equal(await migrationValue("phoneHmacKey"), User.phonePepperFingerprint());
+
+  // The fingerprint matches: an account with a stale value is not looked at
+  // (a second process with the wrong env would otherwise flip it back and
+  // forth on every start), a new account without the field still gets it
+  await User.updateOne({ phone: anna }, { $set: { phoneHmac: "stale" } });
+  await User.create({ phone: ben, phoneHash: User.hashPhone(ben) });
+  assert.deepEqual(await backfillPhoneHmac(), { added: 1, rekeyed: 0 });
+  assert.equal((await User.findOne({ phone: anna }).lean()).phoneHmac, "stale");
+  assert.equal((await User.findOne({ phone: ben }).lean()).phoneHmac, User.hmacPhone(ben));
+  assert.equal(await AlertState.countDocuments({ tag: "pepper_changed" }), 0);
+
+  // Another pepper: the fingerprint differs, every account is read once
+  const pepper = process.env.PHONE_HASH_PEPPER;
+  process.env.PHONE_HASH_PEPPER = "a-new-pepper-that-should-never-happen";
+  try {
+    assert.deepEqual(await backfillPhoneHmac(), { added: 0, rekeyed: 2 });
+    assert.equal((await User.findOne({ phone: anna }).lean()).phoneHmac, User.hmacPhone(anna));
+    assert.equal((await User.findOne({ phone: ben }).lean()).phoneHmac, User.hmacPhone(ben));
+    assert.equal(await migrationValue("phoneHmacKey"), User.phonePepperFingerprint());
+    assert.equal((await AlertState.findOne({ tag: "pepper_changed" }).lean()).count, 1);
+    assert.deepEqual(await backfillPhoneHmac(), { added: 0, rekeyed: 0 });
+  } finally {
+    process.env.PHONE_HASH_PEPPER = pepper;
+  }
 });
 
 // --- Wanna yap+ as a time series (plan 2.4) ---------------------------------------
