@@ -2,6 +2,7 @@ require("dotenv").config();
 const mongoose = require("mongoose");
 const User = require("./models/User");
 const Call = require("./models/Call");
+const Talk = require("./models/Talk");
 const Admin = require("./models/Admin");
 const { createApp } = require("./app");
 const { initializeVoipPush } = require("./lib/push");
@@ -88,14 +89,23 @@ async function main() {
   await mongoose.connect(process.env.MONGODB_URI);
   console.log("✅ MongoDB verbunden");
   await migrate();
+  // Rings the previous process left behind end now; the minute tick below
+  // keeps doing this (lib/calls.js sweepStaleCalls)
   const stale = await calls.sweepStaleCalls();
-  if (stale) console.log(`🔧 Marked ${stale} stale ringing calls as missed`);
-  // Talk-time stats start with the calls still on record (idempotent)
-  const answered = await Call.find({ status: "ended", acceptedAt: { $ne: null }, endedAt: { $ne: null } }).sort({ acceptedAt: 1 });
+  if (stale) console.log(`🔧 Ended ${stale} stale call(s) left by a previous process`);
+  // Talk-time stats: a talk whose recordTalk the previous process didn't get
+  // to is recorded now (idempotent). Only calls ended since the latest talk
+  // on record, or the last 30 days on a fresh database, not the whole table
+  const lastTalk = await Talk.findOne({}, { startedAt: 1 }).sort({ startedAt: -1 }).lean();
+  const since = lastTalk?.startedAt || new Date(Date.now() - 30 * 24 * 3600 * 1000);
+  const answered = await Call.find({ status: "ended", endedAt: { $gt: since }, acceptedAt: { $ne: null } }).sort({ acceptedAt: 1 });
   for (const call of answered) await calls.recordTalk(call);
 
-  // Every minute: start scheduled availability, end expired sessions
+  // Every minute: end overdue rings, start scheduled availability, end
+  // expired sessions
   const tick = async () => {
+    const ended = await calls.sweepStaleCalls();
+    if (ended) console.log(`🔧 Ended ${ended} stale call(s)`);
     await applySchedules((user) => broadcastStatus(io, user, { becameAvailable: true }));
     await expireMoments(io);
     await tickDailyMoments(io);

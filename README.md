@@ -67,6 +67,15 @@ connection. Refused calls are counted per day (`MetricsDaily.ops.callsRejectedNo
 Console → App → Flags: `calls_strict_contacts` (default on when unset) switches
 the check; `false` lets anyone ring anyone again, for a rollout only.
 
+A ring ends after 45 seconds (`RING_TIMEOUT_MS`): a process timer does it
+in time, and the deadline is also stored as `Call.ringUntil`, so the leader's
+minute tick (`sweepStaleCalls`, also run at start) ends every ring a deploy or
+crash left behind exactly like the timer would, with `callEnded` (reason
+`missed`) to both sides and the missed-call push. The same sweep ends an
+accepted call nobody hung up after two hours and records it as a talk capped
+at that length; on start, the talk replay only looks at calls ended since the
+latest recorded talk.
+
 `POST /contacts/match` is limited to 60 requests per user (token phone,
 otherwise IP) per 24 hours; the app syncs at start, after someone joined and
 on pull-to-refresh. `lastOnline` is only returned for matches who have the

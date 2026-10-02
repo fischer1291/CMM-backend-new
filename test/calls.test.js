@@ -1,6 +1,7 @@
-// Who may call whom (lib/relations.js isConnected, lib/calls.js startCall)
-// and what /contacts/match gives away. The call flow itself (decline, miss,
-// accept, history) is tested in test/api.test.js.
+// Who may call whom (lib/relations.js isConnected, lib/calls.js startCall),
+// what /contacts/match gives away, and the sweep that ends rings a deploy
+// left behind (sweepStaleCalls). The call flow itself (decline, miss, accept,
+// history) is tested in test/api.test.js.
 const { test, before, after, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const request = require("supertest");
@@ -227,4 +228,90 @@ test("contacts/match: lastOnline only for people who know you too; a mass probe 
   await settle();
   assert.equal((await computeDay(todayKey())).ops.matchSuspicious, 1);
   assert.deepEqual(await contactsOf(ANNA), [], "the probe replaced the address book matches, as any sync does");
+});
+
+// Plan 2.2: the sweep under the ring timers (lib/calls.js sweepStaleCalls)
+const stale = (callId, fields) => Call.create({ callId, channel: callId, caller: ANNA, callee: BEN, status: "ringing", ...fields });
+
+test("sweep: a call ringing past ringUntil is missed like the timer does it; both hear it, the callee is pushed", async () => {
+  const anna = await login(ANNA, "Anna");
+  const ben = await login(BEN, "Ben");
+  await befriend(ANNA, BEN);
+  const caller = await socketFor(anna);
+  const callee = await socketFor(ben);
+  try {
+    const now = new Date();
+    await stale("call_overdue", { createdAt: new Date(now - 50_000), ringUntil: new Date(now - 5_000) });
+    const callerEnded = once(caller, "callEnded");
+    const calleeEnded = once(callee, "callEnded");
+    assert.equal(await ctx.calls.sweepStaleCalls(now), 1);
+    assert.deepEqual(await callerEnded, { from: BEN, channel: "call_overdue", reason: "missed" });
+    assert.deepEqual(await calleeEnded, { from: ANNA, channel: "call_overdue", reason: "missed" });
+    const call = await Call.findOne({ callId: "call_overdue" });
+    assert.equal(call.status, "missed");
+    assert.equal(+call.endedAt, +call.ringUntil, "ended as of the deadline, not the sweep");
+    await settle();
+    assert.ok(fakes.expoPushes.some((p) => p.to === "ExponentPushToken[Ben]" && p.title === "Verpasster Anruf" && p.body.startsWith("Anna")));
+    assert.equal(fakes.expoPushes.filter((p) => p.title === "Verpasster Anruf").length, 1);
+    // Idempotent: a second sweep finds nothing, nobody hears anything twice
+    assert.equal(await ctx.calls.sweepStaleCalls(new Date()), 0);
+    assert.equal(await Call.countDocuments({ status: "missed" }), 1);
+  } finally {
+    caller.close();
+    callee.close();
+  }
+});
+
+test("sweep: a ring within its deadline stays; a legacy document without ringUntil goes by its age", async () => {
+  await login(ANNA, "Anna");
+  await login(BEN, "Ben");
+  const now = new Date();
+  await stale("call_fresh", { createdAt: now, ringUntil: new Date(now.getTime() + 40_000) });
+  await stale("call_legacy_young", { createdAt: new Date(now - 30_000) });
+  await stale("call_legacy_old", { createdAt: new Date(now - 100_000) });
+  assert.equal((await Call.findOne({ callId: "call_legacy_old" })).ringUntil, null);
+
+  assert.equal(await ctx.calls.sweepStaleCalls(now), 1);
+  const status = async (callId) => (await Call.findOne({ callId })).status;
+  assert.equal(await status("call_fresh"), "ringing");
+  assert.equal(await status("call_legacy_young"), "ringing");
+  assert.equal(await status("call_legacy_old"), "missed");
+  assert.equal(+(await Call.findOne({ callId: "call_legacy_old" })).endedAt, +now, "no deadline on record: ended as of the sweep");
+  await settle();
+  assert.equal(fakes.expoPushes.filter((p) => p.title === "Verpasster Anruf").length, 1);
+
+  // Once the deadline passed, the fresh one goes too
+  assert.equal(await ctx.calls.sweepStaleCalls(new Date(now.getTime() + 41_000)), 1);
+  assert.equal(await status("call_fresh"), "missed");
+  assert.equal(await ctx.calls.sweepStaleCalls(new Date(now.getTime() + 41_000)), 0);
+});
+
+test("sweep: startCall writes the deadline; an accepted call nobody hung up ends after two hours as a capped talk", async () => {
+  await login(ANNA, "Anna");
+  await login(BEN, "Ben");
+  await befriend(ANNA, BEN);
+  const before = Date.now();
+  const { ok, call } = await ctx.calls.startCall({ from: ANNA, to: BEN, channel: "call_deadline" });
+  assert.equal(ok, true);
+  // test/helpers.js starts the app with a 1.5 s ring timeout
+  assert.ok(call.ringUntil - call.createdAt >= 1400 && call.ringUntil - call.createdAt <= 1600, `ringUntil = createdAt + ring timeout, got ${call.ringUntil - call.createdAt}`);
+  assert.ok(+call.ringUntil >= before + 1400);
+  // Not yet due: the sweep leaves it to the timer
+  assert.equal(await ctx.calls.sweepStaleCalls(new Date()), 0);
+  await ctx.calls.endCall({ me: ANNA, other: BEN, channel: "call_deadline" });
+
+  const Talk = require("../models/Talk");
+  const now = new Date();
+  const acceptedAt = new Date(now - 3 * 3600 * 1000);
+  await Call.create({ callId: "call_hung", channel: "call_hung", caller: ANNA, callee: BEN, status: "accepted", createdAt: acceptedAt, acceptedAt });
+  await Call.create({ callId: "call_live", channel: "call_live", caller: ANNA, callee: BEN, status: "accepted", createdAt: now, acceptedAt: now });
+  assert.equal(await ctx.calls.sweepStaleCalls(now), 1);
+  const hung = await Call.findOne({ callId: "call_hung" });
+  assert.equal(hung.status, "ended");
+  assert.equal(+hung.endedAt, +acceptedAt + 2 * 3600 * 1000, "ended as of the stale limit");
+  assert.equal((await Call.findOne({ callId: "call_live" })).status, "accepted");
+  const talk = await Talk.findOne({ callId: "call_hung" });
+  assert.equal(talk.seconds, 2 * 3600);
+  assert.deepEqual(talk.participants.sort(), [ANNA, BEN].sort());
+  assert.equal(await ctx.calls.sweepStaleCalls(now), 0);
 });
