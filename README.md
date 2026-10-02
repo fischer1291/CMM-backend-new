@@ -26,6 +26,7 @@ npm start       # needs the environment below
 | `lib/push.js` | Expo and VoIP (APNs) push |
 | `lib/agora.js` | Agora RTC tokens |
 | `lib/economics.js` | Unit economics: costs, contribution, break-even, runway (`GET /admin/economics`), see Unit economics |
+| `lib/lifecycle.js` | Lifecycle pushes: onboarding days 1/3/7, inactivity, weekly series, Plus ending, billing, win-back (leader job every 30 min), see Lifecycle pushes |
 | `lib/pseudonyms.js` | Keyed phone pseudonyms (`User.phoneHmac`) and their one-off migration, see Pseudonymous data |
 | `COMPLIANCE.md` | Record of processing per collection, processors, the privacy change process; `test/compliance.test.js` fails when a model has no row |
 
@@ -224,6 +225,74 @@ yesterdayNumbers): new users, active, talks, visits, waitlist, then
 last message is from the user and older than 24 hours, videos waiting for
 approval, the tags of the alerts of the last 12 hours ("Alarme der Nacht",
 see Alerts) and yesterday's SMS against the cap.
+
+## Lifecycle pushes
+
+After the sign-up something happens without anyone starting it (plan 2.3,
+`lib/lifecycle.js`). A leader job runs every 30 minutes (`index.js`, job
+`lifecycle`) and walks the stages in this order; the push types are the
+stage names in `lib/notify.js` CATALOG:
+
+| Stage | When | Opens |
+|---|---|---|
+| `billing_issue` | `plus.status` is `billing_issue`, or `cancelled` by a CANCELLATION with `cancel_reason` `BILLING_ERROR` (RevenueCat sends both for one failed payment, the later one wins the status); once per problem (`plus.eventAt`, last 14 days, no second push for an event within 14 days of one sent); the text points to the Apple ID's payment settings, the app opens only its own routes | `/plus?from=billing_issue` |
+| `plus_expiring` | 3 days before `plus.until` of a present (source `referral`, `gift`, `waitlist`, `admin`), once per end date | `/plus?from=plus_expiring` |
+| `cancel_survey` | `plus.status` is `cancelled` and the person cancelled: the CANCELLATION at `plus.eventAt` (`SubscriptionEvent`) has `cancel_reason` `UNSUBSCRIBE` or `UNKNOWN`, or there is none (a status the reconcile set); not for `BILLING_ERROR` (billing_issue) or `CUSTOMER_SUPPORT` (an Apple refund, nothing). Once per event (last 7 days): "warum?" | `/plus?from=cancel` |
+| `plus_winback_3`, `plus_winback_30` | store plan expired (`source` store, `status` expired) 3 to 5 or 30 to 33 days ago, once per end date; the app shows the win-back offering | `/plus?from=plus_winback_3` / `_30` |
+| `invite_reminder` | day 1 after `milestones.verifiedAt` (24 to 48 h), no `firstInviteAt`; its own text when `device.contactsPermission` is `denied` | `/contacts` |
+| `first_call_hint` | day 3 (72 to 96 h), at least one contact who has this person too, no talk (neither `firstTalkAt` nor any `Talk`); names the one online last | `/friend?phone=…` |
+| `yap_moment_invite` | day 7 to 10 without a talk (three days, so the day-1 push has left the seven-day cap), in the hour before the Yap Moment of `User.timezone` (Europe/Berlin without one, the zones `tickDailyMoments` starts; `lib/dailyMoment.js` momentFor), not for people who switched the Yap Moment off | `/` |
+| `week_open` | Sunday 16:00 to 17:00 local (`zoneOf`: `timezone`, else `schedule.timezone`, else Europe/Berlin), week streak of 2 or more (`lib/stats.js` weekStreak, the stats screen's rule) and no talk this week; once per week | `/` |
+| `friends_were_available` | 3 to 6 days without an ActiveDay, not during the onboarding (a new account's first 10 days); the come_back text unless a contact was available in those days | `/` |
+| `come_back`, `come_back_30` | 14 to 20 and 30 to 40 days without an ActiveDay, then nothing more | `/` |
+
+The three onboarding stages go only to new accounts: created (`_id`) at
+most two days before `milestones.verifiedAt`. `routes/verify.js` sets
+`verifiedAt` for older accounts on their next sign-in (new device, expired
+token), and a veteran must not get the newcomer series. The inactivity
+stages wait until a new account's onboarding is over (10 days), so its
+onboarding pushes are not lost to the cap.
+
+Each stage goes to a person once (per week, end date, store event or
+inactivity episode where the table says so): the job claims it in
+`User.lifecycle.sent` (stage key -> date) with a conditional update before
+the push, so two instances never both send; a push that `lib/notify.js`
+skips gives the claim back for a later tick inside the window, and so does
+one Expo did not take (no ticket, e.g. an outage): its PushLog row is
+removed too, so it costs no cap. A push token Expo would never take
+(not in Expo's format) is skipped before the claim. A stage whose query
+fails is logged and skipped; the others still run. The `select` queries on
+`milestones.verifiedAt`, `plus.status` and `plus.until` have no index yet;
+fine at today's size, add them once the user count grows.
+
+Rules in `lib/notify.js`: switch `notificationPrefs.lifecycle` ("Erinnerungen
+und Tipps", default on, `GET/PUT /me/notifications`), at most
+`LIFECYCLE_CAP` = 2 lifecycle pushes per person in seven days (PushLog rows
+`lifecycle:<stage>`, kept seven days; an assumption), at least 24 hours
+apart (`LIFECYCLE_SPACING_MS`: two stages due at once never arrive
+together, the second follows on a later tick inside its window; skip reason
+`lifecycle_spacing`), not counted towards the daily social cap, never in quiet hours,
+and none within 24 hours of a `contact_available` push (a friend free right
+now has precedence). The tone stays without pressure: no "streak breaks".
+
+`POST /me/state { notifications?, contactsPermission? }` (token only, 401
+without; each `granted`, `denied` or `undetermined`, anything else 400) stores what the device says
+about its permissions in `User.device { notifications, contactsPermission,
+at }`, only when a value changed or the last write is two hours old; the
+answer is `{ success, device }`. The export lists it under
+`devices.permissions`, the stages sent under `lifecycle`.
+
+Measured per type in every day's snapshot (`MetricsDaily.lifecycle`,
+`lib/metrics.js` lifecycleDay) until there is an event log: `sentByType`
+(sent that day), `activeNextDay` (`{ sent, active }`: the pushes of the day
+before, with an ActiveDay on this day) and `talk48h` (`{ sent, talked }`:
+the pushes of two days before, with a talk within 48 hours). PushDecision
+lives three days, so these are the latest cohorts a day can judge; the T-2
+decisions are gone during the next day, so a recount (METRICS_VERSION) keeps
+`talk48h` of a final snapshot from age 1 and the whole block from age 2
+(`RAW_TTL_DAYS`). Target (assumption): opt-out of `lifecycle` under 5 %.
+Not measured yet (later, with an event log): the opt-out rate itself and a
+D7 activation comparison of cohorts with and without lifecycle pushes.
 
 ## Health check
 

@@ -29,6 +29,8 @@ const fakes = {
   failSmsTo: null,
   // Plain SMS (alerts) "sent" via lib/twilio.js
   alertSms: [],
+  // Expo is unreachable: sendPushNotificationsAsync throws
+  failExpo: false,
 };
 
 const originalLoad = Module._load;
@@ -70,6 +72,7 @@ Module._load = function (request, parent, isMain) {
         return [m];
       }
       async sendPushNotificationsAsync(chunk) {
+        if (fakes.failExpo) throw new Error("expo_unreachable");
         fakes.expoPushes.push(...chunk);
         return chunk.map(() => ({ status: "ok", id: `ticket-${++fakes.ticketCounter}` }));
       }
@@ -191,6 +194,7 @@ async function reset() {
   await require("../models/SubscriptionEvent").syncIndexes();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
+  fakes.failExpo = false;
   fakes.voipPushes.length = 0;
   fakes.mails.length = 0;
   fakes.failMailTo = null;

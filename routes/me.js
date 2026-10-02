@@ -82,6 +82,46 @@ router.post("/research", async (req, res) => {
   }
 });
 
+// POST /me/state { notifications?, contactsPermission? }: what the device
+// says about its permissions (plan 2.3), each "granted" | "denied" |
+// "undetermined". Stored in User.device only when a value changed or the
+// last write is older than two hours, so the app may send it on every start;
+// lib/lifecycle.js reads it (invite_reminder has its own text for "denied").
+// A new route: token only, no legacy claimed phone (no old app sends it).
+const PERMISSION_STATES = ["granted", "denied", "undetermined"];
+const DEVICE_REFRESH_MS = 2 * 3600 * 1000;
+const deviceOf = (user) => ({
+  notifications: user.device?.notifications || null,
+  contactsPermission: user.device?.contactsPermission || null,
+  at: user.device?.at || null,
+});
+router.post("/state", async (req, res) => {
+  if (!req.auth) return res.status(401).json({ success: false, error: "Authentication required" });
+  const phone = req.auth.phone;
+  const told = {};
+  for (const key of ["notifications", "contactsPermission"]) {
+    const value = req.body?.[key];
+    if (value === undefined) continue;
+    if (!PERMISSION_STATES.includes(value)) return res.status(400).json({ success: false, error: `invalid_${key}` });
+    told[key] = value;
+  }
+  if (!Object.keys(told).length) return res.status(400).json({ success: false, error: "nothing_to_store" });
+  try {
+    const user = await User.findOne({ phone }, { device: 1 });
+    if (!user) return res.status(404).json({ success: false, error: "User not found" });
+    const now = new Date();
+    const changed = Object.entries(told).some(([key, value]) => user.device?.[key] !== value);
+    const stale = !user.device?.at || now - user.device.at >= DEVICE_REFRESH_MS;
+    if (!changed && !stale) return res.json({ success: true, device: deviceOf(user) });
+    const set = { "device.at": now };
+    for (const [key, value] of Object.entries(told)) set[`device.${key}`] = value;
+    const updated = await User.findOneAndUpdate({ phone }, { $set: set }, { new: true, projection: { device: 1 } });
+    res.json({ success: true, device: deviceOf(updated) });
+  } catch (err) {
+    res.status(500).json({ success: false, error: "Status konnte nicht gespeichert werden" });
+  }
+});
+
 const MAX_NAME_LENGTH = 50;
 
 // POST /me/update { name?, avatarUrl? }

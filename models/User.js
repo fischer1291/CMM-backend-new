@@ -68,6 +68,10 @@ const userSchema = new mongoose.Schema({
     nudges: { type: Boolean, default: true },
     moments: { type: Boolean, default: true },
     dailyMoment: { type: Boolean, default: true },
+    // Lifecycle pushes (lib/lifecycle.js): onboarding hints, "come back",
+    // the weekly series, Plus ending and billing. The app calls the switch
+    // "Erinnerungen und Tipps"
+    lifecycle: { type: Boolean, default: true },
     quietHours: {
       enabled: { type: Boolean, default: true },
       start: { type: Number, default: 22 * 60 },
@@ -165,6 +169,24 @@ const userSchema = new mongoose.Schema({
   plusInterest: {
     at: { type: Date, default: null },
     features: { type: [String], default: [] },
+  },
+
+  // What the device last said about its permissions (POST /me/state, plan
+  // 2.3): "granted" | "denied" | "undetermined" or null when never told.
+  // Written when a value changes or `at` is older than two hours, so the
+  // app may send it on every start. lib/lifecycle.js reads
+  // contactsPermission for the text of invite_reminder.
+  device: {
+    notifications: { type: String, default: null },
+    contactsPermission: { type: String, default: null },
+    at: { type: Date, default: null },
+  },
+  // Lifecycle pushes already sent (lib/lifecycle.js): stage key (e.g.
+  // "invite_reminder", "week_open:2026-09-28") -> when. Claimed by a
+  // conditional update before the push, so each stage goes out once even
+  // when two instances run the job. Falls with the account.
+  lifecycle: {
+    sent: { type: Map, of: Date, default: undefined },
   },
 
   // App version last seen (request headers), for support and min versions

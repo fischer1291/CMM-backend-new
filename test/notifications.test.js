@@ -87,6 +87,7 @@ test("prefs: defaults, validation and personal quiet hours", async () => {
     nudges: true,
     moments: true,
     dailyMoment: true,
+    lifecycle: true,
     quietHours: { enabled: true, start: 1320, end: 480 },
   });
 

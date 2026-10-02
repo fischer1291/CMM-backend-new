@@ -397,7 +397,7 @@ test("version: runSnapshots recomputes finished days of the last 30 days with an
 test("version: a recomputed day keeps the columns whose raw rows have expired and counts the rest again", async () => {
   const now = new Date("2026-09-30T10:00:00Z");
   const today = todayKey(now);
-  assert.deepEqual(RAW_TTL_DAYS, { push: 3, "rituals.nudges": 7, calls: 30, "circles.rooms": 30, "circles.ritualRooms": 30, "costs.agoraAudioMinutes": 30, "costs.agoraVideoMinutes": 30 });
+  assert.deepEqual(RAW_TTL_DAYS, { push: 3, lifecycle: 3, "lifecycle.talk48h": 2, "rituals.nudges": 7, calls: 30, "circles.rooms": 30, "circles.ritualRooms": 30, "costs.agoraAudioMinutes": 30, "costs.agoraVideoMinutes": 30 });
   const stored = (day, version) => ({
     day,
     partial: false,

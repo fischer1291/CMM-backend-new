@@ -80,6 +80,17 @@ const metricsDailySchema = new mongoose.Schema(
       variableEurCents: Number,
       perMauEurCents: Number,
     },
+    // Lifecycle pushes (plan 2.3, lib/metrics.js lifecycleDay), per type:
+    // sentByType = sent on this day; activeNextDay = of the pushes sent the
+    // day before, { sent, active } with an ActiveDay on this day; talk48h =
+    // of the pushes sent two days before, { sent, talked } with a talk
+    // within 48 hours of the push. Each column is known on this day, while
+    // the push decisions (3 days) are still there. Sums only.
+    lifecycle: {
+      sentByType: { type: mongoose.Schema.Types.Mixed, default: undefined },
+      activeNextDay: { type: mongoose.Schema.Types.Mixed, default: undefined },
+      talk48h: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    },
     // Day counters from lib/opsCounters.js, e.g. callsRejectedNotConnected, matchSuspicious, smsStarted
     ops: { type: mongoose.Schema.Types.Mixed, default: null },
     computedAt: { type: Date, default: Date.now },

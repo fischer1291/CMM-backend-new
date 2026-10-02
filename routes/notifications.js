@@ -17,6 +17,8 @@ const prefsOf = (user) => {
     nudges: p.nudges !== false,
     moments: p.moments !== false,
     dailyMoment: p.dailyMoment !== false,
+    // Lifecycle pushes, "Erinnerungen und Tipps" (lib/lifecycle.js)
+    lifecycle: p.lifecycle !== false,
     quietHours: {
       enabled: p.quietHours?.enabled !== false,
       start: p.quietHours?.start ?? 22 * 60,
@@ -34,11 +36,11 @@ router.get("/me/notifications", requireAuth, async (req, res) => {
   res.json({ success: true, prefs: prefsOf(user) });
 });
 
-// PUT /me/notifications { available?, nudges?, moments?, quietHours? }
+// PUT /me/notifications { available?, nudges?, moments?, dailyMoment?, lifecycle?, quietHours? }
 router.put("/me/notifications", requireAuth, async (req, res) => {
   const body = req.body || {};
   const update = {};
-  for (const key of ["available", "nudges", "moments", "dailyMoment"]) {
+  for (const key of ["available", "nudges", "moments", "dailyMoment", "lifecycle"]) {
     if (body[key] === undefined) continue;
     if (typeof body[key] !== "boolean") return res.status(400).json({ success: false, error: `${key} must be a boolean` });
     update[`notificationPrefs.${key}`] = body[key];

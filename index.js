@@ -231,6 +231,15 @@ async function main() {
     asJobLeader("plus-reconcile", () => plusReconcile.runDue(new Date(), io)).catch((err) => console.error("❌ plus-reconcile:", err.message));
   }, 15 * 60 * 1000);
 
+  // Lifecycle pushes every 30 minutes (lib/lifecycle.js): onboarding days
+  // 1/3/7, inactivity, the weekly series, Plus ending, billing, win-back
+  const { tickLifecycle } = require("./lib/lifecycle");
+  setInterval(() => {
+    asJobLeader("lifecycle", () => tickLifecycle(new Date()))
+      .then((result) => result?.sent && console.log(`💌 Lifecycle: ${Object.entries(result.byType).map(([t, n]) => `${t} ${n}`).join(", ")}`))
+      .catch((err) => console.error("❌ lifecycle:", err.message));
+  }, 30 * 60 * 1000);
+
   // Every 15 minutes: delivery receipts of sent pushes
   setInterval(() => {
     asJobLeader("receipts", checkReceipts)
