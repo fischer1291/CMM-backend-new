@@ -63,6 +63,23 @@ const metricsDailySchema = new mongoose.Schema(
       giftDaysGranted: { referral: Number, waitlist: Number, admin: Number },
       giftToStore: Number,
     },
+    // Variable costs of the day (plan 2.5, lib/metrics.js computeDay and
+    // priceCosts): the quantities (SMS from the day counters, Agora
+    // participant minutes by mode from Talk and Call, Cloudinary uploads,
+    // pushes, VoIP pushes) and their price in euro cents (two decimals) at
+    // AppConfig.prices when the day was counted; perMauEurCents =
+    // variableEurCents / users.mau, null without MAU.
+    costs: {
+      smsStarted: Number,
+      smsChecked: Number,
+      agoraAudioMinutes: Number,
+      agoraVideoMinutes: Number,
+      cloudinaryUploads: Number,
+      pushSent: Number,
+      voipSent: Number,
+      variableEurCents: Number,
+      perMauEurCents: Number,
+    },
     // Day counters from lib/opsCounters.js, e.g. callsRejectedNotConnected, matchSuspicious, smsStarted
     ops: { type: mongoose.Schema.Types.Mixed, default: null },
     computedAt: { type: Date, default: Date.now },

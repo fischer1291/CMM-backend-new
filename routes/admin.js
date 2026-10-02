@@ -337,6 +337,19 @@ module.exports = (io) => {
     }
   });
 
+  // Unit economics (plan 2.5, lib/economics.js): costs, contribution, break-even, runway
+  router.get("/admin/economics", requireAdmin("viewer"), async (req, res) => {
+    try {
+      const s = await require("../lib/economics").summary();
+      // The bank balance stays with the owners (as alertPhone); the runway is for everyone
+      if (req.admin.role !== "owner" && s.bankBalanceEurCents != null) s.bankBalanceEurCents = "•••";
+      res.json({ success: true, ...s });
+    } catch (err) {
+      console.error("❌ admin economics:", err.message);
+      res.status(500).json({ success: false });
+    }
+  });
+
   router.get("/admin/metrics/retention", requireAdmin("viewer"), async (req, res) => {
     const weeks = Math.min(Math.max(parseInt(req.query.weeks, 10) || 8, 2), 16);
     try {
@@ -1062,8 +1075,9 @@ module.exports = (io) => {
   router.get("/admin/config", requireAdmin("viewer"), async (req, res) => {
     const [config, spread] = await Promise.all([appConfig.getConfig(), appConfig.versionSpread()]);
     const flags = config.flags instanceof Map ? Object.fromEntries(config.flags) : config.flags || {};
-    // The owner's private alert number and emergency contact stay with the owner; others see only whether one is set
-    const ops = req.admin.role === "owner" ? config.ops : { ...config.ops, alertPhone: config.ops?.alertPhone ? "•••" : null, emergencyContact: config.ops?.emergencyContact ? "•••" : null };
+    // The owner's private alert number, emergency contact and bank balance stay with the owner; others see only whether one is set
+    const hide = (v) => (v == null || v === "" ? null : "•••");
+    const ops = req.admin.role === "owner" ? config.ops : { ...config.ops, alertPhone: hide(config.ops?.alertPhone), emergencyContact: hide(config.ops?.emergencyContact), bankBalanceEurCents: hide(config.ops?.bankBalanceEurCents) };
     res.json({ success: true, config: { ...config, flags, ops, _id: undefined, __v: undefined }, ...spread });
   });
 

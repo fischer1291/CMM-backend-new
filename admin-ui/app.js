@@ -915,6 +915,30 @@ function Ticket({ id, onBack, onOpenUser }) {
 
 // --- App settings --------------------------------------------------------------------
 
+// The unit prices of App → Preise (lib/appConfig.js DEFAULT_PRICES), each an assumption
+const PRICE_LABELS = {
+  smsEurCents: 'SMS: Cent je gestartete Verifizierung',
+  agoraAudioUsdCentsPer1000Min: 'Agora Audio: US-Cent je 1.000 Teilnehmerminuten',
+  agoraVideoUsdCentsPer1000Min: 'Agora Video (HD): US-Cent je 1.000 Teilnehmerminuten',
+  agoraFreeMinutesPerMonth: 'Agora Freiminuten je Monat',
+  cloudinaryEurCentsPerUpload: 'Cloudinary: Cent je Upload',
+  pushEurCentsPer1000: 'Push: Cent je 1.000 Pushes',
+  appleCommissionPct: 'Apple-Provision (%; 15 mit Small Business Program)',
+  eurPerUsd: 'Euro je US-Dollar',
+  plusMonthlyEurCents: 'Listenpreis Monatsabo (Cent)',
+  plusYearlyEurCents: 'Listenpreis Jahresabo (Cent)',
+};
+const NULLABLE_PRICES = ['plusMonthlyEurCents', 'plusYearlyEurCents'];
+// "12,50" → 12.5; "-1.234,50" → -1234.5; "0.92" → 0.92. A dot before
+// exactly three digits without a comma ("8.125", "1.234") reads both ways:
+// NaN, and the save asks for a comma instead of guessing.
+const decimal = (v) => {
+  const s = String(v).trim();
+  if (s.includes(',')) return Number(s.replace(/\./g, '').replace(',', '.'));
+  return /^-?\d{1,3}(\.\d{3})+$/.test(s) ? NaN : Number(s);
+};
+const toCents = (v) => Math.round(decimal(v) * 100);
+
 function AppSettings({ role }) {
   const [data, setData] = useState(null);
   const [form, setForm] = useState(null);
@@ -924,6 +948,7 @@ function AppSettings({ role }) {
     api('/config').then((d) => {
       setData(d);
       const c = d.config;
+      const prices = Object.fromEntries(Object.keys(PRICE_LABELS).map((k) => [k, c.prices?.[k] == null ? '' : String(c.prices[k]).replace('.', ',')]));
       setForm({
         minVersion: c.minVersion || '',
         minBuild: c.minBuild ? String(c.minBuild) : '',
@@ -932,6 +957,11 @@ function AppSettings({ role }) {
         flags: { ...(c.flags || {}) },
         ops: { smsPerDay: String(c.ops?.smsPerDay ?? 100), smsPaused: !!c.ops?.smsPaused, smsRegions: (c.ops?.smsRegions || ['DE', 'AT', 'CH']).join(', '), alertPhone: c.ops?.alertPhone || '', emergencyContact: c.ops?.emergencyContact || '' },
         goals: { activationPct: String(c.goals?.activationPct ?? 40), densityPct: String(c.goals?.densityPct ?? 50) },
+        // Only changed prices are sent: untouched keys keep following DEFAULT_PRICES
+        prices,
+        pricesLoaded: prices,
+        fixedCosts: (c.fixedCosts || []).map((f) => ({ service: f.service, euros: String(f.monthlyEurCents / 100).replace('.', ','), note: f.note || '', until: f.until ? f.until.slice(0, 10) : '' })),
+        bank: typeof c.ops?.bankBalanceEurCents === 'number' ? String(c.ops.bankBalanceEurCents / 100).replace('.', ',') : '',
       });
     }).catch(() => setData(false));
   }, []);
@@ -941,8 +971,29 @@ function AppSettings({ role }) {
   if (!form) return html`<p class="note">Lade …</p>`;
   const owner = role === 'owner';
   const set = (patch) => setForm({ ...form, ...patch });
+  const setFixed = (i, patch) => set({ fixedCosts: form.fixedCosts.map((f, j) => (j === i ? { ...f, ...patch } : f)) });
   const save = async () => {
     setFlash(null);
+    const unclear = [];
+    const amount = (label, v) => {
+      const n = toCents(v);
+      if (!Number.isFinite(n)) unclear.push(`${label} „${v}“`);
+      return n;
+    };
+    const prices = {};
+    for (const [k, v] of Object.entries(form.prices)) {
+      if (v === form.pricesLoaded[k]) continue;
+      // Empty: back to the default (or, for list prices, to the last purchase)
+      if (v.trim() === '') { prices[k] = null; continue; }
+      const n = decimal(v);
+      if (!Number.isFinite(n)) unclear.push(`${PRICE_LABELS[k]} „${v}“`);
+      prices[k] = n;
+    }
+    const nameless = form.fixedCosts.filter((f) => !f.service.trim() && (f.euros.trim() || f.note.trim() || f.until));
+    if (nameless.length) return setFlash(`Fehler: ${nameless.length === 1 ? 'Ein Fixkosten-Posten hat' : `${nameless.length} Fixkosten-Posten haben`} keinen Dienst-Namen. Trag einen ein oder entferne den Posten.`);
+    const fixedCosts = form.fixedCosts.filter((f) => f.service.trim()).map((f) => ({ service: f.service.trim(), monthlyEurCents: amount(f.service.trim(), f.euros), note: f.note.trim(), until: f.until || null }));
+    const bank = form.bank.trim() ? amount('Bankstand', form.bank) : null;
+    if (unclear.length) return setFlash(`Fehler: nicht eindeutig: ${unclear.join(', ')}. Dezimalstellen bitte mit Komma (8,125), Tausender ohne Punkt (1234).`);
     try {
       await api('/config', {
         method: 'PUT',
@@ -952,14 +1003,16 @@ function AppSettings({ role }) {
           updateUrl: form.updateUrl.trim() || null,
           banner: { ...form.banner, until: form.banner.until ? new Date(form.banner.until).toISOString() : null },
           flags: form.flags,
-          ops: { smsPerDay: Number(form.ops.smsPerDay), smsPaused: form.ops.smsPaused, smsRegions: form.ops.smsRegions.toUpperCase().split(/[\s,]+/).filter(Boolean), alertPhone: form.ops.alertPhone.trim() || null, emergencyContact: form.ops.emergencyContact.trim() || null },
+          ops: { smsPerDay: Number(form.ops.smsPerDay), smsPaused: form.ops.smsPaused, smsRegions: form.ops.smsRegions.toUpperCase().split(/[\s,]+/).filter(Boolean), alertPhone: form.ops.alertPhone.trim() || null, emergencyContact: form.ops.emergencyContact.trim() || null, bankBalanceEurCents: bank },
           goals: { activationPct: Number(form.goals.activationPct), densityPct: Number(form.goals.densityPct) },
+          ...(Object.keys(prices).length ? { prices } : {}),
+          fixedCosts,
         },
       });
       setFlash('Gespeichert. Offene Apps bekommen es sofort, alle anderen beim nächsten Start.');
       load();
     } catch (err) {
-      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH), Alarm-Nummer mit Ländervorwahl (+49…), Notfallkontakt als E-Mail-Adresse', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100' };
+      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH), Alarm-Nummer mit Ländervorwahl (+49…), Notfallkontakt als E-Mail-Adresse', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100', invalid_prices: 'Preise: Zahlen ab 0 (Freiminuten und Listenpreise ganzzahlig, Provision bis 100 %)', invalid_fixed_costs: 'Fixkosten: Name bis 60 Zeichen, Betrag in Euro (Gutschriften negativ), höchstens 50 Posten' };
       setFlash(`Fehler: ${msg[err.code] || err.code || err.message}`);
     }
   };
@@ -1012,6 +1065,25 @@ function AppSettings({ role }) {
         <p class="note" style="margin-top:0">Der Nordstern: Heute-Karte, Morgen-Push und Marketing-Budget zeigen eine Ampel gegen diese Werte. Unter dem Aktivierungsziel keine bezahlte Reichweite.</p>
         <label class="field"><span>Aktivierung in 7 Tagen, rollierend 4 Wochen (%)</span><input value=${form.goals.activationPct} onInput=${(e) => set({ goals: { ...form.goals, activationPct: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
         <label class="field"><span>Neue Nutzer mit ≥ 3 registrierten Kontakten (%)</span><input value=${form.goals.densityPct} onInput=${(e) => set({ goals: { ...form.goals, densityPct: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
+      </div>
+      <div class="card">
+        <div class="label">Preise</div>
+        <p class="note" style="margin-top:0">Annahme, gegen Rechnung prüfen: Stückpreise für die Kostenspalten (Plus → Unit Economics). Am 5. des Monats mit den Rechnungen abgleichen.</p>
+        ${Object.entries(PRICE_LABELS).map(([k, label]) => html`<label class="field"><span>${label}</span><input value=${form.prices[k]} onInput=${(e) => set({ prices: { ...form.prices, [k]: e.target.value.replace(/[^\d,.]/g, '') } })} disabled=${!owner} inputmode="decimal" placeholder=${NULLABLE_PRICES.includes(k) ? 'leer = letzter Kauf' : 'leer = Standardwert (Annahme)'} /></label>`)}
+      </div>
+      <div class="card">
+        <div class="label">Fixkosten</div>
+        <p class="note" style="margin-top:0">Euro pro Monat, auch Ops-Posten (Uptime, Sentry, Staging). Gutschriften (Startup-Credits) negativ mit Ablaufdatum; abgelaufene Posten zählen nicht mehr.</p>
+        ${form.fixedCosts.map((f, i) => html`<div class="inline" style="flex-wrap:wrap;gap:6px;margin-bottom:6px">
+          <input value=${f.service} maxlength="60" placeholder="Dienst" style="flex:2 1 120px" onInput=${(e) => setFixed(i, { service: e.target.value })} disabled=${!owner} />
+          <input value=${f.euros} placeholder="€/Monat" style="flex:1 1 70px" inputmode="decimal" onInput=${(e) => setFixed(i, { euros: e.target.value.replace(/[^\d,.-]/g, '') })} disabled=${!owner} />
+          <input type="date" value=${f.until} title="Läuft bis (leer = unbegrenzt)" style="flex:1 1 110px" onInput=${(e) => setFixed(i, { until: e.target.value })} disabled=${!owner} />
+          <input value=${f.note} maxlength="200" placeholder="Notiz" style="flex:2 1 120px" onInput=${(e) => setFixed(i, { note: e.target.value })} disabled=${!owner} />
+          ${owner ? html`<a href="#" onClick=${(e) => { e.preventDefault(); set({ fixedCosts: form.fixedCosts.filter((_, j) => j !== i) }); }}>entfernen</a>` : null}
+        </div>`)}
+        ${owner && form.fixedCosts.length < 50 ? html`<button class="btn small ghost" onClick=${() => set({ fixedCosts: [...form.fixedCosts, { service: '', euros: '', note: '', until: '' }] })}>Posten hinzufügen</button>` : null}
+        <label class="field" style="margin-top:10px"><span>Bankstand in Euro (für die Runway, leer = unbekannt)</span><input value=${form.bank} onInput=${(e) => set({ bank: e.target.value.replace(/[^\d,.-]/g, '') })} disabled=${!owner} inputmode="decimal" placeholder=${!owner && data.config.ops?.bankBalanceEurCents ? 'hinterlegt (nur Owner sieht den Betrag)' : ''} /></label>
+        ${data.config.ops?.bankBalanceAt ? html`<p class="note" style="margin:0">Stand vom ${new Date(data.config.ops.bankBalanceAt).toLocaleDateString('de-DE')}</p>` : null}
       </div>
     </div>
     ${owner ? html`<div class="inline" style="justify-content:flex-end"><button class="btn" onClick=${save}>Speichern</button></div>` : html`<p class="note">Nur Owner können Einstellungen ändern.</p>`}
@@ -1110,6 +1182,8 @@ const LIMIT_LABELS = {
   nudgeMessage: 'Eigene Anstups-Texte',
   yearReview: 'Voller Jahresrückblick',
   appIcons: 'App-Icons',
+  momentsPerDay: 'Moments pro Tag (max. 200)',
+  video: 'Video bei 1:1-Anrufen (aus = nur Audio)',
 };
 const INTEREST_LABELS = { hd_video: 'Video in HD', bigger_circles: 'Größere Kreise', longer_rounds: 'Längere Runden', memories: 'Erinnerungen für immer', year_review: 'Jahresrückblick', icons: 'App-Icons & Themen', rituals: 'Mehr Rituale', family: 'Familien-Abo', support: 'Unterstützen' };
 
@@ -1143,6 +1217,33 @@ function RevenueKpis({ series }) {
     ${active != null && active < REVENUE_MIN_PLANS ? html`<p class="note">Steuernd erst ab ${REVENUE_MIN_PLANS} aktiven Store-Abos (Annahme): bis dahin lesen, nicht urteilen.</p>` : null}`;
 }
 
+const cents = (c, digits = 2) => (c == null ? '–' : `${(c / 100).toLocaleString('de-DE', { minimumFractionDigits: digits, maximumFractionDigits: digits })} €`);
+
+/**
+ * Costs, contribution, break-even and runway (GET /admin/economics, plan
+ * 2.5). Every price behind it is an assumption until checked against the
+ * invoices (App → Preise).
+ */
+function UnitEconomics() {
+  const [e, setE] = useState(null);
+  useEffect(() => { api('/economics').then(setE).catch(() => setE(false)); }, []);
+  if (e === false) return html`<div class="card">Unit Economics konnten nicht geladen werden.</div>`;
+  if (!e) return html`<p class="note">Lade Unit Economics …</p>`;
+  const m = e.month;
+  const subs = (n) => (n == null ? '–' : `${num(n)} Abos`);
+  return html`
+    <div class="kpis">
+      <${Kpi} label="Variable Kosten/Tag" value=${cents(m.variablePerDayEurCents)} sub=${m.variableEurCents == null ? 'noch kein Tag gezählt' : `${eur(m.variableEurCents)} je 30 Tage · Fix ${eur(m.fixedEurCents)}/Monat`} color="var(--pink)" />
+      <${Kpi} label="Kosten je MAU" value=${cents(m.perMau)} sub=${`${num(m.mau)} MAU · je Gesprächsminute ${cents(m.perTalkMinute, 3)}`} color="var(--cyan)" />
+      <${Kpi} label="Deckungsbeitrag je MAU" value=${cents(m.contributionPerMau)} sub=${m.contributionPerMau == null ? 'noch kein Tag gezählt' : `je Monat · ${cents(m.contributionPerMau / 30, 3)} je Tag`} color="var(--violet)" />
+      <${Kpi} label="Gesprächsminuten je MAU" value=${m.minutesPerMau.audio == null ? '–' : `${nf.format(m.minutesPerMau.audio)} / ${nf.format(m.minutesPerMau.video)}`} sub="Audio / Video, Agora-Teilnehmerminuten je Monat" />
+      <${Kpi} label="Deckungsbeitrag je Plus-Abo" value=${cents(m.perPlusSub)} sub=${m.perPlusSub == null ? 'noch kein aktives Store-Abo' : `Ø-Preis × (1 − ${e.prices.appleCommissionPct} % Apple) − Kosten je MAU`} color="var(--violet)" />
+      <${Kpi} label="Break-even" value=${subs(e.breakEvenYearlySubs)} sub=${`in Jahresabos · ${subs(e.breakEvenMonthlySubs)} in Monatsabos`} />
+      <${Kpi} label="Runway" value=${e.runwayMonths == null ? '–' : `${nf.format(e.runwayMonths)} Monate`} sub=${e.bankBalanceEurCents == null ? 'Bankstand fehlt (App → Fixkosten)' : e.burnEurCents <= 0 ? 'kein Verbrauch: Umsatz deckt die Kosten' : `${eur(e.burnEurCents)} Verbrauch/Monat · Bankstand ${typeof e.bankBalanceEurCents === 'number' ? eur(e.bankBalanceEurCents) : 'nur für Owner sichtbar'}`} />
+    </div>
+    <p class="note">Annahme, gegen Rechnung prüfen: alle Preise (App → Preise) sind Schätzwerte aus Preislisten, bis du sie am 5. des Monats mit den Rechnungen abgleichst. ${e.days < 30 ? `Variable Kosten aus ${e.days} gezählten Tagen, auf 30 Tage hochgerechnet. ` : ''}Video zählt komplett als Agora-HD. Kosten je Plus-Abo nehmen an, dass ein Plus-Nutzer so viel kostet wie ein Ø-MAU. Deckungsbeitrag je Monat: ${cents(m.contributionCents, 0)} (Netto-Umsatz ${eur(m.netRevenueCents)} − variable Kosten).</p>`;
+}
+
 function PlusPanel({ role }) {
   const [data, setData] = useState(null);
   const [series, setSeries] = useState(null);
@@ -1167,11 +1268,21 @@ function PlusPanel({ role }) {
       setFlash('Grenzen gespeichert. Sie gelten sofort; bestehende Kreise bleiben, wie sie sind.');
       load();
     } catch (err) {
-      setFlash(`Fehler: ${err.code === 'invalid_limits' ? 'ungültige Werte (Zahlen ab 1; Personen pro Kreis max. 50, pro Runde max. 16)' : err.code || err.message}`);
+      setFlash(`Fehler: ${err.code === 'invalid_limits' ? 'ungültige Werte (Zahlen ab 1; Personen pro Kreis max. 50, pro Runde max. 16, Moments pro Tag max. 200, Videominuten ab 1)' : err.code || err.message}`);
     }
   };
   const field = (plan, key) => {
     const value = form[plan][key];
+    if (key === 'video') {
+      // true · false · minutes of video a month, then audio
+      const mode = value === true ? 'on' : value === false ? 'off' : 'minutes';
+      return html`<span class="inline">
+        <select value=${mode} disabled=${!owner} onChange=${(e) => set(plan, key, e.target.value === 'on' ? true : e.target.value === 'off' ? false : 60)}>
+          <option value="on">an</option><option value="off">aus</option><option value="minutes">Minuten/Monat</option>
+        </select>
+        ${mode === 'minutes' ? html`<input class="num" inputmode="numeric" value=${value} disabled=${!owner} onInput=${(e) => { const v = e.target.value.replace(/\D/g, ''); set(plan, key, v ? Number(v) : 0); }} />` : null}
+      </span>`;
+    }
     if (typeof data.defaults[plan][key] === 'boolean') {
       return html`<input type="checkbox" checked=${!!value} disabled=${!owner} onChange=${(e) => set(plan, key, e.target.checked)} />`;
     }
@@ -1191,6 +1302,8 @@ function PlusPanel({ role }) {
     ${data.sandbox > 0 ? html`<p class="note">${num(data.sandbox)} davon ${data.sandbox === 1 ? 'ist ein Sandbox-Kauf' : 'sind Sandbox-Käufe'} von Testern: Plus aktiv, aber nirgends als zahlend gezählt.</p>` : null}
     <div class="section">Umsatz</div>
     <${RevenueKpis} series=${series} />
+    <div class="section">Unit Economics</div>
+    <${UnitEconomics} />
     ${series && series.length ? html`<div class="grid2">
       <${Chart} title="MRR" subtitle="Summe der monatlich normalisierten Preise aktiver Store-Abos, in Euro" type="line" series=${series} keys=${[{ label: 'MRR €', color: 'var(--violet)', value: (d) => Math.round((d.plus?.mrrCents || 0) / 100) }]} />
       <${Chart} title="Abo-Bewegung" subtitle="Ereignisse je Tag (Produktion)" series=${series} keys=${[

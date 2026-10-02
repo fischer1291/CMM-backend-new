@@ -25,6 +25,7 @@ npm start       # needs the environment below
 | `lib/phone.js` | E.164 phone normalization |
 | `lib/push.js` | Expo and VoIP (APNs) push |
 | `lib/agora.js` | Agora RTC tokens |
+| `lib/economics.js` | Unit economics: costs, contribution, break-even, runway (`GET /admin/economics`), see Unit economics |
 | `lib/pseudonyms.js` | Keyed phone pseudonyms (`User.phoneHmac`) and their one-off migration, see Pseudonymous data |
 | `COMPLIANCE.md` | Record of processing per collection, processors, the privacy change process; `test/compliance.test.js` fails when a model has no row |
 
@@ -483,6 +484,100 @@ id, no app user ids), `marketing-spend` (`MarketingSpend`) and `support`
 (`SupportTicket` without phone numbers or message texts: id, category,
 status, times, message counts, app version). Same CSV dialect as
 `GET /admin/waitlist/export` (BOM, semicolon); the links sit in the Plus tab.
+
+## Unit economics
+
+Plan 2.5: what the app costs per day, per active user and per talk minute,
+what a Plus subscription contributes, how many subscriptions cover the
+costs, and how long the money lasts. Every price is an **assumption** from
+public price lists (2026) until it is checked against the invoices on the
+5th of the month; the console says "Annahme, gegen Rechnung prüfen".
+
+**Quantities** (`MetricsDaily.costs`, `lib/metrics.js` computeDay, from
+`METRICS_VERSION` 3 on): `smsStarted`, `smsChecked` (the day counters of
+the sign-up SMS), `agoraAudioMinutes`, `agoraVideoMinutes` (participant
+minutes of the day's talks: a 1:1 talk counts its seconds twice and takes
+its mode from `Call.video`, a talk whose call has expired counts as video;
+a round has one `Talk` per participant, each counted once, and rounds are
+video), `cloudinaryUploads` (day counter, raised after a successful
+`/upload/avatar` or `/upload/moment`), `pushSent` (= `push.sent`),
+`voipSent` (day counter, raised when APNs accepted a VoIP push,
+`lib/push.js`). All video counts as Agora's HD tier: 640×360 and 720p cost
+the same and there is no cheaper SD tier, so the app reports no quality.
+The Agora minutes keep their stored value once the calls have expired
+(`RAW_TTL_DAYS`, 30 days).
+
+**Prices** (`AppConfig.prices`, Console → App → Preise, owner;
+`lib/appConfig.js` DEFAULT_PRICES): `smsEurCents` 8 (per started
+verification), `agoraAudioUsdCentsPer1000Min` 99 and
+`agoraVideoUsdCentsPer1000Min` 399 (US cents, Agora bills in dollars,
+converted with `eurPerUsd` 0.92), `agoraFreeMinutesPerMonth` 10,000,
+`cloudinaryEurCentsPerUpload` 0 (free tier), `pushEurCentsPer1000` 0,
+`appleCommissionPct` 15 (Small Business Program; 30 without),
+`plusMonthlyEurCents` / `plusYearlyEurCents` null (list prices for the
+break-even before the first purchase; null takes the last production
+purchase). `costs.variableEurCents` is the day's quantities at these
+prices (euro cents, two decimals), `costs.perMauEurCents` that divided by
+`users.mau` (null without MAU). Agora's free minutes are a monthly pool:
+each day gets minutes per month / days of the month, credited to video
+first (the lower bound of the invoice). A price change applies to days
+counted from then on (today included); finished days keep the price they
+were counted with until a `METRICS_VERSION` recount. Only the prices the
+owner changed are stored (an emptied field, `null` over the API, puts a
+price back to its default), so a corrected default in the code still
+reaches every key nobody checked. The console reads a comma as the
+decimal separator and refuses an ambiguous "8.125" instead of guessing.
+
+**Fixed costs** (`AppConfig.fixedCosts`, Console → App → Fixkosten,
+owner): up to 50 entries `{ service, monthlyEurCents, note, until }`,
+service up to 60 characters, |cents| up to 100,000 €; ops items (uptime
+monitor, Sentry, staging) belong here too. A credit (startup programme) is
+a negative entry with `until`; an entry counts while `until` is empty or
+not before today. The bank balance for the runway is
+`AppConfig.ops.bankBalanceEurCents` (typed in under Fixkosten, null =
+unknown), stamped with `ops.bankBalanceAt` on every change; only owners
+see the amount (`"•••"` for support and viewer in `GET /admin/config` and
+`GET /admin/economics`), the runway is for everyone.
+
+**Numbers** (`lib/economics.js` summary, `GET /admin/economics`, viewer;
+the "Unit Economics" row in the Plus tab): `month.variableEurCents` (the
+last 30 finished days, scaled up to 30 when fewer have cost columns;
+`days` says how many), `variablePerDayEurCents`, `fixedEurCents`,
+`mrrCents` and `activeStore` (today's snapshot), `netRevenueCents` = MRR ×
+(1 − commission), `contributionCents` = net revenue − variable costs,
+`perMau`, `contributionPerMau` (contribution per active user and month;
+the card also shows it per day), `minutesPerMau` `{ audio, video }` (Agora
+participant minutes per active user and month), `perTalkMinute` (talk minutes as the stats count them: 1:1
+minutes plus round minutes per participant), `perPlusSub` = average plan
+price × (1 − commission) − variable costs per MAU (assumption: a Plus user
+costs what an average active user costs), `breakEvenYearlySubs` /
+`breakEvenMonthlySubs` = (fixed costs + variable costs of the free users) /
+contribution per subscription of that kind, rounded up (null without a
+price or with a contribution of zero or less), `burnEurCents` = fixed +
+variable − net revenue, `runwayMonths` = bank balance / burn (null without
+a balance or without a burn). The metrics CSV export carries the cost
+columns (`agora_audio_min`, `agora_video_min`, `cloudinary_uploads`,
+`voip_gesendet`, `kosten_variabel_cent`, `kosten_je_mau_cent`).
+
+**Plan limits** (`lib/plan.js` DEFAULT_LIMITS, Console → Plus → Grenzen):
+`momentsPerDay` (free 30, Plus 100, never above 200) is checked on
+`/upload/moment` before Cloudinary is paid for and again on
+`POST /moment/callmoment` (the app falls back to an inline picture when the
+upload fails), counted on the person's `CallMoment`s of the day
+(Europe/Berlin); the answer is 403 `plan_limit` with
+`limit: "momentsPerDay"`. Uploads that never become a moment are braked
+separately: at most 200 `/upload/moment` requests per person in 24 hours
+(in memory, express-rate-limit keyed on the phone), then 429
+`upload_limit`. `video` (true, false or whole video minutes
+a month; true for both plans by default) decides in `lib/calls.js`
+startCall whether a 1:1 call may use video: false, or the caller's video
+minutes of the calendar month used up (answered video calls they started,
+from `Call` and `Talk`), starts the call as audio; the result carries
+`videoDowngraded: "plan_limit"` and the caller's socket hears
+`callVideoDowngraded { reason, target, channel }`. With the defaults
+nothing changes. Whether free calls default to audio or get a video
+allowance is the owner's decision at the end of phase 2; the app has to
+handle `callVideoDowngraded` before a limit other than true is set.
 
 ## Pseudonymous data
 

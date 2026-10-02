@@ -35,11 +35,12 @@ const EXPORTS = {
       "plus_aktiv_store", "plus_aktiv_geschenk", "plus_aktiv_sandbox", "plus_neu", "plus_verlaengert", "plus_gekuendigt",
       "plus_zahlungsproblem", "plus_abgelaufen", "plus_erstattungen", "plus_trials_gestartet", "plus_trials_konvertiert", "mrr_cent",
       "sms_gestartet", "sms_geprueft", "sms_fehlgeschlagen", "reconcile_geprueft", "reconcile_korrigiert",
+      "agora_audio_min", "agora_video_min", "cloudinary_uploads", "voip_gesendet", "kosten_variabel_cent", "kosten_je_mau_cent",
     ],
     async rows() {
       const days = await MetricsDaily.find({}, { _id: 0, __v: 0 }).sort({ day: 1 }).lean();
       return days.map((d) => {
-        const u = d.users || {}, c = d.calls || {}, t = d.talks || {}, k = d.circles || {}, r = d.rituals || {}, g = d.growth || {}, p = d.push || {}, m = d.reports || {}, x = d.plus || {}, o = d.ops || {};
+        const u = d.users || {}, c = d.calls || {}, t = d.talks || {}, k = d.circles || {}, r = d.rituals || {}, g = d.growth || {}, p = d.push || {}, m = d.reports || {}, x = d.plus || {}, o = d.ops || {}, cost = d.costs || {};
         return [
           d.day, d.partial ? "ja" : "nein", d.version,
           u.total, u.new, u.dau, u.wau, u.mau, u.activation4w, u.activationSample,
@@ -51,6 +52,7 @@ const EXPORTS = {
           x.activeStore, x.activeGift, x.activeSandbox, x.newPaid, x.renewed, x.cancelled,
           x.billingIssue, x.expired, x.refunds, x.trialsStarted, x.trialsConverted, x.mrrCents,
           o.smsStarted, o.smsChecked, o.smsFailed, o.plusReconcileChecked, o.plusReconcileFixed,
+          cost.agoraAudioMinutes, cost.agoraVideoMinutes, cost.cloudinaryUploads, cost.voipSent, cost.variableEurCents, cost.perMauEurCents,
         ];
       });
     },

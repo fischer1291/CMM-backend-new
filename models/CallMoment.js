@@ -1,3 +1,5 @@
+// A picture from a real call (lib/moments.js), shared once the other person
+// agreed and visible to friends for 24 hours.
 const mongoose = require("mongoose");
 
 // Reaction schema
@@ -74,6 +76,10 @@ const callMomentSchema = new mongoose.Schema({
   status: { type: String, enum: ["pending", "shared"], default: "shared" },
   sharedAt: { type: Date, default: null },
 });
+
+// The plan limit momentsPerDay (lib/plan.js) and the feeds read a person's
+// moments by time
+callMomentSchema.index({ userPhone: 1, timestamp: -1 });
 
 // Calculate total reactions before saving
 callMomentSchema.pre("save", function (next) {

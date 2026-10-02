@@ -23,6 +23,13 @@ const appConfigSchema = new mongoose.Schema(
     ops: { type: mongoose.Schema.Types.Mixed, default: null },
     // Goals the numbers are judged against (lib/appConfig.js DEFAULT_GOALS): { activationPct, densityPct }
     goals: { type: mongoose.Schema.Types.Mixed, default: null },
+    // Unit prices for the cost columns, assumptions until checked against the
+    // invoices (lib/appConfig.js DEFAULT_PRICES, plan 2.5): { smsEurCents,
+    // agoraAudioUsdCentsPer1000Min, agoraVideoUsdCentsPer1000Min, agoraFreeMinutesPerMonth, ... }
+    prices: { type: mongoose.Schema.Types.Mixed, default: null },
+    // Monthly fixed costs, credits as negative entries with an end date:
+    // [{ service, monthlyEurCents, note, until }] (lib/economics.js)
+    fixedCosts: { type: mongoose.Schema.Types.Mixed, default: null },
     // One-off data fixes already applied (index.js migrate), e.g. { morningPush: Date }
     migrations: { type: mongoose.Schema.Types.Mixed, default: null },
     // Launch mail to the waitlist (lib/waitlist.js): { startedAt, by, finishedAt, sent, failed }

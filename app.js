@@ -3,7 +3,7 @@ const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const helmet = require("helmet");
-const { rateLimit } = require("express-rate-limit");
+const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
 const { Server } = require("socket.io");
 const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
@@ -20,6 +20,8 @@ const { createCallService, historyEntry, MISSED } = require("./lib/calls");
 const { setForegroundLookup } = require("./lib/notify");
 const { isValidTimezone } = require("./lib/localTime");
 const { normalizePhone, regionOf } = require("./lib/phone");
+const opsCounters = require("./lib/opsCounters");
+const { momentLimitError, HARD } = require("./lib/plan");
 
 /**
  * Browsers may call the API only from wannayap.app, its Netlify previews and
@@ -189,6 +191,7 @@ function createApp({ ringTimeoutMs } = {}) {
       });
 
       await User.updateOne({ phone }, { avatarUrl: result.secure_url });
+      opsCounters.count("cloudinaryUploads").catch((err) => console.error("❌ opsCounters:", err.message));
       res.json({ success: true, avatarUrl: result.secure_url });
     } catch (error) {
       console.error("Avatar upload error:", error.message);
@@ -196,8 +199,21 @@ function createApp({ ringTimeoutMs } = {}) {
     }
   });
 
+  // A brake on moment uploads per person (Cloudinary costs). The plan limit
+  // momentsPerDay counts posted moments, so uploads that never become one
+  // would go unbraked; nobody needs more uploads in a day than the hard cap
+  // of moments. In memory per instance (Render runs one), 24 hours rolling.
+  const momentUploads = rateLimit({
+    windowMs: 24 * 60 * 60 * 1000,
+    limit: HARD.momentsPerDay,
+    keyGenerator: (req) => req.auth?.phone || ipKeyGenerator(req.ip),
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    message: { success: false, error: "upload_limit", message: "Für den Moment hast du genug Bilder hochgeladen. Später geht es weiter." },
+  });
+
   // A moment's picture: stored on Cloudinary, the moment keeps only the URL
-  app.post("/upload/moment", upload.single("image"), async (req, res) => {
+  app.post("/upload/moment", momentUploads, upload.single("image"), async (req, res) => {
     if (!req.auth) {
       return res.status(401).json({ success: false, error: "Authentication required" });
     }
@@ -205,6 +221,9 @@ function createApp({ ringTimeoutMs } = {}) {
       return res.status(400).json({ success: false, error: "Image required" });
     }
     try {
+      // Plan limit momentsPerDay (lib/plan.js): checked before Cloudinary is paid for
+      const limited = await momentLimitError(req.auth.phone);
+      if (limited) return res.status(403).json(limited);
       const result = await new Promise((resolve, reject) => {
         cloudinary.uploader
           .upload_stream(
@@ -218,6 +237,7 @@ function createApp({ ringTimeoutMs } = {}) {
           )
           .end(req.file.buffer);
       });
+      opsCounters.count("cloudinaryUploads").catch((err) => console.error("❌ opsCounters:", err.message));
       res.json({ success: true, url: result.secure_url });
     } catch (error) {
       console.error("Moment upload error:", error.message);

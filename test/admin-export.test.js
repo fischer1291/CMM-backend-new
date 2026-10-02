@@ -124,6 +124,7 @@ test("exports: one row per record, the id instead of the phone number, no messag
   assert.equal(col("mrr_cent"), "499");
   assert.equal(col("sms_gestartet"), "2");
   assert.equal(col("dau"), "", "a missing number is an empty cell, not 'undefined'");
+  assert.ok(header.includes("kosten_variabel_cent") && header.includes("agora_video_min"), "the cost columns of plan 2.5");
 });
 
 test("exports: support and viewer are refused, nothing is audited for them", async () => {

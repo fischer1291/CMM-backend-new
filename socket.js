@@ -57,6 +57,9 @@ function registerSocketHandlers(io, calls) {
         const result = await calls.startCall({ from, to, channel, video: data.video !== false });
         if (!result.ok) {
           socket.emit("callFailed", { reason: result.reason, target: to, channel });
+        } else if (result.videoDowngraded) {
+          // The plan limit `video` turned this call into audio (lib/plan.js videoAllowed)
+          socket.emit("callVideoDowngraded", { reason: result.videoDowngraded, target: to, channel });
         }
       } catch (error) {
         console.error("❌ Error handling call request:", error.message);
