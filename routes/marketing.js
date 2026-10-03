@@ -3,7 +3,8 @@
  *
  * agentRoutes: the daily agent (Bearer MARKETING_AGENT_KEY) reads the numbers,
  * reserves budget before each paid call (lib/marketingBudget.js), adds drafts
- * and uploads their videos and reference images. adminRoutes: the console
+ * and uploads their videos and reference images, and reports every run
+ * (POST /marketing/notify, plan 2.14: a failed one raises agent_failed). adminRoutes: the console
  * lists drafts, budget and characters; owners approve, reject, mark as
  * posted, set the budget and choose the reference images.
  */
@@ -22,7 +23,7 @@ function agentRoutes() {
     res.json({ success: true, ...(await marketing.context()) });
   });
 
-  // POST /marketing/drafts { campaign, template, title, idea, content, seconds, captions, hashtags, model }
+  // POST /marketing/drafts { campaign, template, title, idea, content, seconds, captions, hashtags, model, hookVariants? (strings; trimmed, cut to 120 characters, first 2 kept) }
   router.post("/marketing/drafts", agentOnly, async (req, res) => {
     const result = await marketing.createDraft(req.body);
     if (result.error) return res.status(result.error === "campaign_taken" ? 409 : 400).json({ success: false, error: result.error });
@@ -51,10 +52,12 @@ function agentRoutes() {
     res.json({ success: true, budget: await budget.status() });
   });
 
-  // POST /marketing/budget/reserve { provider, purpose, estimateEur, campaign?, note? }
+  // POST /marketing/budget/reserve { provider: anthropic | google | media, purpose, estimateEur, campaign?, note? }
   router.post("/marketing/budget/reserve", agentOnly, async (req, res) => {
     const result = await budget.reserve(req.body || {});
     if (result.error === "budget_exceeded") return res.status(402).json({ success: false, error: result.error, budget: result.budget });
+    // Paid reach before the launch gate is open (plan 2.7)
+    if (result.error === "launch_checklist_incomplete") return res.status(403).json({ success: false, error: result.error });
     if (result.error) return res.status(400).json({ success: false, error: result.error });
     res.status(201).json({ success: true, ...result.reservation });
   });
@@ -101,9 +104,11 @@ function agentRoutes() {
     },
   );
 
-  // After a run: mail the owners if something waits for approval
+  // At the end of every run (plan 2.14). POST /marketing/notify { failed?, step?, runUrl?, durationSec? }:
+  // without failed, mail and push the owners if something waits for approval
+  // ({ pending, mailed }); with failed: true, the alert agent_failed ({ alerted })
   router.post("/marketing/notify", agentOnly, async (req, res) => {
-    res.json({ success: true, ...(await marketing.notifyOwners()) });
+    res.json({ success: true, ...(await marketing.reportRun(req.body || {})) });
   });
 
   return router;
@@ -167,6 +172,11 @@ function adminRoutes() {
 
   router.get("/admin/marketing/drafts", requireAdmin("viewer"), async (req, res) => {
     res.json({ success: true, ...(await marketing.list(String(req.query.status || "pending"))) });
+  });
+
+  // The agent at a glance (plan 2.14): { bioLink, bioSlug, bioWeek, runs, aiCostPerPostedVideoEur }
+  router.get("/admin/marketing/agent", requireAdmin("viewer"), async (req, res) => {
+    res.json({ success: true, ...(await marketing.agentOverview()) });
   });
 
   router.get("/admin/marketing/budget", requireAdmin("viewer"), async (req, res) => {

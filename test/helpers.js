@@ -1,8 +1,13 @@
 // Test harness: real app + in-memory MongoDB; Twilio, APNs and Expo are faked.
+// With TEST_MONGODB_URI set (the restore drill, README "Backup") the suite runs
+// against that cluster instead, in a database of its own that it drops at the
+// end; the restored data next to it is never touched.
 const Module = require("module");
 
 process.env.NODE_ENV = "test";
 process.env.JWT_SECRET = "test-secret";
+// Keyed phone pseudonyms (models/User.js hmacPhone); a test-only value
+process.env.PHONE_HASH_PEPPER = "test-pepper-0123456789abcdef0123456789abcdef";
 process.env.ADMIN_API_KEY = "admin-key";
 // Test-only value; real certificates only come from the deployment environment
 process.env.AGORA_APP_CERTIFICATE = "0123456789abcdef0123456789abcdef";
@@ -20,16 +25,34 @@ const fakes = {
   mails: [],
   failMailTo: null,
   rejectMailTo: null,
+  // Twilio refuses to send to this number
+  failSmsTo: null,
+  // Plain SMS (alerts) "sent" via lib/twilio.js
+  alertSms: [],
+  // Expo is unreachable: sendPushNotificationsAsync throws
+  failExpo: false,
 };
 
 const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
   if (request === "twilio") {
     return () => ({
+      messages: {
+        create: async ({ to, body }) => {
+          if (fakes.failSmsTo && to === fakes.failSmsTo) throw new Error("twilio_down");
+          fakes.alertSms.push({ to, body });
+          return { sid: `SM${fakes.alertSms.length}` };
+        },
+      },
       verify: {
         v2: {
           services: () => ({
-            verifications: { create: async ({ to }) => fakes.sms.push(to) },
+            verifications: {
+              create: async ({ to }) => {
+                if (fakes.failSmsTo && to === fakes.failSmsTo) throw new Error("twilio_down");
+                fakes.sms.push(to);
+              },
+            },
             verificationChecks: {
               create: async ({ code }) => ({
                 status: code === fakes.approvedCode ? "approved" : "pending",
@@ -49,6 +72,7 @@ Module._load = function (request, parent, isMain) {
         return [m];
       }
       async sendPushNotificationsAsync(chunk) {
+        if (fakes.failExpo) throw new Error("expo_unreachable");
         fakes.expoPushes.push(...chunk);
         return chunk.map(() => ({ status: "ok", id: `ticket-${++fakes.ticketCounter}` }));
       }
@@ -96,9 +120,23 @@ const User = require("../models/User");
 let mongo;
 let ctx;
 
+// Every database the suite drops carries this prefix; reset() refuses any other
+const TEST_DB_PREFIX = "wannayap-test";
+
+/** The same cluster, another database: "mongodb+srv://u:p@host/prod?x=1" → ".../<name>?x=1". */
+function withDatabase(uri, name) {
+  const m = /^(mongodb(?:\+srv)?:\/\/[^/?]+)(?:\/[^?]*)?(\?.*)?$/.exec(String(uri));
+  if (!m) throw new Error(`not a MongoDB URI: ${uri}`);
+  return `${m[1]}/${name}${m[2] || ""}`;
+}
+
 async function setup() {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  if (process.env.TEST_MONGODB_URI) {
+    await mongoose.connect(withDatabase(process.env.TEST_MONGODB_URI, `${TEST_DB_PREFIX}-${process.pid}`));
+  } else {
+    mongo = await MongoMemoryServer.create();
+    await mongoose.connect(mongo.getUri(TEST_DB_PREFIX));
+  }
   // Short ring timeout so the missed-call path is testable
   ctx = createApp({ ringTimeoutMs: 1500 });
   await new Promise((resolve) => ctx.server.listen(0, resolve));
@@ -109,12 +147,19 @@ async function setup() {
 async function teardown() {
   ctx.io.close();
   await new Promise((resolve) => ctx.server.close(resolve));
+  if (!mongo) await dropTestDatabase();
   await mongoose.disconnect();
-  await mongo.stop();
+  if (mongo) await mongo.stop();
+}
+
+async function dropTestDatabase() {
+  const { databaseName } = mongoose.connection.db;
+  if (!databaseName.startsWith(TEST_DB_PREFIX)) throw new Error(`refusing to drop database ${databaseName}`);
+  await mongoose.connection.db.dropDatabase();
 }
 
 async function reset() {
-  await mongoose.connection.db.dropDatabase();
+  await dropTestDatabase();
   await User.syncIndexes();
   await require("../models/Call").syncIndexes();
   await require("../models/Talk").syncIndexes();
@@ -136,17 +181,34 @@ async function reset() {
   require("../lib/metrics").resetActivityCache();
   require("../lib/accessGate").reset();
   require("../lib/appConfig").resetAppCache();
+  require("../lib/devices").forgetDevices();
+  require("../lib/appConfig").resetFlagsCache();
+  require("../lib/appConfig").resetOpsCache();
   await require("../models/SupportTicket").syncIndexes();
   await require("../models/AppConfig").syncIndexes();
   await require("../models/BannedNumber").syncIndexes();
   await require("../models/ClientError").syncIndexes();
   await require("../models/WaitlistEntry").syncIndexes();
+  // One row per day, code and platform: the visit counter relies on the upsert
+  await require("../models/InviteVisit").syncIndexes();
+  // Unique event ids: the webhook relies on the 11000 for a retried event
+  await require("../models/SubscriptionEvent").syncIndexes();
+  await require("../models/ArchivedAccount").syncIndexes();
+  // Unique campaign slugs: POST /admin/campaigns relies on the 11000 for a taken one
+  await require("../models/Campaign").syncIndexes();
+  // One review per week and admin: POST /admin/weekly/ack upserts on it
+  await require("../models/WeeklyReview").syncIndexes();
+  // One re-match list per owner (plan 2.13): storeHashes upserts on it
+  await require("../models/AddressBookHash").syncIndexes();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
+  fakes.failExpo = false;
   fakes.voipPushes.length = 0;
   fakes.mails.length = 0;
   fakes.failMailTo = null;
   fakes.rejectMailTo = null;
+  fakes.failSmsTo = null;
+  fakes.alertSms.length = 0;
   fakes.receipts = {};
 }
 
@@ -172,4 +234,8 @@ async function shareAll() {
   await require("../models/CallMoment").updateMany({ status: "pending" }, { status: "shared", sharedAt: new Date() });
 }
 
-module.exports = { setup, teardown, reset, fakes, talked, shareAll };
+/** Everyone here has the others' numbers: they may call each other (lib/relations.js isConnected). */
+const befriend = (...phones) =>
+  Promise.all(phones.map((p) => User.updateOne({ phone: p }, { $addToSet: { contacts: { $each: phones.filter((q) => q !== p) } } })));
+
+module.exports = { setup, teardown, reset, fakes, talked, shareAll, befriend, withDatabase };

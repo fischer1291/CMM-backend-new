@@ -1,7 +1,13 @@
 require("dotenv").config();
+// Before anything else loads express, so Sentry's integration hooks in (lib/sentry.js)
+const sentry = require("./lib/sentry");
+sentry.init();
 const mongoose = require("mongoose");
 const User = require("./models/User");
 const Call = require("./models/Call");
+const Talk = require("./models/Talk");
+const Admin = require("./models/Admin");
+const ActiveDay = require("./models/ActiveDay");
 const { createApp } = require("./app");
 const { initializeVoipPush } = require("./lib/push");
 const { agoraCredentials } = require("./lib/agora");
@@ -12,11 +18,29 @@ const { checkReceipts } = require("./lib/receipts");
 const { tickDailyMoments } = require("./lib/dailyMoment");
 const { expirePendingMoments } = require("./lib/moments");
 const { runSnapshots } = require("./lib/metrics");
+const { runRules, runBannerRules } = require("./lib/alerts");
 const { tickMomentsWaiting } = require("./lib/unlock");
 const { asLeader, releaseLease, INSTANCE } = require("./lib/leader");
 const { migratePrivateCircles, tickRituals, endStaleRooms } = require("./lib/circles");
+const { backfillPhoneHmac, rekeyActiveDays } = require("./lib/pseudonyms");
 
 const PORT = process.env.PORT || 3000;
+// Background jobs run on one instance only (lib/leader.js)
+const JOBS = "jobs";
+
+// A rejected promise nobody awaits or an exception outside a request leaves
+// the process in an unknown state: log it, report it to Sentry, hand the jobs
+// over and exit; Render restarts the service and the uptime monitor sees
+// /healthz fail meanwhile. The Sentry flush gets 800 ms of the 1 s budget.
+const crash = (kind) => (err) => {
+  console.error(`💥 ${kind}:`, err);
+  const exit = () => process.exit(1);
+  setTimeout(exit, 1000);
+  sentry.captureException(err, { level: "fatal", tags: { crash: kind } });
+  Promise.all([releaseLease(JOBS), sentry.flush(800)]).then(exit, exit);
+};
+process.on("unhandledRejection", crash("unhandledRejection"));
+process.on("uncaughtException", crash("uncaughtException"));
 
 /** One-off data fixes that are safe to run on every start. */
 async function migrate() {
@@ -26,6 +50,17 @@ async function migrate() {
   }
   if (missingHash.length) console.log(`🔧 Added phoneHash to ${missingHash.length} users`);
 
+  // Keyed pseudonyms (plan 2.8, lib/pseudonyms.js): phoneHmac for every
+  // account, then ActiveDay re-keyed from SHA-256 to the HMAC, once. Both
+  // query ActiveDay by `who`; the index must exist before they run (this
+  // happens before server.listen, so a collection scan would hold /healthz)
+  await ActiveDay.createIndexes();
+  const { added: addedHmac, rekeyed: rekeyedUsers } = await backfillPhoneHmac();
+  if (addedHmac) console.log(`🔧 Added phoneHmac to ${addedHmac} users`);
+  if (rekeyedUsers) console.log(`🔧 Re-keyed phoneHmac and the ActiveDay rows of ${rekeyedUsers} users`);
+  const rekeyed = await rekeyActiveDays();
+  if (rekeyed !== null) console.log(`🔧 Re-keyed ${rekeyed} ActiveDay row(s) to phoneHmac`);
+
   // Private circle lists became shared circles (lib/circles.js)
   const migrated = await migratePrivateCircles();
   if (migrated) console.log(`🔧 Moved private circles of ${migrated} users to shared circles`);
@@ -33,6 +68,25 @@ async function migrate() {
   // Nudges: the unique (from, to) index and the 20 h TTL were replaced by a
   // history with cooldowns; syncIndexes drops/recreates what changed
   await require("./models/Nudge").syncIndexes();
+
+  // The daily numbers became a morning push (plan 1.12): admins still on the
+  // old default hour 20 move to 8, once; the marker keeps a later, deliberate
+  // 20 alone
+  const AppConfig = require("./models/AppConfig");
+  const applied = await AppConfig.findOne({ key: "app" }, { migrations: 1 }).lean();
+  if (!applied?.migrations?.morningPush) {
+    const moved = await Admin.updateMany({ "notify.dailyHour": 20 }, { "notify.dailyHour": 8 });
+    // An older document may carry migrations: null (the schema default); the
+    // dotted $set needs an object there. setDefaultsOnInsert: false keeps a
+    // fresh database free of null subtrees (ops, goals, limits)
+    await AppConfig.updateOne({ key: "app", migrations: null }, { $set: { migrations: {} } });
+    await AppConfig.updateOne({ key: "app" }, { $set: { "migrations.morningPush": new Date() } }, { upsert: true, setDefaultsOnInsert: false });
+    if (moved.modifiedCount) console.log(`🔧 Moved the daily push of ${moved.modifiedCount} admin(s) to 8:00`);
+  }
+
+  // Admins from before plan 1.8 have no `active` flag: they are all active
+  const activated = await Admin.updateMany({ active: { $exists: false } }, { active: true });
+  if (activated.modifiedCount) console.log(`🔧 Marked ${activated.modifiedCount} admin(s) as active`);
 }
 
 async function main() {
@@ -41,8 +95,14 @@ async function main() {
   if (!process.env.JWT_SECRET) {
     console.warn("⚠️ JWT_SECRET not set: no auth tokens are issued (legacy mode)");
   }
+  if (!User.phonePepperConfigured()) {
+    console.warn("⚠️ PHONE_HASH_PEPPER not set: phone pseudonyms are keyed from JWT_SECRET; set it once before this version is deployed and never change it (README \"Pseudonymous data\")");
+  }
   if (agoraCredentials().usingLegacyCertificate) {
     console.error("❌ AGORA_APP_CERTIFICATE not set: calls will fail (no RTC tokens)");
+  }
+  if (process.env.AUTH_REQUIRED !== "true") {
+    console.error("❌ AUTH_REQUIRED is not 'true': token-less requests may act as any phone number (legacy mode, see README)");
   }
 
   const { server, io, calls } = createApp();
@@ -50,14 +110,23 @@ async function main() {
   await mongoose.connect(process.env.MONGODB_URI);
   console.log("✅ MongoDB verbunden");
   await migrate();
+  // Rings the previous process left behind end now; the minute tick below
+  // keeps doing this (lib/calls.js sweepStaleCalls)
   const stale = await calls.sweepStaleCalls();
-  if (stale) console.log(`🔧 Marked ${stale} stale ringing calls as missed`);
-  // Talk-time stats start with the calls still on record (idempotent)
-  const answered = await Call.find({ status: "ended", acceptedAt: { $ne: null }, endedAt: { $ne: null } });
+  if (stale) console.log(`🔧 Ended ${stale} stale call(s) left by a previous process`);
+  // Talk-time stats: a talk whose recordTalk the previous process didn't get
+  // to is recorded now (idempotent). Only calls ended since the latest talk
+  // on record, or the last 30 days on a fresh database, not the whole table
+  const lastTalk = await Talk.findOne({}, { startedAt: 1 }).sort({ startedAt: -1 }).lean();
+  const since = lastTalk?.startedAt || new Date(Date.now() - 30 * 24 * 3600 * 1000);
+  const answered = await Call.find({ status: "ended", endedAt: { $gt: since }, acceptedAt: { $ne: null } }).sort({ acceptedAt: 1 });
   for (const call of answered) await calls.recordTalk(call);
 
-  // Every minute: start scheduled availability, end expired sessions
+  // Every minute: end overdue rings, start scheduled availability, end
+  // expired sessions
   const tick = async () => {
+    const ended = await calls.sweepStaleCalls();
+    if (ended) console.log(`🔧 Ended ${ended} stale call(s)`);
     await applySchedules((user) => broadcastStatus(io, user, { becameAvailable: true }));
     await expireMoments(io);
     await tickDailyMoments(io);
@@ -78,16 +147,16 @@ async function main() {
     }
     await tickMomentsWaiting();
   };
-  // Background jobs run on one instance only (lib/leader.js). The minute tick
-  // also renews the lease, so the leader keeps it while it's alive.
-  const JOBS = "jobs";
+  // The minute tick also renews the lease, so the leader keeps it while it's
+  // alive; every finished job stamps lastRunAt on the lock for /healthz, the
+  // tick additionally tickAt for the alert tick_late (lib/alerts.js).
   let leading = false;
   const asJobLeader = async (name, fn) => {
     const result = await asLeader(JOBS, async () => {
       if (!leading) console.log(`👑 ${INSTANCE} runs the background jobs`);
       leading = true;
       return fn();
-    });
+    }, { tick: name === "tick" });
     if (result === undefined && leading) {
       console.log(`👋 ${INSTANCE} lost the background jobs to another instance`);
       leading = false;
@@ -98,11 +167,23 @@ async function main() {
     asJobLeader("tick", tick).catch((err) => console.error("❌ availability tick:", err.message));
   }, 60 * 1000);
 
-  // Admin numbers: fill missing days now, then refresh every 30 minutes
+  // Admin numbers: fill missing days now, then refresh every 30 minutes; the
+  // alert rules (lib/alerts.js) run right after, on the fresh numbers
   const snapshots = () =>
-    asJobLeader("snapshots", runSnapshots).catch((err) => console.error("❌ metrics snapshots:", err.message));
+    asJobLeader("snapshots", runSnapshots)
+      .catch((err) => console.error("❌ metrics snapshots:", err.message))
+      .then(() => asJobLeader("alerts", runRules))
+      .then((fired) => fired?.length && console.log(`🚨 Alarme: ${fired.join(", ")}`))
+      .catch((err) => console.error("❌ alerts:", err.message));
   snapshots();
   setInterval(snapshots, 30 * 60 * 1000);
+
+  // Outage banner (plan 2.15): the userFacing rules every 5 minutes without
+  // alerting, so the banner follows an outage within minutes, not with the
+  // 30-minute alert run (lib/alerts.js runBannerRules)
+  setInterval(() => {
+    asJobLeader("banner", runBannerRules).catch((err) => console.error("❌ outage banner:", err.message));
+  }, 5 * 60 * 1000);
 
   // Launch mail to the waitlist, once started in the console: a batch every 15 s
   const { runLaunchBatch } = require("./lib/waitlist");
@@ -132,6 +213,23 @@ async function main() {
       .catch((err) => console.error("❌ token refresh:", err.message));
   }, 60 * 60 * 1000);
 
+  // How the posted videos do (plan 2.14): Instagram and TikTok numbers of the
+  // last 30 days every 6 hours, checked every 30 minutes against the stored
+  // last reading so deploys never reset the clock; this week's bio link
+  // campaign, checked hourly (lib/socialPosting.js statsDue,
+  // lib/marketing.js ensureBioCampaign)
+  setInterval(() => {
+    asJobLeader("post-stats", () => posting.statsDue())
+      .then((r) => r && (r.instagram || r.tiktok || r.failed) && console.log(`📈 Post-Zahlen: Instagram ${r.instagram}, TikTok ${r.tiktok}, fehlgeschlagen ${r.failed}`))
+      .catch((err) => console.error("❌ post stats:", err.message));
+  }, 30 * 60 * 1000);
+  const bioCampaign = () =>
+    asJobLeader("bio-link", () => require("./lib/marketing").ensureBioCampaign())
+      .then((r) => r?.created && console.log(`🔗 Bio-Link-Kampagne ${r.slug} angelegt`))
+      .catch((err) => console.error("❌ bio link campaign:", err.message));
+  bioCampaign();
+  setInterval(bioCampaign, 60 * 60 * 1000);
+
   // Confirmation mails that failed (mail provider down): send them now
   setInterval(() => {
     asJobLeader("waitlist-resend", () => require("./lib/waitlist").resendMissing())
@@ -146,6 +244,40 @@ async function main() {
       .then((sent) => sent && console.log(`📊 Tageszahlen an ${sent} Admin(s)`))
       .catch((err) => console.error("❌ admin daily push:", err.message));
   }, 5 * 60 * 1000);
+
+  // The weekly report, Monday from 08:00 Europe/Berlin, once per week
+  // (lib/weeklyReport.js); checked every 15 minutes
+  const weeklyReport = require("./lib/weeklyReport");
+  setInterval(() => {
+    asJobLeader("weekly", () => weeklyReport.weeklyDue())
+      .then((r) => r && console.log(`🗓️  Wochenreport ${r.week}: ${r.mails} Mail(s), ${r.pushes} Push(es)`))
+      .catch((err) => console.error("❌ weekly report:", err.message));
+  }, 15 * 60 * 1000);
+
+  // Dead-man rule: no owner acknowledged or signed in for 7 days, or no owner
+  // acknowledged the weekly report for 14 days (lib/adminPush.js); checked
+  // hourly, sent at most once per 7 days per tag
+  setInterval(() => {
+    asJobLeader("dead-man", () => adminPush.deadManCheck())
+      .then((how) => how && console.log(`🚨 Dead-man rule: ${how === "mail" ? "emergency contact mailed" : "owners pushed"}`))
+      .catch((err) => console.error("❌ dead-man check:", err.message));
+  }, 60 * 60 * 1000);
+
+  // Nightly: every store Plus against RevenueCat, once a day between 03:00
+  // and 05:00 Europe/Berlin (lib/plusReconcile.js); checked every 15 minutes
+  const plusReconcile = require("./lib/plusReconcile");
+  setInterval(() => {
+    asJobLeader("plus-reconcile", () => plusReconcile.runDue(new Date(), io)).catch((err) => console.error("❌ plus-reconcile:", err.message));
+  }, 15 * 60 * 1000);
+
+  // Lifecycle pushes every 30 minutes (lib/lifecycle.js): onboarding days
+  // 1/3/7, inactivity, the weekly series, Plus ending, billing, win-back
+  const { tickLifecycle } = require("./lib/lifecycle");
+  setInterval(() => {
+    asJobLeader("lifecycle", () => tickLifecycle(new Date()))
+      .then((result) => result?.sent && console.log(`💌 Lifecycle: ${Object.entries(result.byType).map(([t, n]) => `${t} ${n}`).join(", ")}`))
+      .catch((err) => console.error("❌ lifecycle:", err.message));
+  }, 30 * 60 * 1000);
 
   // Every 15 minutes: delivery receipts of sent pushes
   setInterval(() => {
@@ -163,6 +295,7 @@ async function main() {
   const shutdown = async (signal) => {
     console.log(`🛑 ${signal}: shutting down`);
     await releaseLease(JOBS);
+    await sentry.flush(2000);
     server.close();
     setTimeout(() => process.exit(0), 5000).unref();
   };
@@ -170,7 +303,9 @@ async function main() {
   process.once("SIGINT", () => shutdown("SIGINT"));
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("❌ Startup failed:", err);
+  sentry.captureException(err, { level: "fatal", tags: { crash: "startup" } });
+  await sentry.flush(800);
   process.exit(1);
 });

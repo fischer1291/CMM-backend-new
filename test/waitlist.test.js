@@ -107,6 +107,10 @@ test("redeem in the app: badge for everyone, Plus days for three confirmed frien
   const user = await User.findOne({ phone: ANNA });
   assert.equal(user.plus.source, "waitlist");
   assert.ok(Math.abs(user.plus.until - Date.now() - 30 * DAY) < 60 * 1000);
+  // The gift budget (plan 2.12)
+  const { countsOf } = require("../lib/opsCounters");
+  const { todayKey } = require("../lib/metrics");
+  assert.equal((await countsOf(todayKey(new Date()))).giftDays_waitlist, 30);
   const { badges } = (await request(ctx.app).get("/me/badges").set(auth).expect(200)).body;
   assert.equal(badges.find((b) => b.id === "pioneer").earned, true);
 
@@ -172,7 +176,7 @@ test("landing page visits: counted per source and campaign, next to the sign-ups
   await visit({ source: "<>" });
   const LandingVisit = require("../models/LandingVisit");
   // Only counters: nothing about the visitor
-  assert.deepEqual(Object.keys((await LandingVisit.findOne({ source: "tiktok" })).toObject()).sort(), ["__v", "_id", "campaign", "day", "engaged", "formStarted", "source", "submitted", "visits"]);
+  assert.deepEqual(Object.keys((await LandingVisit.findOne({ source: "tiktok" })).toObject()).sort(), ["__v", "_id", "campaign", "day", "engaged", "formStarted", "source", "storeClicks", "submitted", "visits"]);
 
   // Steps towards a sign-up: read, started the form (the sign-up itself counts as sent)
   const step = (body, code = 204) => request(ctx.app).post("/waitlist/event").send(body).expect(code);
@@ -180,6 +184,10 @@ test("landing page visits: counted per source and campaign, next to the sign-ups
   await step({ step: "engaged", source: "tiktok", campaign: "hook_1" });
   await step({ step: "form", source: "tiktok", campaign: "hook_1" });
   await step({ step: "engaged", source: "instagram" });
+  // The store button (live mode): the other way off the page, counted the same way
+  await step({ step: "store", source: "tiktok", campaign: "hook_1" });
+  await step({ step: "store", source: "tiktok", campaign: "hook_1" });
+  await step({ step: "store" });
   await step({ step: "visit" }, 400);
   await step({ step: "submitted" }, 400);
 
@@ -194,16 +202,20 @@ test("landing page visits: counted per source and campaign, next to the sign-ups
   assert.equal(visits.last7Days, 6);
   assert.equal(visits.last30Days, 6);
   assert.equal(visits.signups30Days, 2);
+  assert.equal(visits.storeClicks30Days, 3);
   assert.equal(visits.byDay.length, 30);
   assert.equal(visits.byDay.at(-1).count, 6);
   assert.equal(visits.byDay.at(-1).partial, true);
   const row = (source, campaign = null) => visits.campaigns.find((c) => c.source === source && c.campaign === campaign);
-  assert.deepEqual(row("tiktok", "hook_1"), { source: "tiktok", campaign: "hook_1", visits: 2, engaged: 2, formStarted: 1, submitted: 2, signups: 2 });
+  assert.deepEqual(row("tiktok", "hook_1"), { source: "tiktok", campaign: "hook_1", visits: 2, engaged: 2, formStarted: 1, submitted: 2, storeClicks: 2, storeRate: 1, signups: 2 });
   // Sent but never confirmed: in the funnel, not a sign-up
-  assert.deepEqual(row("instagram"), { source: "instagram", campaign: null, visits: 1, engaged: 1, formStarted: 0, submitted: 1, signups: 0 });
-  assert.deepEqual(visits.funnel, { visits: 6, engaged: 3, formStarted: 1, submitted: 3, confirmed: 2 });
+  assert.deepEqual(row("instagram"), { source: "instagram", campaign: null, visits: 1, engaged: 1, formStarted: 0, submitted: 1, storeClicks: 0, storeRate: 0, signups: 0 });
+  assert.deepEqual(visits.funnel, { visits: 6, engaged: 3, formStarted: 1, submitted: 3, confirmed: 2, storeClicks: 3 });
   assert.equal(row("empfehlung").visits, 1);
   assert.equal(row("direkt").visits, 2);
+  // Visit → store click per source: one of two direct visits went on to the store
+  assert.equal(row("direkt").storeClicks, 1);
+  assert.equal(row("direkt").storeRate, 0.5);
   assert.equal(visits.campaigns[0].source, "tiktok");
 });
 

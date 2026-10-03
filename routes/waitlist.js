@@ -20,7 +20,8 @@ const limiter = (limit) =>
 function publicRoutes() {
   const router = express.Router();
 
-  // POST /waitlist { email, ref?, source?, campaign?, website? }
+  // POST /waitlist { email, ref?, source?, campaign?, platform?, website? }
+  // (platform "ios" | "android"; without it, the user agent decides)
   router.post("/waitlist", limiter(10), async (req, res) => {
     // Honeypot: people don't fill in a hidden field, bots do
     if (req.body?.website) return res.json({ success: true });
@@ -30,6 +31,8 @@ function publicRoutes() {
         ref: req.body?.ref,
         source: req.body?.source,
         campaign: req.body?.campaign,
+        platform: req.body?.platform,
+        userAgent: req.get("user-agent"),
         ip: req.ip,
       });
       if (result.error) return res.status(400).json({ success: false, error: result.error });
@@ -52,11 +55,12 @@ function publicRoutes() {
     res.status(204).end();
   });
 
-  // POST /waitlist/event { step: "engaged" | "form", source?, campaign?, ref? }:
-  // a step towards a sign-up on the landing page (counters, like visits)
+  // POST /waitlist/event { step: "engaged" | "form" | "store", source?, campaign?, ref? }:
+  // a step towards a sign-up, or the tap on a store button, on the landing
+  // page (counters, like visits)
   router.post("/waitlist/event", limiter(120), async (req, res) => {
     const step = req.body?.step;
-    if (!["engaged", "form"].includes(step)) return res.status(400).json({ success: false, error: "invalid_step" });
+    if (!["engaged", "form", "store"].includes(step)) return res.status(400).json({ success: false, error: "invalid_step" });
     try {
       await waitlist.countStep(step, { source: req.body?.source, campaign: req.body?.campaign, ref: !!req.body?.ref });
     } catch (err) {

@@ -11,6 +11,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@sentry/node": "^10.76.0",
     "@simplewebauthn/server": "^13.3.3",
     "@types/node": "^22.13.11",
     "agora-access-token": "^2.0.4",
@@ -42,6 +43,6 @@
     "supertest": "^7.3.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": "22.x"
   }
 }

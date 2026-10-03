@@ -22,8 +22,14 @@ const ERRORS = {
   weak_password: 'Das Passwort braucht mindestens 12 Zeichen.',
   invalid_email: 'Bitte eine gültige E-Mail-Adresse eingeben.',
   already_set_up: 'Es gibt schon einen Admin. Bitte anmelden.',
+  invite_invalid: 'Der Einladungslink ist abgelaufen oder wurde schon benutzt. Bitte neu einladen lassen.',
+  exists: 'Diese Adresse ist schon ein aktiver Admin.',
+  last_owner: 'Das geht nicht: Mindestens ein Owner muss bleiben.',
+  self: 'Dich selbst kannst du nicht deaktivieren.',
+  invalid_role: 'Bitte eine Rolle wählen.',
   locked: 'Zu viele Versuche. Bitte in 15 Minuten erneut versuchen.',
   nothing_to_post: 'Kein verbundener Kanal, auf dem das Video noch fehlt. Verbinden unter Freigabe → Kanäle.',
+  reason_required: 'Bitte einen Grund angeben: Die Person bekommt ihn als Begründung (DSA) und kann widersprechen.',
 };
 const message = (err) => ERRORS[err.code] || (err.status === 429 ? ERRORS.locked : 'Das hat nicht geklappt. Bitte erneut versuchen.');
 
@@ -187,7 +193,11 @@ function Login({ onDone }) {
   </form></div>`;
 }
 
-function Setup({ onDone }) {
+/**
+ * First admin (with ADMIN_API_KEY) or, with `token` from #setup/<token>, an
+ * invited admin or one whose code was reset (scripts/reset-admin-totp.js).
+ */
+function Setup({ onDone, token }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [setupKey, setSetupKey] = useState('');
@@ -195,6 +205,12 @@ function Setup({ onDone }) {
   const [started, setStarted] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  // Whom the invitation is for; false once it is used up or expired
+  const [invite, setInvite] = useState(null);
+  useEffect(() => {
+    if (!token) return;
+    api(`/auth/invite/${encodeURIComponent(token)}`).then((d) => { setInvite(d); setEmail(d.email); }).catch(() => setInvite(false));
+  }, [token]);
 
   const run = async (e, fn) => {
     e.preventDefault();
@@ -209,6 +225,22 @@ function Setup({ onDone }) {
     }
   };
 
+  if (token && !started) {
+    if (invite === null) return html`<div class="center note">Lade Einladung …</div>`;
+    if (invite === false) {
+      return html`<div class="center"><div class="card auth"><${Brand} /><h1>Einladung</h1><p class="error">${ERRORS.invite_invalid}</p>
+        <button type="button" class="btn small ghost" style="width:100%" onClick=${() => { location.hash = ''; location.reload(); }}>Zur Anmeldung</button></div></div>`;
+    }
+    return html`<div class="center"><form class="card auth" onSubmit=${(e) => run(e, async () => setStarted(await api('/auth/setup', { method: 'POST', body: { inviteToken: token, password } })))}>
+      <${Brand} />
+      <h1>Willkommen</h1>
+      <p>${invite.invitedBy && invite.invitedBy !== 'reset-admin-totp' ? `${invite.invitedBy} hat dich` : 'Du wurdest'} als „${TEAM_ROLES[invite.role] || invite.role}“ zur Konsole eingeladen. Wähle ein Passwort für <b>${invite.email}</b>; danach richtest du deine Authenticator-App ein.</p>
+      ${error ? html`<p class="error">${error}</p>` : null}
+      <${Field} label="Passwort (mind. 12 Zeichen)" type="password" value=${password} onInput=${setPassword} autocomplete="new-password" autofocus />
+      <button class="btn" style="width:100%" disabled=${busy}>Weiter</button>
+    </form></div>`;
+  }
+
   if (!started) {
     return html`<div class="center"><form class="card auth" onSubmit=${(e) => run(e, async () => setStarted(await api('/auth/setup', { method: 'POST', body: { email, password, setupKey } })))}>
       <${Brand} />
@@ -222,7 +254,7 @@ function Setup({ onDone }) {
     </form></div>`;
   }
 
-  return html`<div class="center"><form class="card auth" onSubmit=${(e) => run(e, async () => onDone((await api('/auth/setup/confirm', { method: 'POST', body: { email, password, code } })).admin))}>
+  return html`<div class="center"><form class="card auth" onSubmit=${(e) => run(e, async () => onDone((await api('/auth/setup/confirm', { method: 'POST', body: { email: started.email || email, password, code } })).admin))}>
     <${Brand} />
     <h1>Zwei-Faktor</h1>
     <p>Scanne den QR-Code mit einer Authenticator-App (z. B. 1Password, Google Authenticator) und gib den Code ein.</p>
@@ -273,22 +305,60 @@ function AppErrors() {
   if (!errors.length) return html`<div class="card note">Keine App-Fehler in den letzten 30 Tagen.</div>`;
   return html`<div class="card scroll">
     <table>
-      <thead><tr><th>Fehler</th><th>Anzahl</th><th>Zuletzt</th><th>Versionen</th></tr></thead>
+      <thead><tr><th>Fehler</th><th>Anzahl</th><th>Zuletzt</th><th>Versionen</th><th>Updates</th></tr></thead>
       <tbody>${errors.map((e) => html`<tr>
         <td><details><summary>${e.fatal ? html`<span class="pill warn">Absturz</span> ` : null}${e.message}</summary><pre style="white-space:pre-wrap;font-size:11px">${e.stack}</pre></details></td>
         <td>${num(e.count)}</td>
         <td>${new Date(e.lastAt).toLocaleString('de-DE')}</td>
         <td>${e.versions.join(', ')}</td>
+        <td title=${(e.updates || []).join(', ')}>${(e.updates || []).map((u) => (u === 'embedded' ? 'Build' : u.slice(0, 8))).join(', ') || '–'}</td>
       </tr>`)}</tbody>
     </table>
-    <p class="note" style="margin:10px 0 0">JavaScript-Fehler aus der App, ohne Personenbezug gruppiert. Native Abstürze stehen in Xcode → Organizer.</p>
+    <p class="note" style="margin:10px 0 0">JavaScript-Fehler aus der App, ohne Personenbezug gruppiert. Updates: „Build“ ist das JavaScript aus dem Store-Build, sonst die ersten Zeichen der OTA-Update-ID. Native Abstürze stehen in Sentry und in Xcode → Organizer.</p>
   </div>`;
 }
 
-/** Today so far, next to the whole same weekday last week, and what is waiting. */
+/**
+ * The north star as a line with a traffic light: rolling activation of the
+ * last four weeks against the goal (App → Ziele), judged only from 100
+ * measured sign-ups on, and the address book density of new people.
+ */
+function NorthStar({ activation: a, density: d }) {
+  if (!a) return null;
+  const light = a.ok === null ? '' : a.ok ? 'good' : 'bad';
+  const activation = a.pct4w === null
+    ? html`<span class="muted">noch keine Daten</span>`
+    : html`<b class=${light}>${a.pct4w} %</b> <span class="muted">Ziel ${a.goalPct}${a.enough ? '' : ` · erst ${num(a.sample)} gemessen, zu wenig Daten`}</span>`;
+  const density = d.c3plus === null
+    ? html`<span class="muted">noch keine Daten</span>`
+    : html`<b class=${d.c3plus >= d.goalPct ? 'good' : 'bad'}>${d.c3plus} %</b> <span class="muted">mit ≥ 3 Kontakten (Ziel ${d.goalPct})${d.c0 ? `, ${d.c0} % ohne` : ''}</span>`;
+  return html`<div class="northstar">
+    <div class="kv"><span>Aktivierung 4 W</span><span>${activation}</span></div>
+    <div class="kv"><span>Dichte (7–35 Tage dabei)</span><span>${density}</span></div>
+  </div>`;
+}
+
+/** The last alerts (lib/alerts.js): tag, when, text; the tag is the key in RUNBOOK.md. */
+function Alerts({ alerts }) {
+  if (!alerts) return null;
+  const when = (d) => new Date(d).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return html`<div class="alerts">
+    <div class="label" style="margin:12px 0 4px">Alarme</div>
+    ${alerts.length === 0 ? html`<p class="note" style="margin:0">Bisher keine. Die Regeln laufen alle 30 Minuten.</p>` : alerts.slice(0, 5).map((a) => html`<div class="kv" title=${a.lastText}>
+      <span><span class=${`pill ${a.level === 'error' ? 'warn' : 'todo'}`}>${a.tag}</span> <span class="muted">${when(a.lastAt)}${a.count > 1 ? ` · ${a.count}×` : ''}</span></span>
+      <span class="muted" style="text-align:right">${a.lastText.length > 90 ? `${a.lastText.slice(0, 90)}…` : a.lastText}</span>
+    </div>`)}
+  </div>`;
+}
+
+/** Today so far, next to the whole same weekday last week, the north star, the last alerts and what is waiting. */
 function Today({ onGo }) {
   const [data, setData] = useState(null);
-  const load = useCallback(() => api('/today').then(setData).catch(() => {}), []);
+  const [alerts, setAlerts] = useState(null);
+  const load = useCallback(() => {
+    api('/today').then(setData).catch(() => {});
+    api('/alerts').then((d) => setAlerts(d.alerts)).catch(() => {});
+  }, []);
   useEffect(() => {
     load();
     const t = setInterval(load, 60_000);
@@ -318,6 +388,9 @@ function Today({ onGo }) {
       ${tile('Website', 'visits')}
       ${tile('Warteliste', 'waitlist')}
     </div>
+    <${NorthStar} activation=${data.activation} density=${data.density} />
+    ${data.sms ? html`<p class="note" style="margin:8px 0 0">SMS heute ${num(data.sms.started)} von ${num(data.sms.cap)}${data.sms.paused ? ' · pausiert' : ''} (App → Betrieb)</p>` : null}
+    <${Alerts} alerts=${alerts} />
   </div>`;
 }
 
@@ -402,6 +475,8 @@ function Dashboard({ onGo }) {
 
     <div class="section">Bleiben die Leute?</div>
     <${Retention} />
+    <div class="section">Herkunft</div>
+    <${Origin} />
     <div class="section">App-Fehler</div>
     <${AppErrors} />
     <p class="note" style="margin-top:20px">Stand ${new Date(today.computedAt || Date.now()).toLocaleTimeString('de-DE')} · Tage nach ${data.zone} · heute noch unvollständig (blassere Balken)</p>
@@ -420,13 +495,100 @@ function Audit() {
   </table>${entries.length ? null : html`<p class="note">Noch keine Einträge.</p>`}</div>`;
 }
 
+// --- Team: the other admins (owner only, routes/admin.js /admin/admins) ------------------
+
+const TEAM_ROLES = { owner: 'Owner', support: 'Support', viewer: 'Nur lesen' };
+
+function Team({ me }) {
+  const [data, setData] = useState(null);
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState('support');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [link, setLink] = useState(null);
+  const load = useCallback(() => api('/admins').then(setData).catch(() => setData(false)), []);
+  useEffect(() => { load(); }, [load]);
+  if (data === false) return html`<div class="card">Konnte nicht geladen werden.</div>`;
+  if (!data) return html`<div class="card note">Lade Team …</div>`;
+
+  const act = async (fn, done) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const result = await fn();
+      if (done) setMsg({ ok: true, text: done(result) });
+      load();
+      return result;
+    } catch (err) {
+      setMsg({ ok: false, text: message(err) });
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+  const invite = async (e, to = email, as = role) => {
+    e?.preventDefault();
+    setLink(null);
+    const r = await act(() => api('/admins', { method: 'POST', body: { email: to, role: as } }), (r) => (r.mailed ? `Einladung an ${to} ist raus (gilt 7 Tage).` : data.mailConfigured ? `Die Mail an ${to} ging nicht raus. Gib den Link selbst weiter (gilt 7 Tage):` : `Kein Mailversand eingerichtet (SMTP_URL). Gib den Link selbst weiter (gilt 7 Tage):`));
+    if (r) {
+      setEmail('');
+      if (r.link) setLink(r.link);
+    }
+  };
+  const setRoleOf = (a, next) => {
+    if (next === a.role) return;
+    if (a.me && next !== 'owner' && !confirm('Du nimmst dir selbst die Owner-Rolle. Weiter?')) return load();
+    act(() => api(`/admins/${a.id}`, { method: 'PUT', body: { role: next } }), () => `${a.email} ist jetzt ${TEAM_ROLES[next]}.`);
+  };
+  const deactivate = (a) => {
+    if (!confirm(`${a.email} deaktivieren? Die Person kann sich dann nicht mehr anmelden und bekommt keine Mitteilungen mehr. Eine neue Einladung macht das rückgängig.`)) return;
+    act(() => api(`/admins/${a.id}`, { method: 'DELETE' }), () => `${a.email} ist deaktiviert.`);
+  };
+  const status = (a) => {
+    if (!a.active && a.totpEnabled) return html`<span class="pill warn">deaktiviert</span>`;
+    if (!a.totpEnabled) {
+      const open = a.inviteExpiresAt && new Date(a.inviteExpiresAt) > new Date();
+      return html`<span class=${`pill ${open ? 'todo' : 'warn'}`}>${open ? `eingeladen, bis ${date(a.inviteExpiresAt)}` : 'Einladung abgelaufen'}</span>`;
+    }
+    return html`<span class="pill on">aktiv</span>`;
+  };
+
+  return html`
+    ${msg ? html`<div class=${msg.ok ? 'flash' : 'error'}>${msg.text}${link ? html`<div class="inline" style="margin-top:8px"><code style="word-break:break-all;font-size:12px">${link}</code><${CopyButton} text=${link} /></div>` : null}</div>` : null}
+    <div class="card scroll"><table>
+      <thead><tr><th>E-Mail</th><th>Rolle</th><th>Status</th><th>Zwei-Faktor</th><th>Letzte Anmeldung</th><th>Letzte Quittung</th><th></th></tr></thead>
+      <tbody>${data.admins.map((a) => html`<tr>
+        <td>${a.email}${a.me ? html` <span class="muted">(du)</span>` : null}</td>
+        <td><select value=${a.role} disabled=${busy || (!a.active && a.totpEnabled)} onChange=${(e) => setRoleOf(a, e.target.value)}>${Object.entries(TEAM_ROLES).map(([k, v]) => html`<option value=${k}>${v}</option>`)}</select></td>
+        <td>${status(a)}</td>
+        <td class="muted">${a.totpEnabled ? `Code${a.passkeys ? ` · ${a.passkeys} Passkey${a.passkeys === 1 ? '' : 's'}` : ''}` : '–'}</td>
+        <td class="muted">${a.lastLoginAt ? dateTime(a.lastLoginAt) : '–'}</td>
+        <td class="muted">${a.lastAckAt ? dateTime(a.lastAckAt) : '–'}</td>
+        <td style="text-align:right;white-space:nowrap">
+          ${a.active && a.totpEnabled && !a.me ? html`<button class="btn small ghost" disabled=${busy} onClick=${() => deactivate(a)}>Deaktivieren</button>` : null}
+          ${!a.active || !a.totpEnabled ? html`<button class="btn small ghost" disabled=${busy} onClick=${(e) => invite(e, a.email, a.role)}>Erneut einladen</button>` : null}
+        </td>
+      </tr>`)}</tbody>
+    </table></div>
+    <form class="card" style="margin-top:12px" onSubmit=${invite}>
+      <div class="label">Einladen</div>
+      <p class="note" style="margin-top:0">Die Person bekommt einen Link (7 Tage gültig), setzt ein Passwort und richtet ihre Authenticator-App ein. Owner: alles, auch Team und Einstellungen · Support: Nutzer, Meldungen, Support · Nur lesen: Zahlen. Ein zweiter Owner ist der Plan: Fällst du aus, kann jemand weitermachen (CMM/docs/EMERGENCY.md).</p>
+      <div class="inline">
+        <input type="email" required placeholder="name@beispiel.de" value=${email} onInput=${(e) => setEmail(e.target.value)} autocomplete="off" />
+        <select value=${role} onChange=${(e) => setRole(e.target.value)}>${Object.entries(TEAM_ROLES).map(([k, v]) => html`<option value=${k}>${v}</option>`)}</select>
+        <button class="btn small" disabled=${busy || !email}>Einladen</button>
+      </div>
+      ${!data.mailConfigured ? html`<p class="note" style="margin:8px 0 0">Ohne SMTP_URL wird keine Mail verschickt; der Link erscheint hier zum Weitergeben.</p>` : null}
+    </form>
+    <p class="note">Quittung: Wer die tägliche Mitteilung antippt, quittiert sie. Hat 7 Tage lang kein Owner quittiert oder sich angemeldet, bekommt der Notfallkontakt (App → Betrieb) eine Mail, sonst die Owner einen Push. Authenticator verloren und kein zweiter Owner da? <code>node scripts/reset-admin-totp.js ${me.email}</code> in der Render-Shell (README, Abschnitt Team).</p>`;
+}
 
 // --- Users -------------------------------------------------------------------------
 
 const PLATFORM = { ios: 'iOS', android: 'Android' };
 const dateTime = (d) => (d ? new Date(d).toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'short' }) : '–');
 const date = (d) => (d ? new Date(d).toLocaleDateString('de-DE', { dateStyle: 'medium' }) : '–');
-const PLUS_SOURCES = { store: 'App Store', admin: 'vergeben', gift: 'Geschenk' };
+const PLUS_SOURCES = { store: 'App Store', sandbox: 'Sandbox (Tester)', admin: 'vergeben', gift: 'Geschenk' };
 const REASONS = { spam: 'Spam', harassment: 'Belästigung', inappropriate: 'Unangemessen', other: 'Sonstiges' };
 const RESOLUTIONS = { dismiss: 'Verworfen', hide_moment: 'Moment ausgeblendet', delete_moment: 'Moment gelöscht', suspend: 'Gesperrt', ban: 'Gebannt' };
 
@@ -508,7 +670,7 @@ function UserDetail({ id, role, onBack, onChanged, onMoments }) {
       if (key === 'ban' || key === 'delete') return onChanged();
       load();
     } catch (err) {
-      setFlash(`Fehler: ${err.code || err.message}`);
+      setFlash(`Fehler: ${ERRORS[err.code] || err.code || err.message}`);
     } finally {
       setBusy(null);
     }
@@ -587,8 +749,8 @@ function UserDetail({ id, role, onBack, onChanged, onMoments }) {
           ? html`<button class="btn small ghost" disabled=${busy} onClick=${() => act('unsuspend', '/unsuspend', null, () => 'Sperre aufgehoben.')}>Sperre aufheben</button>`
           : html`<div class="inline">
               <select value=${days} onChange=${(e) => setDays(e.target.value)}>${['1', '3', '7', '30', '90'].map((d) => html`<option value=${d}>${d} ${d === '1' ? 'Tag' : 'Tage'}</option>`)}</select>
-              <input placeholder="Grund (intern)" value=${reason} onInput=${(e) => setReason(e.target.value)} />
-              <button class="btn small danger" disabled=${busy} onClick=${() => confirm(`${user.name || 'Konto'} für ${days} Tage sperren? Die Person wird abgemeldet.`) && act('suspend', '/suspend', { days: Number(days), reason }, (r) => `Gesperrt bis ${date(r.suspendedUntil)}.`)}>Sperren</button>
+              <input placeholder="Grund (die Person liest ihn)" maxlength="300" value=${reason} onInput=${(e) => setReason(e.target.value)} />
+              <button class="btn small danger" disabled=${busy || !reason.trim()} title=${reason.trim() ? '' : 'Erst einen Grund eintragen'} onClick=${() => confirm(`${user.name || 'Konto'} für ${days} Tage sperren? Die Person wird abgemeldet und bekommt die Begründung mit dem Grund im Support-Bereich der App.`) && act('suspend', '/suspend', { days: Number(days), reason }, (r) => `Gesperrt bis ${date(r.suspendedUntil)}. Begründung ist verschickt.`)}>Sperren</button>
             </div>`}
         ${role === 'owner' ? html`<a class="btn small ghost" href=${`/admin/users/${id}/export`} download>Daten exportieren (DSGVO)</a>` : null}
         ${role === 'owner' ? (user.plan === 'plus' && user.plus?.source !== 'store'
@@ -608,6 +770,16 @@ function UserDetail({ id, role, onBack, onChanged, onMoments }) {
 }
 
 // --- Reports -----------------------------------------------------------------------
+
+// The reason the person affected reads in the statement of reasons (plan 2.7).
+// Pre-filled with the report's category only: the reporter's own note stays
+// internal (it is on the card), it could tell who reported. Same wording as
+// lib/moderation.js REPORT_REASONS
+const REASON_FOR_PERSON = { spam: 'Spam', harassment: 'Belästigung', inappropriate: 'unangemessener Inhalte', other: 'eines Verstoßes' };
+const askReason = (r) => {
+  const text = prompt('Grund für die Person (sie bekommt ihn als Begründung und kann widersprechen; nenn nicht, wer gemeldet hat):', `Meldung wegen ${REASON_FOR_PERSON[r.reason] || 'eines Verstoßes'}`);
+  return text && text.trim() ? text.trim() : null;
+};
 
 function Reports({ role, onOpenUser, onCount }) {
   const [status, setStatus] = useState('open');
@@ -654,9 +826,9 @@ function Reports({ role, onOpenUser, onCount }) {
           ${r.status === 'open' ? html`<div class="inline" style="margin-top:12px">
             <button class="btn small ghost" disabled=${busy} onClick=${() => resolve(r, 'dismiss')}>Verwerfen</button>
             ${r.moment && !r.moment.deleted ? html`
-              <button class="btn small ghost" disabled=${busy} onClick=${() => resolve(r, 'hide_moment')}>Moment ausblenden</button>
-              <button class="btn small ghost" disabled=${busy} onClick=${() => confirm('Moment endgültig löschen?') && resolve(r, 'delete_moment')}>Moment löschen</button>` : null}
-            <button class="btn small danger" disabled=${busy} onClick=${() => { const d = prompt('Für wie viele Tage sperren?', '7'); if (d) resolve(r, 'suspend', { days: Number(d) }); }}>Sperren …</button>
+              <button class="btn small ghost" disabled=${busy} onClick=${() => { const note = askReason(r); if (note) resolve(r, 'hide_moment', { note }); }}>Moment ausblenden …</button>
+              <button class="btn small ghost" disabled=${busy} onClick=${() => { const note = confirm('Moment endgültig löschen?') && askReason(r); if (note) resolve(r, 'delete_moment', { note }); }}>Moment löschen …</button>` : null}
+            <button class="btn small danger" disabled=${busy} onClick=${() => { const d = prompt('Für wie viele Tage sperren?', '7'); const note = d && askReason(r); if (note) resolve(r, 'suspend', { days: Number(d), note }); }}>Sperren …</button>
             ${role === 'owner' ? html`<button class="btn small danger" disabled=${busy} onClick=${() => confirm(`${r.reported.name || 'Konto'} löschen und die Nummer dauerhaft sperren?`) && resolve(r, 'ban')}>Bannen</button>` : null}
           </div>` : html`<p class="note">${RESOLUTIONS[r.resolution] || 'Erledigt'} von ${r.resolvedBy || '–'} · ${dateTime(r.resolvedAt)}</p>`}
         </div>
@@ -667,7 +839,10 @@ function Reports({ role, onOpenUser, onCount }) {
 
 // --- Support tickets ---------------------------------------------------------------
 
-const CATEGORIES = { bug: 'Fehler', idea: 'Idee', account: 'Konto', other: 'Sonstiges' };
+const CATEGORIES = { bug: 'Fehler', idea: 'Idee', account: 'Konto', other: 'Sonstiges', report: 'Meldung ohne Konto', moderation: 'Begründung' };
+// Public reports (POST /reports/public, plan 2.7)
+const PUBLIC_REPORT = { harassment: 'Belästigung', illegal: 'Rechtswidrig', spam: 'Spam', other: 'Sonstiges' };
+const MEASURES = { suspend: 'Sperre', hide_moment: 'Moment ausgeblendet', delete_moment: 'Moment gelöscht' };
 const TICKET_STATUS = { open: 'Offen', answered: 'Beantwortet', closed: 'Geschlossen' };
 
 function Tickets({ openId, onOpen, onOpenUser, onCount }) {
@@ -692,8 +867,8 @@ function Tickets({ openId, onOpen, onOpenUser, onCount }) {
       <tbody>${data.tickets.map((t) => html`<tr class="click" onClick=${() => onOpen(t.id)}>
         <td style="width:44px"><${Avatar} name=${t.user.name} url=${t.user.avatarUrl} /></td>
         <td><strong>${t.user.name || t.user.phone}</strong></td>
-        <td><span class="pill">${CATEGORIES[t.category]}</span></td>
-        <td class="preview">${t.lastFrom === 'support' ? html`<span class="muted">Du: </span>` : null}${t.preview}</td>
+        <td><span class=${`pill ${t.category === 'report' ? 'warn' : ''}`}>${CATEGORIES[t.category] || t.category}</span>${t.report ? html` <span class="muted">${PUBLIC_REPORT[t.report.category] || ''} · ${t.reference}</span>` : null}${t.moderation ? html` <span class="muted">${MEASURES[t.moderation.action] || ''}</span>` : null}</td>
+        <td class="preview">${t.lastFrom === 'auto' ? html`<span class="muted">Automatisch: </span>` : t.lastFrom === 'support' ? html`<span class="muted">Du: </span>` : null}${t.preview}</td>
         <td class="muted">${t.app?.version ? `${t.app.version} (${t.app.build || '?'})` : '–'}</td>
         <td>${dateTime(t.updatedAt)}</td>
       </tr>`)}</tbody></table></div>`}`;
@@ -712,6 +887,7 @@ function Ticket({ id, onBack, onOpenUser }) {
       const d = await api(`/tickets/${id}/reply`, { method: 'POST', body: { text, close } });
       setTicket(d.ticket);
       setText('');
+      if (d.mailed === false && d.ticket.report?.email) alert('Gespeichert, aber die Mail ging nicht raus (App → Mail prüfen). Schreib der Person notfalls direkt.');
     } catch (err) {
       alert(`Fehler: ${err.code || err.message}`);
     } finally {
@@ -726,28 +902,35 @@ function Ticket({ id, onBack, onOpenUser }) {
   if (ticket === false) return html`<button class="btn small ghost" onClick=${onBack}>← Zurück</button><p class="card">Nicht gefunden.</p>`;
   if (!ticket) return html`<p class="note">Lade …</p>`;
   const app = ticket.app || {};
+  const report = ticket.report || null;
   return html`
     <button class="btn small ghost" onClick=${onBack}>← Alle Anfragen</button>
     <div class="profile">
       <${Avatar} name=${ticket.user.name} url=${ticket.user.avatarUrl} size=${56} />
       <div style="flex:1">
-        <h2>${ticket.user.name || ticket.user.phone} <span class="pill">${CATEGORIES[ticket.category]}</span> <span class="pill ${ticket.status === 'open' ? 'warn' : ''}">${TICKET_STATUS[ticket.status]}</span></h2>
-        <div class="muted">
+        <h2>${ticket.user.name || ticket.user.phone} <span class="pill">${CATEGORIES[ticket.category] || ticket.category}</span> <span class="pill ${ticket.status === 'open' ? 'warn' : ''}">${TICKET_STATUS[ticket.status]}</span></h2>
+        ${report ? html`<div class="muted">
+          Referenz ${ticket.reference} · ${PUBLIC_REPORT[report.category] || report.category}
+          · Gemeldet: ${report.reported ? (report.reported.id ? html`<a href="#" onClick=${(e) => { e.preventDefault(); onOpenUser(report.reported.id); }}>${report.reported.name || report.reported.phone}</a> (${report.reported.phone})` : `${report.reported.phone}, kein Konto`) : 'keine Nummer angegeben'}
+          ${report.momentHint ? html` · Moment: „${report.momentHint}“`: null}
+          · Rückfragen: ${report.email || 'keine Adresse'}
+        </div>` : html`<div class="muted">
+          ${ticket.moderation ? html`${MEASURES[ticket.moderation.action] || ''}${ticket.moderation.until ? ` bis ${dateTime(ticket.moderation.until)}` : ''} · ` : null}
           App ${app.version || '?'} (Build ${app.build || '?'}) · ${PLATFORM[app.platform] || app.platform || '?'} ${app.os || ''}
           ${ticket.currentApp?.version && ticket.currentApp.build !== app.build ? ` · jetzt ${ticket.currentApp.version} (${ticket.currentApp.build})` : ''}
           ${ticket.user.id ? html` · <a href="#" onClick=${(e) => { e.preventDefault(); onOpenUser(ticket.user.id); }}>Nutzerseite</a>` : null}
-        </div>
+        </div>`}
       </div>
       ${ticket.status === 'closed' ? html`<button class="btn small ghost" onClick=${() => setStatus('open')}>Wieder öffnen</button>` : html`<button class="btn small ghost" onClick=${() => setStatus('closed')}>Schließen</button>`}
     </div>
     <div class="thread">
       ${ticket.messages.map((m) => html`<div class="msg ${m.from}">
         <div>${m.text}</div>
-        <div class="note">${m.from === 'support' ? m.by || 'Support' : ticket.user.name || 'Nutzer'} · ${dateTime(m.at)}</div>
+        <div class="note">${m.from === 'support' ? (m.by === 'auto' ? 'Automatisch (Störung)' : m.by || 'Support') : report ? 'Meldende Person' : ticket.user.name || 'Nutzer'} · ${dateTime(m.at)}</div>
       </div>`)}
     </div>
     <div class="card reply">
-      <textarea rows="4" placeholder="Antwort schreiben … (die Person bekommt eine Push-Benachrichtigung)" value=${text} onInput=${(e) => setText(e.target.value)}></textarea>
+      <textarea rows="4" placeholder=${report ? (report.email ? `Antwort schreiben … (geht per Mail an ${report.email})` : 'Notiz schreiben … (keine Adresse: die meldende Person bekommt nichts)') : 'Antwort schreiben … (die Person bekommt eine Push-Benachrichtigung)'} value=${text} onInput=${(e) => setText(e.target.value)}></textarea>
       <div class="inline" style="justify-content:flex-end">
         <button class="btn small ghost" disabled=${busy || !text.trim()} onClick=${() => reply(true)}>Antworten & schließen</button>
         <button class="btn small" disabled=${busy || !text.trim()} onClick=${() => reply(false)}>Antworten</button>
@@ -756,6 +939,30 @@ function Ticket({ id, onBack, onOpenUser }) {
 }
 
 // --- App settings --------------------------------------------------------------------
+
+// The unit prices of App → Preise (lib/appConfig.js DEFAULT_PRICES), each an assumption
+const PRICE_LABELS = {
+  smsEurCents: 'SMS: Cent je gestartete Verifizierung',
+  agoraAudioUsdCentsPer1000Min: 'Agora Audio: US-Cent je 1.000 Teilnehmerminuten',
+  agoraVideoUsdCentsPer1000Min: 'Agora Video (HD): US-Cent je 1.000 Teilnehmerminuten',
+  agoraFreeMinutesPerMonth: 'Agora Freiminuten je Monat',
+  cloudinaryEurCentsPerUpload: 'Cloudinary: Cent je Upload',
+  pushEurCentsPer1000: 'Push: Cent je 1.000 Pushes',
+  appleCommissionPct: 'Apple-Provision (%; 15 mit Small Business Program)',
+  eurPerUsd: 'Euro je US-Dollar',
+  plusMonthlyEurCents: 'Listenpreis Monatsabo (Cent)',
+  plusYearlyEurCents: 'Listenpreis Jahresabo (Cent)',
+};
+const NULLABLE_PRICES = ['plusMonthlyEurCents', 'plusYearlyEurCents'];
+// "12,50" → 12.5; "-1.234,50" → -1234.5; "0.92" → 0.92. A dot before
+// exactly three digits without a comma ("8.125", "1.234") reads both ways:
+// NaN, and the save asks for a comma instead of guessing.
+const decimal = (v) => {
+  const s = String(v).trim();
+  if (s.includes(',')) return Number(s.replace(/\./g, '').replace(',', '.'));
+  return /^-?\d{1,3}(\.\d{3})+$/.test(s) ? NaN : Number(s);
+};
+const toCents = (v) => Math.round(decimal(v) * 100);
 
 function AppSettings({ role }) {
   const [data, setData] = useState(null);
@@ -766,12 +973,24 @@ function AppSettings({ role }) {
     api('/config').then((d) => {
       setData(d);
       const c = d.config;
+      const prices = Object.fromEntries(Object.keys(PRICE_LABELS).map((k) => [k, c.prices?.[k] == null ? '' : String(c.prices[k]).replace('.', ',')]));
       setForm({
         minVersion: c.minVersion || '',
         minBuild: c.minBuild ? String(c.minBuild) : '',
         updateUrl: c.updateUrl || '',
         banner: { enabled: !!c.banner?.enabled, text: c.banner?.text || '', level: c.banner?.level || 'info', until: c.banner?.until ? c.banner.until.slice(0, 16) : '' },
+        // Plan 2.15: alerts switch the banner on and off on their own, so it
+        // is only sent when edited here, with the state it was loaded in
+        bannerLoaded: { enabled: !!c.banner?.enabled, text: c.banner?.text || '', level: c.banner?.level || 'info', until: c.banner?.until ? c.banner.until.slice(0, 16) : '' },
         flags: { ...(c.flags || {}) },
+        ops: { smsPerDay: String(c.ops?.smsPerDay ?? 100), smsPaused: !!c.ops?.smsPaused, smsRegions: (c.ops?.smsRegions || ['DE', 'AT', 'CH']).join(', '), alertPhone: c.ops?.alertPhone || '', emergencyContact: c.ops?.emergencyContact || '', lastRestoreDrillAt: c.ops?.lastRestoreDrillAt ? c.ops.lastRestoreDrillAt.slice(0, 10) : '', lastPentestAt: c.ops?.lastPentestAt ? c.ops.lastPentestAt.slice(0, 10) : '' },
+        goals: { activationPct: String(c.goals?.activationPct ?? 40), densityPct: String(c.goals?.densityPct ?? 50), giftDaysPerWeek: String(c.goals?.giftDaysPerWeek ?? 200), seedSignupsPerWeek: String(c.goals?.seedSignupsPerWeek ?? 30) },
+        marketingNotes: c.marketingNotes || '',
+        // Only changed prices are sent: untouched keys keep following DEFAULT_PRICES
+        prices,
+        pricesLoaded: prices,
+        fixedCosts: (c.fixedCosts || []).map((f) => ({ service: f.service, euros: String(f.monthlyEurCents / 100).replace('.', ','), note: f.note || '', until: f.until ? f.until.slice(0, 10) : '' })),
+        bank: typeof c.ops?.bankBalanceEurCents === 'number' ? String(c.ops.bankBalanceEurCents / 100).replace('.', ',') : '',
       });
     }).catch(() => setData(false));
   }, []);
@@ -781,8 +1000,52 @@ function AppSettings({ role }) {
   if (!form) return html`<p class="note">Lade …</p>`;
   const owner = role === 'owner';
   const set = (patch) => setForm({ ...form, ...patch });
+  const setFixed = (i, patch) => set({ fixedCosts: form.fixedCosts.map((f, j) => (j === i ? { ...f, ...patch } : f)) });
+  const bannerEdited = ['enabled', 'text', 'level', 'until'].some((k) => form.banner[k] !== form.bannerLoaded[k]);
+  // The banner as edited, plus the stored one it was loaded from: the server
+  // refuses the save (banner_changed) when an alert changed it meanwhile
+  const bannerBody = (b) => {
+    const seen = data.config.banner || {};
+    return {
+      banner: { ...b, until: b.until ? new Date(b.until).toISOString() : null },
+      bannerSeen: { enabled: !!seen.enabled, text: seen.text || '', level: seen.level || 'info', until: seen.until || null },
+    };
+  };
+  // After banner_changed: load the current banner, keep everything else typed in
+  const refreshBanner = async () => {
+    try {
+      const d = await api('/config');
+      const b = d.config.banner || {};
+      const banner = { enabled: !!b.enabled, text: b.text || '', level: b.level || 'info', until: b.until ? b.until.slice(0, 16) : '' };
+      setData({ ...data, config: { ...data.config, banner: d.config.banner } });
+      setForm({ ...form, banner, bannerLoaded: banner });
+      setFlash('Nicht gespeichert: Der Banner hat sich inzwischen geändert (ein Alarm hat ihn an- oder abgeschaltet). Der aktuelle Stand ist jetzt geladen, deine anderen Eingaben sind noch da. Prüf ihn und speichere noch einmal.');
+    } catch (err) {
+      setFlash(`Fehler: ${err.code || err.message}`);
+    }
+  };
   const save = async () => {
     setFlash(null);
+    const unclear = [];
+    const amount = (label, v) => {
+      const n = toCents(v);
+      if (!Number.isFinite(n)) unclear.push(`${label} „${v}“`);
+      return n;
+    };
+    const prices = {};
+    for (const [k, v] of Object.entries(form.prices)) {
+      if (v === form.pricesLoaded[k]) continue;
+      // Empty: back to the default (or, for list prices, to the last purchase)
+      if (v.trim() === '') { prices[k] = null; continue; }
+      const n = decimal(v);
+      if (!Number.isFinite(n)) unclear.push(`${PRICE_LABELS[k]} „${v}“`);
+      prices[k] = n;
+    }
+    const nameless = form.fixedCosts.filter((f) => !f.service.trim() && (f.euros.trim() || f.note.trim() || f.until));
+    if (nameless.length) return setFlash(`Fehler: ${nameless.length === 1 ? 'Ein Fixkosten-Posten hat' : `${nameless.length} Fixkosten-Posten haben`} keinen Dienst-Namen. Trag einen ein oder entferne den Posten.`);
+    const fixedCosts = form.fixedCosts.filter((f) => f.service.trim()).map((f) => ({ service: f.service.trim(), monthlyEurCents: amount(f.service.trim(), f.euros), note: f.note.trim(), until: f.until || null }));
+    const bank = form.bank.trim() ? amount('Bankstand', form.bank) : null;
+    if (unclear.length) return setFlash(`Fehler: nicht eindeutig: ${unclear.join(', ')}. Dezimalstellen bitte mit Komma (8,125), Tausender ohne Punkt (1234).`);
     try {
       await api('/config', {
         method: 'PUT',
@@ -790,15 +1053,36 @@ function AppSettings({ role }) {
           minVersion: form.minVersion.trim() || null,
           minBuild: form.minBuild.trim() ? Number(form.minBuild) : null,
           updateUrl: form.updateUrl.trim() || null,
-          banner: { ...form.banner, until: form.banner.until ? new Date(form.banner.until).toISOString() : null },
+          ...(bannerEdited ? bannerBody(form.banner) : {}),
           flags: form.flags,
+          ops: { smsPerDay: Number(form.ops.smsPerDay), smsPaused: form.ops.smsPaused, smsRegions: form.ops.smsRegions.toUpperCase().split(/[\s,]+/).filter(Boolean), alertPhone: form.ops.alertPhone.trim() || null, emergencyContact: form.ops.emergencyContact.trim() || null, bankBalanceEurCents: bank, lastRestoreDrillAt: form.ops.lastRestoreDrillAt || null, lastPentestAt: form.ops.lastPentestAt || null },
+          goals: { activationPct: Number(form.goals.activationPct), densityPct: Number(form.goals.densityPct), giftDaysPerWeek: Number(form.goals.giftDaysPerWeek), seedSignupsPerWeek: Number(form.goals.seedSignupsPerWeek) },
+          marketingNotes: form.marketingNotes.trim() || null,
+          ...(Object.keys(prices).length ? { prices } : {}),
+          fixedCosts,
         },
       });
       setFlash('Gespeichert. Offene Apps bekommen es sofort, alle anderen beim nächsten Start.');
       load();
     } catch (err) {
-      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich' };
+      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH), Alarm-Nummer mit Ländervorwahl (+49…), Notfallkontakt als E-Mail-Adresse, Restore-Test und Pentest als Datum (nicht in der Zukunft)', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100, Geschenk-Tage und Seed-Registrierungen als ganze Zahl ab 1', invalid_marketing_notes: 'Marketing-Hinweise: höchstens 1.000 Zeichen', invalid_prices: 'Preise: Zahlen ab 0 (Freiminuten und Listenpreise ganzzahlig, Provision bis 100 %)', invalid_fixed_costs: 'Fixkosten: Name bis 60 Zeichen, Betrag in Euro (Gutschriften negativ), höchstens 50 Posten' };
+      if (err.code === 'banner_changed') return refreshBanner();
       setFlash(`Fehler: ${msg[err.code] || err.code || err.message}`);
+    }
+  };
+  // Plan 2.15: a banner an alert switched on (lib/statusBanner.js)
+  const tagOfSource = (source) => (typeof source === 'string' && source.startsWith('alert:') ? source.slice(6) : null);
+  const autoBanner = data.config.banner?.enabled ? tagOfSource(data.config.banner?.source) : null;
+  const mutedBanner = (Array.isArray(data.config.banner?.muted) ? data.config.banner.muted : []).map(tagOfSource).filter(Boolean).join(', ');
+  const switchOffBanner = async () => {
+    setFlash(null);
+    try {
+      await api('/config', { method: 'PUT', body: bannerBody({ enabled: false, text: data.config.banner?.text || '', level: data.config.banner?.level || 'info', until: '' }) });
+      setFlash('Banner abgeschaltet. Die Automatik bringt ihn für diese Störung nicht zurück.');
+      load();
+    } catch (err) {
+      if (err.code === 'banner_changed') return refreshBanner();
+      setFlash(`Fehler: ${err.code || err.message}`);
     }
   };
   const blocked = form.minBuild ? data.versions.filter((v) => v.build && Number(v.build) < Number(form.minBuild)).reduce((a, v) => a + v.users, 0) : 0;
@@ -816,7 +1100,10 @@ function AppSettings({ role }) {
       </div>
       <div class="card">
         <div class="label">Hinweis-Banner</div>
-        <p class="note" style="margin-top:0">Erscheint oben in der App, z. B. bei Wartung oder Störungen.</p>
+        <p class="note" style="margin-top:0">Erscheint oben in der App und auf wannayap.app, z. B. bei Wartung oder Störungen.</p>
+        ${autoBanner ? html`<p class="bad" style="margin-top:0">Automatisch (Alarm ${autoBanner}): verschwindet von selbst, sobald der Alarm vorbei ist. Änderst du Text oder Schalter und speicherst, gilt er als von Hand gesetzt und bleibt, bis du ihn abschaltest.</p>
+          ${owner ? html`<button class="btn small ghost" onClick=${switchOffBanner}>Banner jetzt abschalten</button>` : null}` : null}
+        ${!autoBanner && mutedBanner ? html`<p class="note" style="margin-top:0">Automatik pausiert (Alarm ${mutedBanner}): sie springt wieder an, sobald diese Störung vorbei ist.</p>` : null}
         <label class="check"><input type="checkbox" checked=${form.banner.enabled} onChange=${(e) => set({ banner: { ...form.banner, enabled: e.target.checked } })} disabled=${!owner} /> Banner anzeigen</label>
         <label class="field"><span>Text (max. 200 Zeichen)</span><input value=${form.banner.text} maxlength="200" onInput=${(e) => set({ banner: { ...form.banner, text: e.target.value } })} disabled=${!owner} /></label>
         <div class="inline">
@@ -834,6 +1121,52 @@ function AppSettings({ role }) {
         </div>`)}
         ${owner ? html`<div class="inline" style="margin-top:10px"><input placeholder="neues_flag" value=${newFlag} onInput=${(e) => setNewFlag(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))} />
           <button class="btn small ghost" disabled=${!newFlag} onClick=${() => { set({ flags: { ...form.flags, [newFlag]: false } }); setNewFlag(''); }}>Hinzufügen</button></div>` : null}
+      </div>
+      <div class="card">
+        <div class="label">Betrieb</div>
+        <p class="note" style="margin-top:0">Bremsen für die Anmeldung per SMS (Twilio kostet pro Code). Gilt sofort, nicht für den Review-Login.</p>
+        <label class="field"><span>SMS pro Tag (Deckel, danach 429)</span><input value=${form.ops.smsPerDay} onInput=${(e) => set({ ops: { ...form.ops, smsPerDay: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
+        <label class="field"><span>Länder (ISO-Codes, Komma-getrennt)</span><input value=${form.ops.smsRegions} onInput=${(e) => set({ ops: { ...form.ops, smsRegions: e.target.value } })} disabled=${!owner} placeholder="DE, AT, CH" /></label>
+        <label class="check"><input type="checkbox" checked=${form.ops.smsPaused} onChange=${(e) => set({ ops: { ...form.ops, smsPaused: e.target.checked } })} disabled=${!owner} /> Notschalter: keine SMS senden (Anmeldung pausiert)</label>
+        <label class="field"><span>Alarm-SMS an (nur Stufe „error“, leer = keine)</span><input value=${owner ? form.ops.alertPhone : ''} onInput=${(e) => set({ ops: { ...form.ops, alertPhone: e.target.value } })} disabled=${!owner} placeholder=${owner ? '+49…' : (form.ops.alertPhone ? 'hinterlegt (nur Owner sieht die Nummer)' : 'keine')} inputmode="tel" /></label>
+        <label class="field"><span>Notfallkontakt (E-Mail; bekommt eine Mail, wenn 7 Tage kein Owner quittiert hat)</span><input value=${owner ? form.ops.emergencyContact : ''} onInput=${(e) => set({ ops: { ...form.ops, emergencyContact: e.target.value } })} disabled=${!owner} placeholder=${owner ? 'vertrauensperson@…' : (form.ops.emergencyContact ? 'hinterlegt (nur Owner sieht die Adresse)' : 'keiner')} type="email" /></label>
+        <label class="field"><span>Letzter Restore-Test (Launch-Gate: jünger als 90 Tage; Ablauf in CMM/docs/RUNBOOK.md)</span><input type="date" value=${form.ops.lastRestoreDrillAt} onInput=${(e) => set({ ops: { ...form.ops, lastRestoreDrillAt: e.target.value } })} disabled=${!owner} /></label>
+        <label class="field"><span>Letzter Pentest (Launch-Gate: jünger als 365 Tage)</span><input type="date" value=${form.ops.lastPentestAt} onInput=${(e) => set({ ops: { ...form.ops, lastPentestAt: e.target.value } })} disabled=${!owner} /></label>
+        ${data.config.ops?.lastBackupAt ? html`<p class="note" style="margin:0">Letztes Backup: ${new Date(data.config.ops.lastBackupAt).toLocaleString('de-DE')}${data.config.ops.lastBackupBytes ? ` (${Math.round(data.config.ops.lastBackupBytes / 1048576)} MB)` : ''}</p>` : null}
+      </div>
+      <div class="card">
+        <div class="label">Ziele</div>
+        <p class="note" style="margin-top:0">Der Nordstern: Heute-Karte, Morgen-Push und Marketing-Budget zeigen eine Ampel gegen diese Werte. Unter dem Aktivierungsziel keine bezahlte Reichweite.</p>
+        <label class="field"><span>Aktivierung in 7 Tagen, rollierend 4 Wochen (%)</span><input value=${form.goals.activationPct} onInput=${(e) => set({ goals: { ...form.goals, activationPct: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
+        <label class="field"><span>Neue Nutzer mit ≥ 3 registrierten Kontakten (%)</span><input value=${form.goals.densityPct} onInput=${(e) => set({ goals: { ...form.goals, densityPct: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
+        <label class="field"><span>Geschenk-Plus-Tage je Woche (Budget, Annahme; darüber Alarm gift_days)</span><input value=${form.goals.giftDaysPerWeek} onInput=${(e) => set({ goals: { ...form.goals, giftDaysPerWeek: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
+        <label class="field"><span>Seed-Cluster: Registrierungen je Woche (Annahme; Wochenreport, über die Seed-Kampagne oder ohne sie über Einladungen)</span><input value=${form.goals.seedSignupsPerWeek} onInput=${(e) => set({ goals: { ...form.goals, seedSignupsPerWeek: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
+        <p class="note" style="margin:0">Geschenkt zählt: Einladungen, Warteliste und Plus aus der Konsole mit Enddatum. Faustregel (Annahme): Geschenk-Plus unter 20 % des MRR. Der Versuch "beide bekommen 7 Tage" läuft über das Flag referral_two_sided.</p>
+      </div>
+      <div class="card">
+        <div class="label">Marketing-Hinweise für den Agenten</div>
+        <p class="note" style="margin-top:0">Aus der Wochenreview, z. B. das Hook-Thema der Woche. Der Marketing-Agent liest sie bei jedem Lauf (höchstens 1.000 Zeichen, leer = keine).</p>
+        <label class="field"><span>Hinweise</span><textarea rows="4" maxlength="1000" value=${form.marketingNotes} onInput=${(e) => set({ marketingNotes: e.target.value })} disabled=${!owner} placeholder="Hook-Thema: …"></textarea></label>
+        <p class="note" style="margin:0">${form.marketingNotes.length} / 1.000</p>
+      </div>
+      <div class="card">
+        <div class="label">Preise</div>
+        <p class="note" style="margin-top:0">Annahme, gegen Rechnung prüfen: Stückpreise für die Kostenspalten (Plus → Unit Economics). Am 5. des Monats mit den Rechnungen abgleichen.</p>
+        ${Object.entries(PRICE_LABELS).map(([k, label]) => html`<label class="field"><span>${label}</span><input value=${form.prices[k]} onInput=${(e) => set({ prices: { ...form.prices, [k]: e.target.value.replace(/[^\d,.]/g, '') } })} disabled=${!owner} inputmode="decimal" placeholder=${NULLABLE_PRICES.includes(k) ? 'leer = letzter Kauf' : 'leer = Standardwert (Annahme)'} /></label>`)}
+      </div>
+      <div class="card">
+        <div class="label">Fixkosten</div>
+        <p class="note" style="margin-top:0">Euro pro Monat, auch Ops-Posten (Uptime, Sentry, Staging). Gutschriften (Startup-Credits) negativ mit Ablaufdatum; abgelaufene Posten zählen nicht mehr.</p>
+        ${form.fixedCosts.map((f, i) => html`<div class="inline" style="flex-wrap:wrap;gap:6px;margin-bottom:6px">
+          <input value=${f.service} maxlength="60" placeholder="Dienst" style="flex:2 1 120px" onInput=${(e) => setFixed(i, { service: e.target.value })} disabled=${!owner} />
+          <input value=${f.euros} placeholder="€/Monat" style="flex:1 1 70px" inputmode="decimal" onInput=${(e) => setFixed(i, { euros: e.target.value.replace(/[^\d,.-]/g, '') })} disabled=${!owner} />
+          <input type="date" value=${f.until} title="Läuft bis (leer = unbegrenzt)" style="flex:1 1 110px" onInput=${(e) => setFixed(i, { until: e.target.value })} disabled=${!owner} />
+          <input value=${f.note} maxlength="200" placeholder="Notiz" style="flex:2 1 120px" onInput=${(e) => setFixed(i, { note: e.target.value })} disabled=${!owner} />
+          ${owner ? html`<a href="#" onClick=${(e) => { e.preventDefault(); set({ fixedCosts: form.fixedCosts.filter((_, j) => j !== i) }); }}>entfernen</a>` : null}
+        </div>`)}
+        ${owner && form.fixedCosts.length < 50 ? html`<button class="btn small ghost" onClick=${() => set({ fixedCosts: [...form.fixedCosts, { service: '', euros: '', note: '', until: '' }] })}>Posten hinzufügen</button>` : null}
+        <label class="field" style="margin-top:10px"><span>Bankstand in Euro (für die Runway, leer = unbekannt)</span><input value=${form.bank} onInput=${(e) => set({ bank: e.target.value.replace(/[^\d,.-]/g, '') })} disabled=${!owner} inputmode="decimal" placeholder=${!owner && data.config.ops?.bankBalanceEurCents ? 'hinterlegt (nur Owner sieht den Betrag)' : ''} /></label>
+        ${data.config.ops?.bankBalanceAt ? html`<p class="note" style="margin:0">Stand vom ${new Date(data.config.ops.bankBalanceAt).toLocaleDateString('de-DE')}</p>` : null}
       </div>
     </div>
     ${owner ? html`<div class="inline" style="justify-content:flex-end"><button class="btn" onClick=${save}>Speichern</button></div>` : html`<p class="note">Nur Owner können Einstellungen ändern.</p>`}
@@ -871,9 +1204,15 @@ function Moments({ onOpenUser, userId, userName, onClearUser }) {
 
   const act = async (m, action) => {
     if (action === 'delete' && !confirm('Moment endgültig löschen? Das Bild wird auch bei Cloudinary gelöscht.')) return;
+    // Hide and delete send the author a statement of reasons (plan 2.7)
+    let reason;
+    if (action !== 'unhide') {
+      reason = prompt('Grund für die Person, die den Moment geteilt hat (sie bekommt ihn als Begründung und kann widersprechen):', '');
+      if (!reason || !reason.trim()) return;
+    }
     setBusy(m.id);
     try {
-      await api(`/moments/${m.id}/${action}`, { method: 'POST' });
+      await api(`/moments/${m.id}/${action}`, { method: 'POST', body: reason ? { reason: reason.trim().slice(0, 300) } : undefined });
       load();
     } catch (err) {
       alert(`Fehler: ${err.code || err.message}`);
@@ -932,11 +1271,126 @@ const LIMIT_LABELS = {
   nudgeMessage: 'Eigene Anstups-Texte',
   yearReview: 'Voller Jahresrückblick',
   appIcons: 'App-Icons',
+  momentsPerDay: 'Moments pro Tag (max. 200)',
+  video: 'Video bei 1:1-Anrufen (aus = nur Audio)',
 };
 const INTEREST_LABELS = { hd_video: 'Video in HD', bigger_circles: 'Größere Kreise', longer_rounds: 'Längere Runden', memories: 'Erinnerungen für immer', year_review: 'Jahresrückblick', icons: 'App-Icons & Themen', rituals: 'Mehr Rituale', family: 'Familien-Abo', support: 'Unterstützen' };
 
+// Revenue steers decisions only from this many active store plans on (plan 2.4, assumption)
+const REVENUE_MIN_PLANS = 30;
+const EXPORTS = [
+  ['metrics', 'Kennzahlen'],
+  ['plus', 'Abo-Ereignisse'],
+  ['marketing-spend', 'Marketing-Kosten'],
+  ['support', 'Support-Tickets'],
+];
+const eur = (cents) => (cents == null ? '–' : `${nf.format(Math.round(cents / 100))} €`);
+
+/** The "Umsatz" row: MRR, active store plans and the movement of the last 7 days, from the daily snapshots. */
+function RevenueKpis({ series }) {
+  if (!series) return html`<p class="note">Lade Umsatz …</p>`;
+  const final = series.filter((d) => !d.partial);
+  const yesterday = final[final.length - 1]?.plus || null;
+  const today = series[series.length - 1]?.plus || null;
+  const week = series.slice(-7);
+  const moved = (key) => sum(week, (d) => d.plus?.[key]);
+  const trialsStarted = moved('trialsStarted'), trialsConverted = moved('trialsConverted');
+  // The gift budget (plan 2.12): days given by source, budget in App → Ziele
+  const giftBy = (source) => sum(week, (d) => d.plus?.giftDaysGranted?.[source]);
+  const giftDays = giftBy('referral') + giftBy('waitlist') + giftBy('admin');
+  const active = today?.activeStore ?? yesterday?.activeStore ?? null;
+  return html`
+    <div class="kpis">
+      <${Kpi} label="MRR gestern" value=${eur(yesterday?.mrrCents)} sub=${today?.mrrCents != null ? `heute ${eur(today.mrrCents)}` : 'noch kein Tag abgeschlossen'} color="var(--violet)" />
+      <${Kpi} label="Aktive Store-Abos" value=${num(active)} sub=${`${num(today?.activeGift ?? 0)} geschenkt · ${num(today?.activeSandbox ?? 0)} Sandbox`} color="var(--cyan)" />
+      <${Kpi} label="Bewegung 7 Tage" value=${`+${num(moved('newPaid'))}`} sub=${`${num(moved('cancelled'))} gekündigt · ${num(moved('expired'))} abgelaufen · ${num(moved('refunds'))} erstattet`} color="var(--pink)" />
+      <${Kpi} label="Trial → Paid" value=${num(trialsConverted)} sub=${`${num(trialsStarted)} Trials gestartet (7 Tage)`} />
+      <${Kpi} label="Geschenk-Tage 7 Tage" value=${num(giftDays)} sub=${`${num(moved('giftToStore'))} Geschenk → Store · Einladungen ${num(giftBy('referral'))} · Warteliste ${num(giftBy('waitlist'))} · Konsole ${num(giftBy('admin'))}`} />
+    </div>
+    ${active != null && active < REVENUE_MIN_PLANS ? html`<p class="note">Steuernd erst ab ${REVENUE_MIN_PLANS} aktiven Store-Abos (Annahme): bis dahin lesen, nicht urteilen.</p>` : null}`;
+}
+
+// Where the paywall was opened (/plus?from=..., plan 2.6a, lib/paywall.js SOURCES)
+const PAYWALL_SOURCES = {
+  settings: 'Einstellungen', memories: 'Erinnerungen', appicon: 'App-Icon', year: 'Jahresrückblick', room: 'Runde',
+  limit_circles: 'Grenze Kreise', limit_rituals: 'Grenze Rituale', limit_members: 'Grenze Personen', limit_moments: 'Grenze Moments',
+  referral: 'Einladungen', plus_expiring: 'Push: Geschenk endet', billing_issue: 'Push: Zahlung', plus_winback_3: 'Push: Win-back 3 T.',
+  plus_winback_30: 'Push: Win-back 30 T.', cancel: 'Push: Kündigung', trial_ending: 'Push: Probezeit endet', push: 'Push', other: 'Sonstige',
+};
+const LIMIT_HIT_LABELS = {
+  circles: 'Kreise', circleMembers: 'Personen pro Kreis', roomParticipants: 'Personen pro Runde', roomMinutes: 'Rundenlänge',
+  rituals: 'Rituale', momentsPerDay: 'Moments pro Tag', video: 'Video',
+};
+// The paywall steers only from this many views a week (plan, principle 6)
+const PAYWALL_MIN_WEEKLY_VIEWS = 200;
+
+/**
+ * The paywall funnel and the limit hits of the last 30 days (plan 2.6a),
+ * from MetricsDaily.plus.funnel and plus.limitHits.
+ */
+function PaywallFunnel({ series }) {
+  if (!series) return html`<p class="note">Lade Paywall …</p>`;
+  const f = (key) => sum(series, (d) => d.plus?.funnel?.[key]);
+  const views = f('paywallView'), starts = f('purchaseStart'), bought = f('purchaseSuccess');
+  const weekViews = sum(series.slice(-7), (d) => d.plus?.funnel?.paywallView);
+  const bySource = {};
+  for (const d of series) {
+    for (const [from, row] of Object.entries(d.plus?.funnel?.bySource || {})) {
+      const t = (bySource[from] ??= { view: 0, success: 0 });
+      t.view += row.view || 0;
+      t.success += row.success || 0;
+    }
+  }
+  const sources = Object.entries(bySource).sort((a, b) => b[1].view - a[1].view || b[1].success - a[1].success);
+  const hits = {};
+  for (const d of series) for (const [limit, n] of Object.entries(d.plus?.limitHits || {})) hits[limit] = (hits[limit] || 0) + (n || 0);
+  const hitList = Object.entries(hits).sort((a, b) => b[1] - a[1]);
+  const failures = f('purchaseError') + f('restoreError') + f('offeringEmpty');
+  return html`
+    <div class="kpis">
+      <${Kpi} label="Paywall 30 Tage" value=${`${num(views)} → ${num(starts)} → ${num(bought)}`} sub=${`Aufrufe → Kauf gestartet → gekauft · Quote ${pct(views ? bought / views : null)}`} color="var(--violet)" />
+      <${Kpi} label="Abgebrochen / Fehler" value=${`${num(f('purchaseCancel'))} / ${num(failures)}`} sub=${`Kauf ${num(f('purchaseError'))} · Wiederherstellen ${num(f('restoreError'))} · kein Angebot ${num(f('offeringEmpty'))} · wiederhergestellt ${num(f('restoreSuccess'))}`} color="var(--pink)" />
+      <${Kpi} label="Limit-Treffer 30 Tage" value=${num(hitList.reduce((a, [, n]) => a + n, 0))} sub=${hitList.map(([k, n]) => `${LIMIT_HIT_LABELS[k] || k} ${num(n)}`).join(' · ') || 'noch keine'} color="var(--cyan)" />
+    </div>
+    ${sources.length ? html`<div class="card" style="margin-bottom:12px">
+      <div class="label">Paywall je Quelle (30 Tage)</div>
+      <table><thead><tr><th>Quelle</th><th>Aufrufe</th><th>Käufe</th><th>Quote</th></tr></thead><tbody>
+        ${sources.map(([from, t]) => html`<tr><td>${PAYWALL_SOURCES[from] || from}</td><td>${num(t.view)}</td><td>${num(t.success)}</td><td>${pct(t.view ? t.success / t.view : null)}</td></tr>`)}
+      </tbody></table>
+    </div>` : null}
+    <p class="note">Steuernd ab ${PAYWALL_MIN_WEEKLY_VIEWS} Aufrufen pro Woche (letzte 7 Tage: ${num(weekViews)}); darunter lesen, nicht urteilen, und lieber mit Leuten sprechen. Gezählt wird, was die App meldet (POST /me/plus/funnel), Tester eingeschlossen.</p>`;
+}
+
+const cents = (c, digits = 2) => (c == null ? '–' : `${(c / 100).toLocaleString('de-DE', { minimumFractionDigits: digits, maximumFractionDigits: digits })} €`);
+
+/**
+ * Costs, contribution, break-even and runway (GET /admin/economics, plan
+ * 2.5). Every price behind it is an assumption until checked against the
+ * invoices (App → Preise).
+ */
+function UnitEconomics() {
+  const [e, setE] = useState(null);
+  useEffect(() => { api('/economics').then(setE).catch(() => setE(false)); }, []);
+  if (e === false) return html`<div class="card">Unit Economics konnten nicht geladen werden.</div>`;
+  if (!e) return html`<p class="note">Lade Unit Economics …</p>`;
+  const m = e.month;
+  const subs = (n) => (n == null ? '–' : `${num(n)} Abos`);
+  return html`
+    <div class="kpis">
+      <${Kpi} label="Variable Kosten/Tag" value=${cents(m.variablePerDayEurCents)} sub=${m.variableEurCents == null ? 'noch kein Tag gezählt' : `${eur(m.variableEurCents)} je 30 Tage · Fix ${eur(m.fixedEurCents)}/Monat`} color="var(--pink)" />
+      <${Kpi} label="Kosten je MAU" value=${cents(m.perMau)} sub=${`${num(m.mau)} MAU · je Gesprächsminute ${cents(m.perTalkMinute, 3)}`} color="var(--cyan)" />
+      <${Kpi} label="Deckungsbeitrag je MAU" value=${cents(m.contributionPerMau)} sub=${m.contributionPerMau == null ? 'noch kein Tag gezählt' : `je Monat · ${cents(m.contributionPerMau / 30, 3)} je Tag`} color="var(--violet)" />
+      <${Kpi} label="Gesprächsminuten je MAU" value=${m.minutesPerMau.audio == null ? '–' : `${nf.format(m.minutesPerMau.audio)} / ${nf.format(m.minutesPerMau.video)}`} sub="Audio / Video, Agora-Teilnehmerminuten je Monat" />
+      <${Kpi} label="Deckungsbeitrag je Plus-Abo" value=${cents(m.perPlusSub)} sub=${m.perPlusSub == null ? 'noch kein aktives Store-Abo' : `Ø-Preis × (1 − ${e.prices.appleCommissionPct} % Apple) − Kosten je MAU`} color="var(--violet)" />
+      <${Kpi} label="Break-even" value=${subs(e.breakEvenYearlySubs)} sub=${`in Jahresabos · ${subs(e.breakEvenMonthlySubs)} in Monatsabos`} />
+      <${Kpi} label="Runway" value=${e.runwayMonths == null ? '–' : `${nf.format(e.runwayMonths)} Monate`} sub=${e.bankBalanceEurCents == null ? 'Bankstand fehlt (App → Fixkosten)' : e.burnEurCents <= 0 ? 'kein Verbrauch: Umsatz deckt die Kosten' : `${eur(e.burnEurCents)} Verbrauch/Monat · Bankstand ${typeof e.bankBalanceEurCents === 'number' ? eur(e.bankBalanceEurCents) : 'nur für Owner sichtbar'}`} />
+    </div>
+    <p class="note">Annahme, gegen Rechnung prüfen: alle Preise (App → Preise) sind Schätzwerte aus Preislisten, bis du sie am 5. des Monats mit den Rechnungen abgleichst. ${e.days < 30 ? `Variable Kosten aus ${e.days} gezählten Tagen, auf 30 Tage hochgerechnet. ` : ''}Video zählt komplett als Agora-HD. Kosten je Plus-Abo nehmen an, dass ein Plus-Nutzer so viel kostet wie ein Ø-MAU. Deckungsbeitrag je Monat: ${cents(m.contributionCents, 0)} (Netto-Umsatz ${eur(m.netRevenueCents)} − variable Kosten).</p>`;
+}
+
 function PlusPanel({ role }) {
   const [data, setData] = useState(null);
+  const [series, setSeries] = useState(null);
   const [form, setForm] = useState(null);
   const [flash, setFlash] = useState(null);
   const load = useCallback(() => {
@@ -944,6 +1398,7 @@ function PlusPanel({ role }) {
       setData(d);
       setForm(JSON.parse(JSON.stringify(d.limits)));
     }).catch(() => setData(false));
+    api('/metrics?days=30').then((m) => setSeries(m.series)).catch(() => setSeries([]));
   }, []);
   useEffect(load, [load]);
   if (data === false) return html`<div class="card">Plus-Daten konnten nicht geladen werden.</div>`;
@@ -957,11 +1412,21 @@ function PlusPanel({ role }) {
       setFlash('Grenzen gespeichert. Sie gelten sofort; bestehende Kreise bleiben, wie sie sind.');
       load();
     } catch (err) {
-      setFlash(`Fehler: ${err.code === 'invalid_limits' ? 'ungültige Werte (Zahlen ab 1; Personen pro Kreis max. 50, pro Runde max. 16)' : err.code || err.message}`);
+      setFlash(`Fehler: ${err.code === 'invalid_limits' ? 'ungültige Werte (Zahlen ab 1; Personen pro Kreis max. 50, pro Runde max. 16, Moments pro Tag max. 200, Videominuten ab 1)' : err.code || err.message}`);
     }
   };
   const field = (plan, key) => {
     const value = form[plan][key];
+    if (key === 'video') {
+      // true · false · minutes of video a month, then audio
+      const mode = value === true ? 'on' : value === false ? 'off' : 'minutes';
+      return html`<span class="inline">
+        <select value=${mode} disabled=${!owner} onChange=${(e) => set(plan, key, e.target.value === 'on' ? true : e.target.value === 'off' ? false : 60)}>
+          <option value="on">an</option><option value="off">aus</option><option value="minutes">Minuten/Monat</option>
+        </select>
+        ${mode === 'minutes' ? html`<input class="num" inputmode="numeric" value=${value} disabled=${!owner} onInput=${(e) => { const v = e.target.value.replace(/\D/g, ''); set(plan, key, v ? Number(v) : 0); }} />` : null}
+      </span>`;
+    }
     if (typeof data.defaults[plan][key] === 'boolean') {
       return html`<input type="checkbox" checked=${!!value} disabled=${!owner} onChange=${(e) => set(plan, key, e.target.checked)} />`;
     }
@@ -978,6 +1443,25 @@ function PlusPanel({ role }) {
       <${Kpi} label="Interesse gezeigt" value=${num(data.interest.total)} sub=${`${num(data.interest.last7Days)} in den letzten 7 Tagen`} color="var(--pink)" />
       <${Kpi} label="Käufe" value=${data.webhookConfigured ? 'verbunden' : 'noch nicht'} sub=${data.webhookConfigured ? 'RevenueCat-Webhook aktiv' : 'REVENUECAT_WEBHOOK_SECRET fehlt'} />
     </div>
+    ${data.sandbox > 0 ? html`<p class="note">${num(data.sandbox)} davon ${data.sandbox === 1 ? 'ist ein Sandbox-Kauf' : 'sind Sandbox-Käufe'} von Testern: Plus aktiv, aber nirgends als zahlend gezählt.</p>` : null}
+    <div class="section">Umsatz</div>
+    <${RevenueKpis} series=${series} />
+    <div class="section">Paywall</div>
+    <${PaywallFunnel} series=${series} />
+    <div class="section">Unit Economics</div>
+    <${UnitEconomics} />
+    ${series && series.length ? html`<div class="grid2">
+      <${Chart} title="MRR" subtitle="Summe der monatlich normalisierten Preise aktiver Store-Abos, in Euro" type="line" series=${series} keys=${[{ label: 'MRR €', color: 'var(--violet)', value: (d) => Math.round((d.plus?.mrrCents || 0) / 100) }]} />
+      <${Chart} title="Abo-Bewegung" subtitle="Ereignisse je Tag (Produktion)" series=${series} keys=${[
+        { label: 'neu', color: 'var(--cyan)', value: (d) => d.plus?.newPaid },
+        { label: 'gekündigt', color: 'var(--pink)', value: (d) => d.plus?.cancelled },
+        { label: 'abgelaufen', color: 'var(--violet)', value: (d) => d.plus?.expired },
+      ]} />
+    </div>` : null}
+    ${owner ? html`<div class="inline" style="flex-wrap:wrap;gap:8px;margin:6px 0 14px">
+      <span class="muted">Export (CSV):</span>
+      ${EXPORTS.map(([name, label]) => html`<a class="btn small ghost" href=${`/admin/export/${name}.csv`}>${label}</a>`)}
+    </div>` : null}
     <div class="grid3">
       <div class="card">
         <div class="label">Grenzen</div>
@@ -1033,6 +1517,10 @@ function Funnel({ funnel, mailConfigured }) {
         <div class="bar"><i style=${`width:${top ? Math.max(2, (n / top) * 100) : 0}%`}></i></div>
       </div>`;
     })}
+    <div class="fstep" style="margin-top:14px">
+      <div class="fhead"><span><b>Store-Klicks</b> <span class="muted">der andere Weg: auf einen Store-Button getippt (Download und Registrierung folgen später)</span></span><span><b>${num(funnel.storeClicks || 0)}</b> <span class="muted">${pct(top ? (funnel.storeClicks || 0) / top : null)}</span></span></div>
+      <div class="bar"><i style=${`width:${top ? Math.max(2, ((funnel.storeClicks || 0) / top) * 100) : 0}%`}></i></div>
+    </div>
     ${hint ? html`<p class="note warn" style="margin:10px 0 0">💡 ${hint}</p>` : null}
   </div>`;
 }
@@ -1115,6 +1603,7 @@ function Waitlist({ role }) {
       <${Kpi} label="Besuche 7 Tage" value=${num(visits.last7Days)} sub="inklusive heute" />
       <${Kpi} label="Besuche 30 Tage" value=${num(visits.last30Days)} sub="inklusive heute" color="var(--violet)" />
       <${Kpi} label="Besuch → Anmeldung" value=${pct(visits.last30Days ? visits.signups30Days / visits.last30Days : null)} sub=${`${num(visits.signups30Days)} bestätigte Anmeldungen (30 Tage)`} color="var(--pink)" />
+      <${Kpi} label="Besuch → Store-Klick" value=${pct(visits.last30Days ? (visits.storeClicks30Days || 0) / visits.last30Days : null)} sub=${`${num(visits.storeClicks30Days || 0)} Store-Klicks (30 Tage)`} color="var(--cyan)" />
     </div>
     ${visits.funnel ? html`<${Funnel} funnel=${visits.funnel} mailConfigured=${data.mailConfigured} />` : null}
     <div class="grid2">
@@ -1123,11 +1612,12 @@ function Waitlist({ role }) {
         <h3 style="margin:0 0 2px">Kampagnen</h3>
         <div class="note" style="margin-bottom:6px">letzte 30 Tage · Anmeldungen: bestätigt</div>
         ${visits.campaigns.length ? html`<table>
-          <thead><tr><th>Quelle · Kampagne</th><th style="text-align:right">Besuche</th><th style="text-align:right" title="15 s geblieben oder gescrollt">Gelesen</th><th style="text-align:right" title="ins E-Mail-Feld getippt">Formular</th><th style="text-align:right">Gesendet</th><th style="text-align:right">Bestätigt</th><th style="text-align:right">Quote</th></tr></thead>
+          <thead><tr><th>Quelle · Kampagne</th><th style="text-align:right">Besuche</th><th style="text-align:right" title="15 s geblieben oder gescrollt">Gelesen</th><th style="text-align:right" title="ins E-Mail-Feld getippt">Formular</th><th style="text-align:right">Gesendet</th><th style="text-align:right">Bestätigt</th><th style="text-align:right">Quote</th><th style="text-align:right" title="auf einen Store-Button getippt, und der Anteil der Besuche">Store-Klicks</th></tr></thead>
           <tbody>${visits.campaigns.map((c) => html`<tr>
             <td><strong>${c.source}</strong>${c.campaign ? html`<div class="muted" style="font-size:12px;white-space:normal;overflow-wrap:anywhere">${c.campaign}</div>` : null}</td>
             <td style="text-align:right">${num(c.visits)}</td><td style="text-align:right">${num(c.engaged)}</td><td style="text-align:right">${num(c.formStarted)}</td><td style="text-align:right">${num(c.submitted)}</td><td style="text-align:right">${num(c.signups)}</td>
             <td style="text-align:right">${pct(c.visits ? c.signups / c.visits : null)}</td>
+            <td style="text-align:right">${num(c.storeClicks || 0)} <span class="muted">${pct(c.storeRate)}</span></td>
           </tr>`)}</tbody>
         </table>` : html`<p class="note" style="margin:0">Noch keine Besuche.</p>`}
         <p class="note" style="margin:10px 0 0">Quelle aus <code>utm_source</code>, sonst die Plattform, von der der Besuch kam (z. B. Link in der Instagram-Bio), „empfehlung“ oder „direkt“. Gezählt wird nur eine Zahl pro Tag und Quelle, ohne Cookies und ohne IP.</p>
@@ -1348,6 +1838,8 @@ function AdDraftCard({ draft, owner, connected, onChanged, compact, onClose }) {
       </div>
       ${idea && !compact ? html`<p style="margin:0 0 8px;color:var(--text-2)">${idea}</p>` : null}
       ${checks && !compact ? html`<p class="note warn" style="margin:0 0 8px">⚠︎ ${checks}</p>` : null}
+      ${draft.hookVariants?.length && !compact ? html`<div class="note" style="margin:0 0 8px"><span class="label" style="margin:0">Hook-Varianten</span>${draft.hookVariants.map((h) => html`<div>„${h}“</div>`)}</div>` : null}
+      ${statsParts(draft.stats).length ? html`<div class="note" style="margin:0 0 8px">${statsParts(draft.stats).map((line) => html`<div>${line}</div>`)}<span class="muted">Stand ${dateTime([draft.stats.instagram?.at, draft.stats.tiktok?.at].filter(Boolean).sort().at(-1))}</span></div>` : null}
       ${compact ? null : html`<${SoundTip} draft=${draft} />`}
       ${draft.feedback ? html`<div class="quote">${draft.status === 'rejected' ? 'Verworfen' : 'Notiz'}: ${draft.feedback}</div>` : null}
       <details class="texts">
@@ -1378,6 +1870,23 @@ function AdDraftCard({ draft, owner, connected, onChanged, compact, onClose }) {
   </div>`;
 }
 
+/**
+ * How a posted video did (plan 2.14, AdDraft.stats, read every 6 hours):
+ * views, likes and shares per platform, or null while nothing is measured.
+ */
+function statsParts(stats) {
+  if (!stats) return [];
+  return Object.entries(PLATFORM_LABELS).flatMap(([p, label]) => {
+    const s = stats[p];
+    if (!s) return [];
+    const views = p === 'instagram' ? s.plays : s.views;
+    return [`${label}: ${num(views)} Views · ${num(s.likes)} Likes · ${num(s.shares)}× geteilt`];
+  });
+}
+
+/** Views over both platforms, for the one-line list. */
+const viewsOf = (stats) => (stats ? (stats.instagram?.plays || 0) + (stats.tiktok?.views || 0) : null);
+
 /** Where a posted video went: a link per platform, or a tick when posted by hand. */
 function PlatformPills({ draft }) {
   return Object.entries(PLATFORM_LABELS).map(([p, label]) => {
@@ -1406,6 +1915,7 @@ function DraftList({ drafts, tab, owner, connected, onChanged }) {
       </span>
       ${tab === 'posted' ? html`<span class="draftrow-side">
         <span class="inline"><${PlatformPills} draft=${d} /></span>
+        ${d.stats ? html`<span class="muted">${num(viewsOf(d.stats))} Views</span>` : null}
         ${d.visits?.visits ? html`<span class="muted">${d.visits.visits} ${d.visits.visits === 1 ? 'Besuch' : 'Besuche'}${d.visits.submitted ? ` · ${d.visits.submitted} Anmeldung${d.visits.submitted === 1 ? '' : 'en'}` : ''}</span>` : null}
       </span>` : null}
     </button>`;
@@ -1424,15 +1934,44 @@ function BudgetLine({ onOpen }) {
   </button>`;
 }
 
+/**
+ * This week's bio link to copy into Instagram and TikTok, and how the
+ * agent's last run went (plan 2.14, GET /admin/marketing/agent).
+ */
+function AgentLine() {
+  const [a, setA] = useState(null);
+  useEffect(() => { api('/marketing/agent').then(setA).catch(() => {}); }, []);
+  if (!a) return null;
+  const r = a.runs || {};
+  const failedLast = r.lastFailedAt && (!r.lastOkAt || new Date(r.lastFailedAt) > new Date(r.lastOkAt));
+  return html`<div class="card" style="margin-bottom:12px;padding:10px 14px">
+    <div class="inline" style="justify-content:space-between">
+      <span>Bio-Link KW ${a.bioWeek}: <b style="overflow-wrap:anywhere">${a.bioLink}</b></span>
+      <${CopyButton} text=${a.bioLink} label="Link kopieren" />
+    </div>
+    <p class="note" style="margin:6px 0 0">Jeden Montag neu, damit der Kampagnen-Tab die Bio-Klicks je Woche zählt (Kampagne ${a.bioSlug}).
+      ${r.lastRunAt ? (failedLast
+        ? html` <span class="bad">Letzter Lauf ${dateTime(r.lastFailedAt)} abgebrochen${r.lastStep ? ` (Schritt ${r.lastStep})` : ''}.</span>${r.lastRunUrl ? html` <a href=${r.lastRunUrl} target="_blank" rel="noopener">Log ↗</a>` : null}`
+        : ` Letzter Lauf ${dateTime(r.lastOkAt)} ok${r.lastDurationSec != null ? `, ${Math.round(r.lastDurationSec / 60)} min` : ''}.`) : ' Noch kein Lauf gemeldet.'}
+      ${a.lastStatsAt ? ` Zahlen der Posts zuletzt ${dateTime(a.lastStatsAt)} gelesen (alle 6 Stunden; Probleme stehen bei den Kanälen).` : ''}</p>
+  </div>`;
+}
+
 function BudgetCard({ owner }) {
   const [data, setData] = useState(null);
+  const [star, setStar] = useState(null);
   const [edit, setEdit] = useState(null);
   const [error, setError] = useState(null);
   const load = useCallback(() => api('/marketing/budget').then(setData).catch(() => setData({ error: true })), []);
   useEffect(() => { load(); }, [load]);
+  // The north star (lib/today.js): red card while activation is under goal
+  useEffect(() => { api('/today').then((t) => setStar(t.activation)).catch(() => {}); }, []);
+  const [agent, setAgent] = useState(null);
+  useEffect(() => { api('/marketing/agent').then(setAgent).catch(() => {}); }, []);
   if (!data) return null;
   if (data.error) return html`<div class="card">Das Budget konnte nicht geladen werden.</div>`;
   const b = data.budget;
+  const underGoal = !!star && star.ok === false;
   const bar = (spent, cap) => html`<div class="bar"><i style=${`width:${Math.min(100, cap ? (spent / cap) * 100 : 100)}%`}></i></div>`;
   const save = async () => {
     setError(null);
@@ -1444,7 +1983,8 @@ function BudgetCard({ owner }) {
       setError(e.code === 'daily_above_weekly' ? 'Das Tagesbudget darf nicht über dem Wochenbudget liegen.' : 'Bitte gültige Beträge eingeben.');
     }
   };
-  return html`<div class="card budget" style="margin-bottom:12px">
+  return html`<div class=${`card budget ${underGoal ? 'under-goal' : ''}`} style="margin-bottom:12px">
+    ${underGoal ? html`<p class="bad" style="margin:0 0 8px"><b>Keine bezahlte Reichweite unter ${star.goalPct} %.</b> Aktivierung 4 W liegt bei ${star.pct4w} % (${num(star.sample)} gemessen).</p>` : null}
     <div class="inline" style="justify-content:space-between"><div class="label" style="margin:0">Marketing-Budget</div>
       ${owner && !edit ? html`<button class="btn small ghost" onClick=${() => setEdit({ daily: b.dailyEur, weekly: b.weeklyEur })}>Ändern</button>` : null}</div>
     <div class="grid2" style="margin-top:8px">
@@ -1457,7 +1997,8 @@ function BudgetCard({ owner }) {
       <button class="btn small" onClick=${save}>Speichern</button><button class="btn small ghost" onClick=${() => setEdit(null)}>Abbrechen</button>
     </div>` : null}
     ${error ? html`<p class="error" style="margin:8px 0 0">${error}</p>` : null}
-    <p class="note" style="margin:8px 0 0">Vor jedem Aufruf (Claude, Veo, Bilder) reserviert der Agent den Betrag; was nicht mehr ins Budget passt, lässt er aus. Diese Woche: Claude ${euro(data.weekByProvider.anthropic || 0)}, Google ${euro(data.weekByProvider.google || 0)}.</p>
+    <p class="note" style="margin:8px 0 0">Vor jedem Aufruf (Claude, Veo, Bilder) reserviert der Agent den Betrag; was nicht mehr ins Budget passt, lässt er aus. Diese Woche: Claude ${euro(data.weekByProvider.anthropic || 0)}, Google ${euro(data.weekByProvider.google || 0)}${data.weekByProvider.media ? `, Media ${euro(data.weekByProvider.media)}` : ''}. Bezahlte Reichweite („Media“) bucht erst, wenn das Launch-Gate grün ist (Tab Gate).</p>
+    <p class="note" style="margin:8px 0 0">KI-Kosten je gepostetes Video (30 Tage): <b>${agent ? euro(agent.aiCostPerPostedVideoEur) : '–'}</b>. Kein höheres KI-Budget, bevor die Rückkopplung (Views und Aktivierung je Video) ein paar Wochen läuft.</p>
   </div>`;
 }
 
@@ -1694,6 +2235,7 @@ function Approvals({ role, onCount }) {
   return html`
     <div class="now"><div class="tabs subtabs">${Object.entries(APPROVAL_FILTERS).map(([k, label]) => html`<button class=${filter === k ? 'on' : ''} onClick=${() => setFilter(k)}>${label}${counts[k] ? html` <span class=${k === 'pending' ? 'count' : 'muted'}>${counts[k]}</span>` : null}</button>`)}</div></div>
     <${BudgetLine} onOpen=${() => setFilter('settings')} />
+    ${filter === 'posted' || filter === 'approved' ? html`<${AgentLine} />` : null}
     ${!data ? html`<p class="note">Lade …</p>`
       : data.error ? html`<div class="card">Die Entwürfe konnten nicht geladen werden.</div>`
       : filter === 'pending' && focus ? html`<${FocusReview} drafts=${drafts} owner=${owner} onChanged=${load} onList=${() => setFocusKept(false)} />`
@@ -1767,9 +2309,10 @@ const NOTIFY_LABELS = {
   approvals: ['Neue Videos zur Freigabe', 'Wenn der Marketing-Agent Videos vorbereitet hat'],
   posting: ['Posten', 'Online auf Instagram oder TikTok, TikTok-Entwurf wartet, Fehler'],
   support: ['Support', 'Neue Anfragen und Antworten aus der App'],
-  reports: ['Meldungen', 'Wenn jemand in der App etwas meldet'],
+  reports: ['Meldungen', 'Wenn jemand in der App oder auf wannayap.app/melden etwas meldet'],
   daily: ['Tageszahlen', 'Neue Nutzer, aktive Nutzer, Gespräche, Website, Warteliste'],
   alerts: ['Störungen', 'Wenn etwas kaputt ist, z. B. Bestätigungsmails nicht rausgehen'],
+  weekly: ['Wochenreport', 'Montags ab 8 Uhr: die letzte Woche in Zahlen, zum Quittieren mit Stunden Betrieb'],
 };
 const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
@@ -1857,10 +2400,324 @@ function Notify() {
 
 // The open page lives in the URL hash (#users/<id>, #support/<ticket>, …), so a
 // reload, the home-screen app coming back and the back button keep it.
+// --- Weekly report (plan 2.11) ------------------------------------------------------
+
+const WEEKLY_ERRORS = {
+  hours_required: 'Bitte alle drei Stundenfelder ausfüllen (0 ist erlaubt).',
+  invalid_hours: 'Stunden: Zahlen von 0 bis 80, z. B. 1,5.',
+  invalid_decisions: 'Entscheidungen: höchstens drei, je bis 300 Zeichen.',
+  invalid_week: 'Diese Woche gibt es nicht oder sie hat noch nicht begonnen.',
+};
+const HOUR_FIELDS = [['alerts', 'Alarme'], ['support', 'Support'], ['approvals', 'Freigaben']];
+const DECISION_HINTS = ['Kanal +/−', 'Hook-Thema für den Agenten', 'Budget'];
+const kwOf = (week) => (week ? `KW ${Number(week.slice(-2))}` : '');
+
+function Weekly({ role, week, onWeek }) {
+  const [data, setData] = useState(null);
+  const [form, setForm] = useState({ hours: { alerts: '', support: '', approvals: '' }, decisions: ['', '', ''] });
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    setData(null);
+    api(`/weekly${week ? `?week=${encodeURIComponent(week)}` : ''}`).then(setData).catch(() => setData(false));
+  }, [week]);
+  useEffect(load, [load]);
+
+  if (data === false) return html`<div class="card">Der Wochenreport konnte nicht geladen werden.</div>`;
+  if (!data) return html`<p class="note">Lade …</p>`;
+  const r = data.report;
+  const canAck = role === 'owner' || role === 'support';
+  const setHour = (k, v) => setForm({ ...form, hours: { ...form.hours, [k]: v.replace(/[^\d,.]/g, '') } });
+  const setDecision = (i, v) => setForm({ ...form, decisions: form.decisions.map((d, j) => (j === i ? v : d)) });
+  const ack = async () => {
+    setMsg(null);
+    if (HOUR_FIELDS.some(([k]) => form.hours[k].trim() === '')) return setMsg({ ok: false, text: WEEKLY_ERRORS.hours_required });
+    setBusy(true);
+    try {
+      await api('/weekly/ack', { method: 'POST', body: { week: r.week, hours: form.hours, decisions: form.decisions } });
+      setMsg({ ok: true, text: `${kwOf(r.week)} quittiert. Danke! Die Entscheidungen bitte zusätzlich in CMM/docs/DECISIONS.md eintragen.` });
+      setForm({ hours: { alerts: '', support: '', approvals: '' }, decisions: ['', '', ''] });
+      load();
+    } catch (err) {
+      setMsg({ ok: false, text: WEEKLY_ERRORS[err.code] || message(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return html`
+    <div class="inline" style="justify-content:space-between;margin-bottom:12px">
+      <button class="btn small ghost" onClick=${() => onWeek(data.previousWeek)}>← ${kwOf(data.previousWeek)}</button>
+      <b>${kwOf(r.week)} (${shortDay(r.from)}–${shortDay(r.to)})</b>
+      <button class="btn small ghost" disabled=${!data.nextWeek} onClick=${() => onWeek(data.nextWeek)}>${data.nextWeek ? `${kwOf(data.nextWeek)} →` : 'neueste'}</button>
+    </div>
+    ${msg ? html`<p class=${msg.ok ? 'flash' : 'error'}>${msg.text}</p>` : null}
+    <div class="card" style="margin-bottom:12px">
+      <div class="label">Wochenreport</div>
+      <pre style="white-space:pre-wrap;font:inherit;margin:0">${r.text}</pre>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="label">Quittungen</div>
+      ${data.reviews.length ? data.reviews.map((q) => html`<${Row} label=${q.email}>${dateTime(q.ackAt)} · Alarme ${q.hours.alerts} h · Support ${q.hours.support} h · Freigaben ${q.hours.approvals} h${q.decisions.length ? html`<br />${q.decisions.map((d) => html`<span class="note">• ${d}</span><br />`)}` : null}<//>`)
+        : html`<p class="note" style="margin:0">Noch niemand hat diese Woche quittiert.</p>`}
+    </div>
+    ${canAck ? html`<div class="card">
+      <div class="label">Wochenreview (30 Minuten)</div>
+      <p class="note" style="margin-top:0">Stunden Betrieb diese Woche (Pflicht, 0 ist erlaubt). Ziel: zusammen unter 5 Stunden.</p>
+      <div class="inline" style="flex-wrap:wrap;gap:8px">
+        ${HOUR_FIELDS.map(([k, label]) => html`<label class="field" style="flex:1 1 90px"><span>${label} (h)</span><input value=${form.hours[k]} inputmode="decimal" placeholder="0" onInput=${(e) => setHour(k, e.target.value)} /></label>`)}
+      </div>
+      <p class="note">Bis zu drei Entscheidungen (optional):</p>
+      ${DECISION_HINTS.map((hint, i) => html`<label class="field"><span>Entscheidung ${i + 1}</span><input value=${form.decisions[i]} maxlength="300" placeholder=${hint} onInput=${(e) => setDecision(i, e.target.value)} /></label>`)}
+      <p class="note">Entscheidungen zusätzlich in CMM/docs/DECISIONS.md eintragen. Das Hook-Thema für den Agenten gehört außerdem unter App → Marketing-Hinweise.</p>
+      <div class="inline" style="justify-content:flex-end"><button class="btn" disabled=${busy} onClick=${ack}>Quittieren</button></div>
+    </div>` : null}`;
+}
+
+// --- Campaigns (plan 2.10) -------------------------------------------------------
+
+const CHANNEL_LABELS = { tiktok: 'TikTok', instagram: 'Instagram', flyer: 'Flyer', campus: 'Campus', creator: 'Creator', press: 'Presse', other: 'Sonstiges' };
+const CAMPAIGN_STATUS = { planned: 'geplant', running: 'läuft', ended: 'beendet' };
+const SOURCE_LABELS = { friend: 'Freund·in', tiktok: 'TikTok', instagram: 'Instagram', flyer: 'Flyer', press: 'Presse', other: 'Sonstiges', none: 'ohne Antwort' };
+const CAMPAIGN_ERRORS = {
+  invalid_slug: 'Kurzname: 2 bis 40 Zeichen, nur a–z, 0–9 und Bindestrich.',
+  invalid_channel: 'Bitte einen Kanal wählen.',
+  invalid_title: 'Titel: höchstens 80 Zeichen.',
+  invalid_partner: 'Partner: höchstens 80 Zeichen.',
+  invalid_notes: 'Notizen: höchstens 1.000 Zeichen.',
+  invalid_dates: 'Datum als Tag (JJJJ-MM-TT), das Ende nicht vor dem Start.',
+  invalid_budget: 'Budget in Euro, ab 0 (z. B. 150 oder 150,50).',
+  invalid_status: 'Unbekannter Status.',
+  slug_taken: 'Diesen Kurznamen gibt es schon.',
+  slug_fixed: 'Der Kurzname bleibt, wie er ist.',
+};
+const dayOf = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+const NEW_CAMPAIGN = { slug: '', channel: 'tiktok', title: '', status: 'planned', startedAt: '', endedAt: '', budget: '', partner: '', notes: '' };
+
+function CampaignForm({ campaign, onSaved, onCancel }) {
+  const [form, setForm] = useState(() => (campaign
+    ? { ...campaign, startedAt: dayOf(campaign.startedAt), endedAt: dayOf(campaign.endedAt), budget: campaign.budgetEurCents == null ? '' : String(campaign.budgetEurCents / 100).replace('.', ',') }
+    : NEW_CAMPAIGN));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const set = (patch) => setForm({ ...form, ...patch });
+  const save = async (e) => {
+    e.preventDefault();
+    const budget = form.budget.trim() === '' ? null : toCents(form.budget);
+    if (budget !== null && !(Number.isInteger(budget) && budget >= 0)) return setError(CAMPAIGN_ERRORS.invalid_budget);
+    const body = { channel: form.channel, title: form.title, status: form.status, startedAt: form.startedAt || null, endedAt: form.endedAt || null, budgetEurCents: budget, partner: form.partner, notes: form.notes };
+    setBusy(true);
+    setError(null);
+    try {
+      await (campaign
+        ? api(`/campaigns/${encodeURIComponent(campaign.slug)}`, { method: 'PUT', body })
+        : api('/campaigns', { method: 'POST', body: { ...body, slug: form.slug.trim().toLowerCase() } }));
+      onSaved();
+    } catch (err) {
+      setError(CAMPAIGN_ERRORS[err.code] || message(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return html`<form class="card" onSubmit=${save}>
+    <div class="label">${campaign ? `Kampagne ${campaign.slug} bearbeiten` : 'Neue Kampagne'}</div>
+    ${campaign ? null : html`<label class="field"><span>Kurzname (steht im Link: wannayap.app/k/kurzname; später nicht änderbar)</span><input value=${form.slug} onInput=${(e) => set({ slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') })} placeholder="campus-leipzig" maxlength="40" required /></label>`}
+    <label class="field"><span>Kanal</span><select value=${form.channel} onChange=${(e) => set({ channel: e.target.value })}>${Object.entries(CHANNEL_LABELS).map(([k, v]) => html`<option value=${k}>${v}</option>`)}</select></label>
+    <label class="field"><span>Titel</span><input value=${form.title} onInput=${(e) => set({ title: e.target.value })} maxlength="80" placeholder="Flyer Mensa Uni Leipzig" /></label>
+    <label class="field"><span>Status</span><select value=${form.status} onChange=${(e) => set({ status: e.target.value })}>${Object.entries(CAMPAIGN_STATUS).map(([k, v]) => html`<option value=${k}>${v}</option>`)}</select></label>
+    <div class="grid2" style="margin-top:0">
+      <label class="field"><span>Start</span><input type="date" value=${form.startedAt} onInput=${(e) => set({ startedAt: e.target.value })} /></label>
+      <label class="field"><span>Ende</span><input type="date" value=${form.endedAt} onInput=${(e) => set({ endedAt: e.target.value })} /></label>
+    </div>
+    <label class="field"><span>Budget gesamt in Euro (Media, Druck, Creator; leer = keins)</span><input value=${form.budget} onInput=${(e) => set({ budget: e.target.value })} inputmode="decimal" placeholder="150" /></label>
+    <label class="field"><span>Partner (Creator, Druckerei, Fachschaft …)</span><input value=${form.partner} onInput=${(e) => set({ partner: e.target.value })} maxlength="80" /></label>
+    <label class="field"><span>Notizen</span><textarea rows="3" value=${form.notes} onInput=${(e) => set({ notes: e.target.value })} maxlength="1000"></textarea></label>
+    ${error ? html`<p class="error">${error}</p>` : null}
+    <div class="inline"><button class="btn small" disabled=${busy || (!campaign && form.slug.length < 2)}>${campaign ? 'Speichern' : 'Anlegen'}</button><button class="btn small ghost" type="button" onClick=${onCancel}>Abbrechen</button></div>
+  </form>`;
+}
+
+function CampaignLinks({ campaign }) {
+  const qr = `/admin/campaigns/${encodeURIComponent(campaign.slug)}/qr.svg`;
+  return html`<div class="grid2" style="margin-top:10px">
+    <div>
+      <div class="kv"><span>Store-Link (QR, Flyer, Bio)</span><span class="inline"><code style="overflow-wrap:anywhere">${campaign.links.store}</code><${CopyButton} text=${campaign.links.store} /></span></div>
+      <div class="kv"><span>Landing-Link (Posts, Werbung)</span><span class="inline"><code style="overflow-wrap:anywhere">${campaign.links.landing}</code><${CopyButton} text=${campaign.links.landing} /></span></div>
+      <p class="note" style="margin:8px 0 0">Der Store-Link geht über Apples Kampagnen-Token in den App Store; Downloads je Kampagne siehst du nur in App Store Connect (App-Analyse → Kampagnen). Hier zählen Besuche der Landing Page, Warteliste und Neue, die in der App eine Kampagne zugeordnet bekommen haben.</p>
+    </div>
+    <div class="inline" style="align-items:flex-start">
+      <img src=${qr} alt=${`QR-Code für ${campaign.links.store}`} width="140" height="140" style="background:#fff;border-radius:8px;padding:6px" />
+      <a class="btn small ghost" href=${qr} download=${`wannayap-${campaign.slug}.svg`}>QR als SVG laden</a>
+    </div>
+  </div>`;
+}
+
+function Campaigns({ role }) {
+  const owner = role === 'owner';
+  const [data, setData] = useState(null);
+  const [editing, setEditing] = useState(null); // null | 'new' | slug
+  const [open, setOpen] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const load = useCallback(() => api('/campaigns').then(setData).catch(() => setData({ error: true })), []);
+  useEffect(() => { load(); }, [load]);
+  const setSeed = async (slug) => {
+    setMsg(null);
+    try {
+      await api('/config', { method: 'PUT', body: { goals: { seedCampaign: slug } } });
+      setMsg(slug ? `${slug} ist jetzt die Seed-Kampagne.` : 'Keine Seed-Kampagne mehr.');
+      load();
+    } catch {
+      setMsg('Hat nicht geklappt.');
+    }
+  };
+  if (!data) return html`<div class="card note">Lade Kampagnen …</div>`;
+  if (data.error) return html`<div class="card">Die Kampagnen konnten nicht geladen werden. <button class="btn small ghost" onClick=${load}>Erneut</button></div>`;
+  const saved = () => { setEditing(null); load(); };
+  return html`
+    <div class="now">
+      <span class="note">Zahlen der letzten ${data.days} Tage je Kurzname. Neue: haben in der App „Woher kennst du Wanna yap?“ beantwortet und eine Kampagne bekommen (über den Wartelisten-Code oder die laufende Seed-Kampagne).</span>
+      <span class="spacer"></span>
+      ${owner && editing !== 'new' ? html`<button class="btn small" onClick=${() => setEditing('new')}>Neue Kampagne</button>` : null}
+    </div>
+    ${editing === 'new' ? html`<${CampaignForm} onSaved=${saved} onCancel=${() => setEditing(null)} />` : null}
+    ${msg ? html`<p class="note">${msg}</p>` : null}
+    ${data.campaigns.length ? html`<div class="card scroll" style="margin-top:12px">
+      <table>
+        <thead><tr><th>Kampagne</th><th>Status</th><th style="text-align:right">Besuche</th><th style="text-align:right" title="Tipp auf einen Store-Button der Landing Page">Store-Klicks</th><th style="text-align:right" title="bestätigte Eintragungen">Warteliste</th><th style="text-align:right">Neue</th><th style="text-align:right" title="erstes Gespräch innerhalb von 7 Tagen">Aktiviert 7 T.</th><th style="text-align:right" title="KI-Kosten des Marketing-Agenten (abgerechnet, sonst Schätzung)">KI-Kosten</th><th style="text-align:right">Budget</th></tr></thead>
+        <tbody>${data.campaigns.map((c) => html`<tr style="cursor:pointer" onClick=${() => setOpen(open === c.slug ? null : c.slug)}>
+          <td><strong>${c.title || c.slug}</strong>${data.seedCampaign === c.slug ? html` <span class="pill on">Seed</span>` : null}<div class="muted" style="font-size:12px">${c.slug} · ${CHANNEL_LABELS[c.channel] || c.channel}${c.partner ? ` · ${c.partner}` : ''}</div></td>
+          <td><span class=${`pill ${c.status === 'running' ? 'on' : ''}`}>${CAMPAIGN_STATUS[c.status] || c.status}</span><div class="muted" style="font-size:12px">${c.startedAt ? date(c.startedAt) : '–'} bis ${c.endedAt ? date(c.endedAt) : 'offen'}</div></td>
+          <td style="text-align:right">${num(c.numbers.visits)}</td>
+          <td style="text-align:right">${num(c.numbers.storeClicks)}</td>
+          <td style="text-align:right">${num(c.numbers.waitlist)}</td>
+          <td style="text-align:right">${num(c.numbers.users)}</td>
+          <td style="text-align:right">${num(c.numbers.activatedD7)} <span class="muted">${pct(c.numbers.users ? c.numbers.activatedD7 / c.numbers.users : null)}</span></td>
+          <td style="text-align:right">${cents(c.numbers.spendEurCents)}</td>
+          <td style="text-align:right">${c.budgetEurCents == null ? '–' : eur(c.budgetEurCents)}</td>
+        </tr>`)}</tbody>
+      </table>
+      <p class="note" style="margin:10px 0 0">Zeile antippen für Links, QR-Code und Bearbeiten. Aktiviert zählt erst, wenn die 7 Tage um sind; unter 50 Neuen ist die Quote noch kein Urteil.</p>
+    </div>` : html`<div class="card note" style="margin-top:12px">Noch keine Kampagne angelegt.${owner ? ' Leg eine an, bevor Flyer oder Links rausgehen: der Kurzname im Link ordnet die Zahlen zu.' : ''}</div>`}
+    ${data.campaigns.filter((c) => c.slug === open).map((c) => html`<div class="card" style="margin-top:12px">
+      <div class="inline"><strong>${c.title || c.slug}</strong><span class="spacer"></span>
+        ${owner ? html`<button class="btn small ghost" onClick=${() => setSeed(data.seedCampaign === c.slug ? null : c.slug)}>${data.seedCampaign === c.slug ? 'Nicht mehr Seed-Kampagne' : 'Als Seed-Kampagne markieren'}</button>
+        <button class="btn small ghost" onClick=${() => setEditing(c.slug)}>Bearbeiten</button>` : null}</div>
+      ${c.notes ? html`<p class="note" style="white-space:pre-wrap">${c.notes}</p>` : null}
+      <${CampaignLinks} campaign=${c} />
+      ${owner ? html`<p class="note" style="margin:10px 0 0">Seed-Kampagne: solange sie läuft, bekommen neue Antworten, die zum Kanal passen (Campus: Freund·in und Flyer; Creator: TikTok und Instagram), diese Kampagne. Das ist eine Annahme, keine Messung; es gibt immer nur eine.</p>` : null}
+      ${editing === c.slug ? html`<div style="margin-top:12px"><${CampaignForm} campaign=${c} onSaved=${saved} onCancel=${() => setEditing(null)} /></div>` : null}
+    </div>`)}
+
+    <div class="section">Nicht angelegte Kurznamen</div>
+    <div class="card scroll">
+      ${data.unregistered.length ? html`<table>
+        <thead><tr><th>Kurzname</th><th style="text-align:right">Besuche</th><th style="text-align:right">Warteliste</th><th style="text-align:right">Neue</th>${owner ? html`<th></th>` : null}</tr></thead>
+        <tbody>${data.unregistered.map((u) => html`<tr>
+          <td><code>${u.slug}</code></td><td style="text-align:right">${num(u.visits)}</td><td style="text-align:right">${num(u.waitlist)}</td><td style="text-align:right">${num(u.users)}</td>
+          ${owner ? html`<td style="text-align:right">${/^[a-z0-9-]{2,40}$/.test(u.slug) ? html`<button class="btn small ghost" onClick=${() => api('/campaigns', { method: 'POST', body: { slug: u.slug, channel: 'other' } }).then(() => { setOpen(u.slug); setEditing(u.slug); load(); }).catch((err) => setMsg(CAMPAIGN_ERRORS[err.code] || message(err)))}>Anlegen</button>` : html`<span class="muted" title="Nur a–z, 0–9 und Bindestrich lassen sich anlegen">–</span>`}</td>` : null}
+        </tr>`)}</tbody>
+      </table>` : html`<p class="note" style="margin:0">Keine. Jeder Kurzname aus Links der letzten ${data.days} Tage ist angelegt.</p>`}
+      <p class="note" style="margin:10px 0 0">Kurznamen aus <code>utm_campaign</code> und Wartelisten-Einträgen, die niemand angelegt hat: Tippfehler oder ein Link, der ohne Kampagne rausging. Einladungslinks und die Videos des Marketing-Agenten (Freigabe) stehen hier nicht.</p>
+    </div>
+  `;
+}
+
+// Where the new people come from (plan 2.10): the dashboard card
+function Origin() {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    api('/metrics/acquisition?weeks=4').then(setData).catch(() => setData({ error: true }));
+  }, []);
+  if (!data) return html`<div class="card note">Lade Herkunft …</div>`;
+  if (data.error) return html`<div class="card">Die Herkunft konnte nicht geladen werden.</div>`;
+  const l = data.last30;
+  const keys = Object.keys(SOURCE_LABELS);
+  return html`<div class="card scroll">
+    <div class="kpis">
+      <${Kpi} label="Mit Antwort" value=${pct(l.total ? l.answered / l.total : null)} sub=${`${num(l.answered)} von ${num(l.total)} Neuen (30 Tage), Ziel über 70 %`} color="var(--cyan)" />
+      <${Kpi} label="Android im Freundeskreis" value=${l.androidFriendsAvg == null ? '–' : `${l.androidFriendsAvg.toLocaleString('de-DE', { maximumFractionDigits: 1 })} von 5`} sub=${`Mittel aus ${num(l.androidFriendsAnswers)} Antworten`} color="var(--violet)" />
+    </div>
+    <table>
+      <thead><tr><th>Quelle</th><th style="text-align:right">Neue (30 Tage)</th><th style="text-align:right" title=${`Anmeldungen ${shortDay(data.from)} bis ${shortDay(data.to)}`}>Aktiviert in 7 Tagen</th><th style="text-align:right">Stichprobe</th></tr></thead>
+      <tbody>${keys.map((k) => {
+        const a = data.bySource[k];
+        const thin = a.measured < data.minSample;
+        return html`<tr>
+          <td>${SOURCE_LABELS[k]}</td>
+          <td style="text-align:right">${num(l.bySource[k])}</td>
+          <td style="text-align:right">${a.pct == null ? '–' : `${a.pct} %`}${a.pct != null && thin ? html` <span class="muted">(zu wenig Daten)</span>` : null}</td>
+          <td style="text-align:right">${num(a.measured)}</td>
+        </tr>`;
+      })}</tbody>
+    </table>
+    <p class="note" style="margin:10px 0 0">Aus der freiwilligen Frage „Woher kennst du Wanna yap?“ im Onboarding. Aktiviert: erstes Gespräch innerhalb von 7 Tagen, Anmeldungen der letzten ${data.weeks} vollen Wochen, nur wer seine 7 Tage hinter sich hat. Unter ${data.minSample} je Quelle zeigt die Quote eine Richtung, kein Urteil.</p>
+  </div>`;
+}
+
 const readRoute = () => {
   const [tab, id] = decodeURIComponent(location.hash.slice(1)).split('/');
   return { tab: tab || 'dashboard', id: id || null };
 };
+
+// --- Launch gate (plan 2.7) ------------------------------------------------------------
+
+/**
+ * The one checklist before the first euro of paid reach (lib/launchChecklist.js):
+ * automatic ticks from what the backend knows, manual ticks by owners with a
+ * note. Paid reach (MarketingSpend "media") is refused until all are green.
+ */
+function Gate({ role }) {
+  const [data, setData] = useState(null);
+  const [notes, setNotes] = useState({});
+  const [busy, setBusy] = useState(null);
+  const [flash, setFlash] = useState(null);
+  const owner = role === 'owner';
+  const load = useCallback(() => api('/launch-checklist').then(setData).catch(() => setData(false)), []);
+  useEffect(() => { load(); }, [load]);
+
+  const tick = async (item, done) => {
+    setBusy(item.key);
+    setFlash(null);
+    try {
+      const note = notes[item.key] ?? item.note ?? '';
+      setData(await api(`/launch-checklist/${item.key}`, { method: 'PUT', body: { done, note: note.trim() || null } }));
+      setNotes({ ...notes, [item.key]: undefined });
+    } catch (err) {
+      setFlash(`Fehler: ${err.code === 'invalid_item' ? 'Notiz höchstens 300 Zeichen' : err.code || err.message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (data === false) return html`<div class="card">Konnte nicht geladen werden.</div>`;
+  if (!data) return html`<p class="note">Lade …</p>`;
+  const open = data.items.filter((i) => !i.done).length;
+  const row = (i) => html`<div class="kv" style="align-items:flex-start;gap:12px">
+    <span style="flex:1;min-width:0">
+      <b class=${i.done ? 'good' : 'bad'}>${i.done ? '●' : '○'}</b> <strong>${i.label}</strong>
+      <div class="note" style="margin:2px 0 0">${i.detail || ''}</div>
+      ${i.kind === 'manual' && (i.at || i.note) ? html`<div class="note" style="margin:2px 0 0">${i.done ? 'Abgehakt' : 'Zurückgenommen'} ${date(i.at)}${i.by ? ` von ${i.by}` : ''}${i.note ? ` · „${i.note}“` : ''}</div>` : null}
+      ${i.kind === 'manual' && owner ? html`<div class="inline" style="margin-top:6px">
+        <input placeholder="Notiz (z. B. Vertragsnummer, Datum)" maxlength="300" style="flex:1" value=${notes[i.key] ?? i.note ?? ''} onInput=${(e) => setNotes({ ...notes, [i.key]: e.target.value })} />
+        ${i.done
+          ? html`<button class="btn small ghost" disabled=${busy} onClick=${() => tick(i, false)}>Zurücknehmen</button>`
+          : html`<button class="btn small" disabled=${busy} onClick=${() => tick(i, true)}>Abhaken</button>`}
+      </div>` : null}
+    </span>
+    <span>${i.kind === 'auto' ? html`<span class="pill muted-pill">automatisch</span>` : html`<span class=${`pill ${i.done ? 'on' : 'todo'}`}>${i.done ? 'erledigt' : 'offen'}</span>`}</span>
+  </div>`;
+  return html`
+    ${flash ? html`<div class="flash">${flash}</div>` : null}
+    <div class="card">
+      <div class="label">Launch-Gate</div>
+      <p style="margin:6px 0"><b class=${data.complete ? 'good' : 'bad'}>${data.complete ? 'Alles grün: bezahlte Reichweite ist freigegeben.' : `${open} von ${data.items.length} Punkten offen.`}</b></p>
+      <p class="note" style="margin:0">Vor dem ersten Media-Euro muss alles grün sein. Solange ein Punkt offen ist, lehnt das Marketing-Budget Buchungen für „Media“ ab (Claude und Google laufen weiter). Restore-Test und Pentest trägst du unter App → Betrieb ein.</p>
+    </div>
+    <div class="section">Automatisch</div>
+    <div class="card">${data.items.filter((i) => i.kind === 'auto').map(row)}</div>
+    <div class="section">Von Hand ${owner ? null : html`<span class="note">(nur Owner haken ab)</span>`}</div>
+    <div class="card">${data.items.filter((i) => i.kind === 'manual').map(row)}</div>`;
+}
 
 function App() {
   const [state, setState] = useState({ loading: true });
@@ -1869,6 +2726,7 @@ function App() {
   const [openTickets, setOpenTickets] = useState(0);
   const [openApprovals, setOpenApprovals] = useState(0);
   const [momentsOf, setMomentsOf] = useState(null);
+  const [acked, setAcked] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -1881,6 +2739,13 @@ function App() {
       }
     })();
   }, []);
+
+  // The morning push opens #ack: that acknowledges it (the dead-man rule, README "Team")
+  useEffect(() => {
+    if (!state.admin || route.tab !== 'ack') return;
+    api('/daily/ack', { method: 'POST' }).then(() => setAcked(new Date())).catch(() => {});
+    location.hash = '#dashboard';
+  }, [state.admin, route.tab]);
 
   useEffect(() => {
     if (!state.admin || state.admin.role === 'viewer') return;
@@ -1924,13 +2789,17 @@ function App() {
 
   if (state.loading) return html`<div class="center note">Lade …</div>`;
   if (!state.admin) {
+    // An invitation link (#setup/<token>) works whether or not an admin exists
+    if (route.tab === 'setup' && route.id) {
+      return html`<${Setup} token=${route.id} onDone=${(admin) => { location.hash = '#dashboard'; setState({ admin }); }} />`;
+    }
     return state.setupNeeded
       ? html`<${Setup} onDone=${(admin) => setState({ admin })} />`
       : html`<${Login} onDone=${(admin) => setState({ admin })} />`;
   }
 
   const role = state.admin.role;
-  const tabs = ['dashboard', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'approvals', 'app', ...(role === 'owner' ? ['audit'] : []), 'notify'];
+  const tabs = ['dashboard', 'weekly', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'campaigns', 'approvals', 'app', 'gate', ...(role === 'owner' ? ['audit', 'team'] : []), 'notify'];
   const tab = tabs.includes(route.tab) ? route.tab : 'dashboard';
   const nav = (next, id = null) => {
     const hash = id ? `#${next}/${encodeURIComponent(id)}` : `#${next}`;
@@ -1958,14 +2827,23 @@ function App() {
     body = html`<${Tickets} openId=${tab === 'support' ? route.id : null} onOpen=${(id) => nav('support', id)} onOpenUser=${openUser} onCount=${setOpenTickets} />`;
   } else if (tab === 'app') {
     body = html`<${AppSettings} role=${role} />`;
+  } else if (tab === 'gate') {
+    body = html`<${Gate} role=${role} />`;
   } else if (tab === 'audit') {
     body = html`<${Audit} />`;
+  } else if (tab === 'team') {
+    body = html`<${Team} me=${state.admin} />`;
   } else if (tab === 'waitlist') {
     body = html`<${Waitlist} role=${role} />`;
+  } else if (tab === 'campaigns') {
+    body = html`<${Campaigns} role=${role} />`;
   } else if (tab === 'approvals') {
     body = html`<${Approvals} role=${role} onCount=${setOpenApprovals} />`;
   } else if (tab === 'notify') {
     body = html`<${Passkeys} /><${Notify} />`;
+  } else if (tab === 'weekly') {
+    // #weekly opens the last full week (the Monday push), #weekly/2026-W39 an older one
+    body = html`<${Weekly} role=${role} week=${route.id} onWeek=${(w) => nav('weekly', w)} />`;
   } else {
     body = html`<${Dashboard} onGo=${go} />`;
   }
@@ -1975,20 +2853,25 @@ function App() {
       <${Brand} />
       <div class="tabs">
         <button class=${tab === 'dashboard' ? 'on' : ''} onClick=${() => go('dashboard')}>Übersicht</button>
+        <button class=${tab === 'weekly' ? 'on' : ''} onClick=${() => go('weekly')}>Woche</button>
         ${role !== 'viewer' ? html`<button class=${tab === 'users' ? 'on' : ''} onClick=${() => go('users')}>Nutzer</button>
         <button class=${tab === 'reports' ? 'on' : ''} onClick=${() => go('reports')}>Meldungen${openReports ? html` <span class="count">${openReports}</span>` : null}</button>
         <button class=${tab === 'moments' ? 'on' : ''} onClick=${() => { setMomentsOf(null); go('moments'); }}>Moments</button>
         <button class=${tab === 'support' ? 'on' : ''} onClick=${() => go('support')}>Support${openTickets ? html` <span class="count">${openTickets}</span>` : null}</button>` : null}
         <button class=${tab === 'waitlist' ? 'on' : ''} onClick=${() => go('waitlist')}>Warteliste</button>
+        <button class=${tab === 'campaigns' ? 'on' : ''} onClick=${() => go('campaigns')}>Kampagnen</button>
         <button class=${tab === 'approvals' ? 'on' : ''} onClick=${() => go('approvals')}>Freigabe${openApprovals ? html` <span class="count">${openApprovals}</span>` : null}</button>
         <button class=${tab === 'app' ? 'on' : ''} onClick=${() => go('app')}>App</button>
-        ${role === 'owner' ? html`<button class=${tab === 'audit' ? 'on' : ''} onClick=${() => go('audit')}>Protokoll</button>` : null}
+        <button class=${tab === 'gate' ? 'on' : ''} onClick=${() => go('gate')}>Gate</button>
+        ${role === 'owner' ? html`<button class=${tab === 'audit' ? 'on' : ''} onClick=${() => go('audit')}>Protokoll</button>
+        <button class=${tab === 'team' ? 'on' : ''} onClick=${() => go('team')}>Team</button>` : null}
       </div>
       <span class="spacer"></span>
       <span class="who">${state.admin.email}</span>
       <button class=${`btn small ghost bell ${tab === 'notify' ? 'on' : ''}`} title="Einstellungen: Mitteilungen und Face ID" aria-label="Einstellungen" onClick=${() => go('notify')}>⚙︎</button>
       <button class="btn small ghost" onClick=${logout}>Abmelden</button>
     </div>
+    ${acked ? html`<div class="flash">Tageszahlen quittiert (${acked.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}). Danke, das zählt als Lebenszeichen.</div>` : null}
     ${body}
   </div>`;
 }

@@ -3,7 +3,7 @@ const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const helmet = require("helmet");
-const { rateLimit } = require("express-rate-limit");
+const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
 const { Server } = require("socket.io");
 const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
@@ -13,6 +13,7 @@ const Call = require("./models/Call");
 const Room = require("./models/Room");
 const Circle = require("./models/Circle");
 const { authenticate, actingPhone } = require("./lib/auth");
+const { deviceOf, rememberDevice } = require("./lib/devices");
 const { agoraCredentials, buildRtcToken } = require("./lib/agora");
 const { Expo, voipProviders } = require("./lib/push");
 const { registerSocketHandlers } = require("./socket");
@@ -20,6 +21,8 @@ const { createCallService, historyEntry, MISSED } = require("./lib/calls");
 const { setForegroundLookup } = require("./lib/notify");
 const { isValidTimezone } = require("./lib/localTime");
 const { normalizePhone, regionOf } = require("./lib/phone");
+const opsCounters = require("./lib/opsCounters");
+const { momentLimitError, HARD } = require("./lib/plan");
 
 /**
  * Browsers may call the API only from wannayap.app, its Netlify previews and
@@ -49,7 +52,6 @@ function createApp({ ringTimeoutMs } = {}) {
   app.use(helmet());
   // The native app sends no Origin; browsers only from our website
   app.use(cors({ origin: corsOrigin }));
-  app.use(express.json({ limit: "2mb" }));
   app.use(
     rateLimit({
       windowMs: 60 * 1000,
@@ -59,6 +61,10 @@ function createApp({ ringTimeoutMs } = {}) {
       legacyHeaders: false,
     }),
   );
+  // Webhooks signed over the raw body (Sentry): before the JSON parser, which
+  // would consume it; outside the app's token check
+  app.use(require("./routes/webhooks")());
+  app.use(express.json({ limit: "2mb" }));
 
   // Public routes
   app.use("/verify", require("./routes/verify"));
@@ -74,7 +80,8 @@ function createApp({ ringTimeoutMs } = {}) {
         authRequired: process.env.AUTH_REQUIRED === "true",
         // Only whether the certificate comes from the environment, never the value
         agoraCertificateFromEnv: !agoraCredentials().usingLegacyCertificate,
-        // App Store review demo login: on, off, invalid_phone or invalid_code
+        // App Store review demo login: on, off, invalid_phone, invalid_code,
+        // invalid_until or expired (REVIEW_UNTIL has passed)
         reviewLogin: require("./routes/verify").reviewLoginStatus(),
         // Which commit is deployed (set by Render)
         version: (process.env.RENDER_GIT_COMMIT || "dev").slice(0, 7),
@@ -83,6 +90,13 @@ function createApp({ ringTimeoutMs } = {}) {
     } catch (error) {
       res.status(500).json({ success: false });
     }
+  });
+
+  // Liveness for Render and the uptime monitor: 200 or 503, never a write
+  app.get("/healthz", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const status = await require("./lib/health").healthStatus();
+    res.status(status.ok ? 200 : 503).json(status);
   });
 
   // Min version, banner and feature flags: read before sign-in, too
@@ -97,9 +111,19 @@ function createApp({ ringTimeoutMs } = {}) {
 
   // Store purchases (RevenueCat), authenticated with its own secret
   app.use(require("./routes/plus").webhook(io));
+  // Backup ping (own key) and the alert history for the console
+  app.use(require("./routes/ops"));
 
   // Admin console: its own sign-in (cookie + TOTP), static files at /console
   app.use(require("./routes/admin")(io));
+  // CSV exports for owners (metrics, plus, marketing-spend, support)
+  app.use(require("./routes/adminExport")());
+  // Campaigns with their numbers per slug, link generator and QR (plan 2.10)
+  app.use(require("./routes/adminCampaigns")());
+  // The weekly report and its Monday review (plan 2.11)
+  app.use(require("./routes/adminWeekly")());
+  // The launch gate checklist (plan 2.7)
+  app.use(require("./routes/adminLaunch")());
   const marketingRoutes = require("./routes/marketing");
   app.use(marketingRoutes.adminRoutes());
   // The daily marketing agent (GitHub Action), with its own key
@@ -118,6 +142,10 @@ function createApp({ ringTimeoutMs } = {}) {
   // Waitlist on the landing page: no account
   const waitlistRoutes = require("./routes/waitlist");
   app.use(waitlistRoutes.publicRoutes());
+  // The invite link's visit counter: opened in the browser, no account
+  app.use(require("./routes/invites").publicRoutes());
+  // Reports from people without an account (wannayap.app/melden, plan 2.7)
+  app.use(require("./routes/support").publicRoutes());
 
   // Everything below knows the requesting user (req.auth) or is legacy.
   // Exception: the invite link preview (/circles/code/:code) is public.
@@ -176,6 +204,7 @@ function createApp({ ringTimeoutMs } = {}) {
       });
 
       await User.updateOne({ phone }, { avatarUrl: result.secure_url });
+      opsCounters.count("cloudinaryUploads").catch((err) => console.error("❌ opsCounters:", err.message));
       res.json({ success: true, avatarUrl: result.secure_url });
     } catch (error) {
       console.error("Avatar upload error:", error.message);
@@ -183,8 +212,21 @@ function createApp({ ringTimeoutMs } = {}) {
     }
   });
 
+  // A brake on moment uploads per person (Cloudinary costs). The plan limit
+  // momentsPerDay counts posted moments, so uploads that never become one
+  // would go unbraked; nobody needs more uploads in a day than the hard cap
+  // of moments. In memory per instance (Render runs one), 24 hours rolling.
+  const momentUploads = rateLimit({
+    windowMs: 24 * 60 * 60 * 1000,
+    limit: HARD.momentsPerDay,
+    keyGenerator: (req) => req.auth?.phone || ipKeyGenerator(req.ip),
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    message: { success: false, error: "upload_limit", message: "Für den Moment hast du genug Bilder hochgeladen. Später geht es weiter." },
+  });
+
   // A moment's picture: stored on Cloudinary, the moment keeps only the URL
-  app.post("/upload/moment", upload.single("image"), async (req, res) => {
+  app.post("/upload/moment", momentUploads, upload.single("image"), async (req, res) => {
     if (!req.auth) {
       return res.status(401).json({ success: false, error: "Authentication required" });
     }
@@ -192,6 +234,9 @@ function createApp({ ringTimeoutMs } = {}) {
       return res.status(400).json({ success: false, error: "Image required" });
     }
     try {
+      // Plan limit momentsPerDay (lib/plan.js): checked before Cloudinary is paid for
+      const limited = await momentLimitError(req.auth.phone);
+      if (limited) return res.status(403).json(limited);
       const result = await new Promise((resolve, reject) => {
         cloudinary.uploader
           .upload_stream(
@@ -205,6 +250,7 @@ function createApp({ ringTimeoutMs } = {}) {
           )
           .end(req.file.buffer);
       });
+      opsCounters.count("cloudinaryUploads").catch((err) => console.error("❌ opsCounters:", err.message));
       res.json({ success: true, url: result.secure_url });
     } catch (error) {
       console.error("Moment upload error:", error.message);
@@ -213,7 +259,21 @@ function createApp({ ringTimeoutMs } = {}) {
   });
 
   // Agora token. Authenticated users only get tokens for their own account
-  // and for channels of calls they take part in.
+  // and for channels of calls they take part in. Day counters rtcTokenIssued
+  // and rtcTokenFailed feed the alert agora_tokens (lib/alerts.js, plan 2.15)
+  const countToken = (name) => opsCounters.count(name).catch((err) => console.error("❌ opsCounters:", err.message));
+  const sendToken = (res, channelName, uid, role) => {
+    let token;
+    try {
+      token = buildRtcToken(channelName, uid, role);
+    } catch (err) {
+      console.error("❌ Fehler beim Erstellen des Tokens:", err.message);
+      countToken("rtcTokenFailed");
+      return res.status(500).json({ error: "Token-Generierung fehlgeschlagen" });
+    }
+    countToken("rtcTokenIssued");
+    return res.json({ token });
+  };
   app.post("/rtcToken", async (req, res) => {
     const { channelName, uid, role } = req.body || {};
     if (typeof channelName !== "string" || !channelName || uid === undefined) {
@@ -232,7 +292,7 @@ function createApp({ ringTimeoutMs } = {}) {
         if (!circle || !circle.members.some((m) => m.phone === req.auth.phone)) {
           return res.status(403).json({ error: "Not a member of this circle" });
         }
-        return res.json({ token: buildRtcToken(channelName, uid, role) });
+        return sendToken(res, channelName, uid, role);
       }
       const call = await Call.findOne({
         channel: channelName,
@@ -252,12 +312,7 @@ function createApp({ ringTimeoutMs } = {}) {
       await calls.acceptCall({ callee: ringing.callee, caller: ringing.caller, channel: channelName });
     }
 
-    try {
-      res.json({ token: buildRtcToken(channelName, uid, role) });
-    } catch (err) {
-      console.error("❌ Fehler beim Erstellen des Tokens:", err.message);
-      res.status(500).json({ error: "Token-Generierung fehlgeschlagen" });
-    }
+    sendToken(res, channelName, uid, role);
   });
 
   app.post("/user/push-token", async (req, res) => {
@@ -268,6 +323,10 @@ function createApp({ ringTimeoutMs } = {}) {
       return res.status(400).json({ success: false, message: "Invalid Expo push token" });
     }
     const zone = isValidTimezone(timezone) ? { timezone } : {};
+    // Plan 2.9: the device from X-Device-Id names the token's device, so the
+    // new_device push (routes/verify.js) knows whether the token is on
+    // another one; older apps keep their body deviceId
+    const device = deviceOf(req.headers);
 
     try {
       // One device = one user: remove this token from anyone else
@@ -276,7 +335,7 @@ function createApp({ ringTimeoutMs } = {}) {
         { phone },
         {
           pushToken: token,
-          pushTokenMetadata: { deviceId, platform, registeredAt: new Date(), lastValidated: new Date() },
+          pushTokenMetadata: { deviceId: device?.id || deviceId, platform, registeredAt: new Date(), lastValidated: new Date() },
           lastOnline: new Date(),
           ...zone,
         },
@@ -285,6 +344,9 @@ function createApp({ ringTimeoutMs } = {}) {
       if (!user) {
         return res.status(404).json({ success: false, message: "User not found" });
       }
+      // Milestone: the first time this person allowed pushes; never overwritten
+      await User.updateOne({ phone, "milestones.pushGrantedAt": null }, { $set: { "milestones.pushGrantedAt": new Date() } });
+      if (device) await rememberDevice(phone, device).catch((err) => console.error("❌ rememberDevice:", err.message));
       res.json({ success: true });
     } catch (error) {
       console.error("❌ Error registering push token:", error.message);
@@ -404,6 +466,8 @@ function createApp({ ringTimeoutMs } = {}) {
   });
 
   registerSocketHandlers(io, calls);
+  // The outage banner from alerts reaches open apps right away (plan 2.15)
+  require("./lib/statusBanner").setIo(io);
   setForegroundLookup(async (phones) => {
     const states = new Map();
     if (!phones.length) return states;
@@ -418,6 +482,9 @@ function createApp({ ringTimeoutMs } = {}) {
   });
 
 
+  // Sentry reports 5xx errors before the handler below answers, when
+  // SENTRY_DSN is set (lib/sentry.js); after all routes, as Sentry requires
+  require("./lib/sentry").setupExpressErrorHandler(app);
   // Unknown routes and unexpected errors: JSON, never a stack trace
   app.use((req, res) => res.status(404).json({ success: false, error: "not_found" }));
   // eslint-disable-next-line no-unused-vars

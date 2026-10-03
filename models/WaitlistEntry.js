@@ -14,6 +14,9 @@ const waitlistEntrySchema = new mongoose.Schema({
   // Where they came from (utm_source / utm_campaign of the landing page)
   source: { type: String, default: null },
   campaign: { type: String, default: null },
+  // Which phone they have, from the form or the browser's user agent (an
+  // Android visitor of an invite link joins here instead of the store)
+  platform: { type: String, enum: ["ios", "android"], default: null },
   // Proof of consent (double opt-in): when, from where, which wording
   consent: {
     at: { type: Date, default: null },
@@ -25,7 +28,9 @@ const waitlistEntrySchema = new mongoose.Schema({
   confirmedAt: { type: Date, default: null },
   confirmMailAt: { type: Date, default: null },
   launchMailAt: { type: Date, default: null },
-  // Redeemed in the app: by whom (phone hash), when, what it gave
+  // Redeemed in the app: by whom (User.hashPhone of the number; "deleted"
+  // once that account is gone, lib/account.js, so the code stays used
+  // without naming anyone), when
   claimedBy: { type: String, default: null },
   claimedAt: { type: Date, default: null },
 });

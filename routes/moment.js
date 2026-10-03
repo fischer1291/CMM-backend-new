@@ -9,7 +9,7 @@ const mongoose = require("mongoose");
 const { talkedWith, deleteMoment, VISIBLE_MS, DAY_MS } = require("../lib/moments");
 const { broadcastStatus } = require("./status");
 const { unlockState } = require("../lib/unlock");
-const { planOfPhone } = require("../lib/plan");
+const { planOfPhone, momentLimitError } = require("../lib/plan");
 
 // Session lengths the app offers; 15 minutes for older app versions
 const SESSION_MINUTES = [15, 30, 60, 120];
@@ -143,6 +143,10 @@ module.exports = (io) => {
     }
 
     try {
+      // Plan limit momentsPerDay, here too: when /upload/moment refuses, the
+      // app falls back to an inline picture, which must not get around it
+      const limited = await momentLimitError(userPhone);
+      if (limited) return res.status(403).json(limited);
       const callMoment = await CallMoment.create({
         userPhone,
         userName: str(userName, 50) || userPhone,

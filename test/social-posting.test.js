@@ -263,3 +263,155 @@ test("tokens are refreshed before they run out; a post that died midway is not r
   assert.equal(draft.publish.instagram.status, "failed");
   assert.match(draft.publish.instagram.error, /prüfen/);
 });
+
+test("post stats (plan 2.14): Instagram insights and TikTok's video query land in AdDraft.stats; one failure doesn't stop the rest", async () => {
+  fakeInstagram();
+  fakeTiktok();
+  const cookie = await ownerCookie();
+  await request(ctx.app).post("/admin/marketing/channels/instagram").set(admin(cookie)).send({ token: "IGTOKEN-long-lived-0123456789" }).expect(200);
+  const { url } = (await request(ctx.app).get("/admin/marketing/channels/tiktok/connect").set(admin(cookie)).expect(200)).body;
+  assert.deepEqual(new URL(url).searchParams.get("scope").split(","), ["user.info.basic", "video.upload", "video.publish", "video.list"]);
+  await request(ctx.app).get(`/marketing/tiktok/callback?code=good-code&state=${encodeURIComponent(new URL(url).searchParams.get("state"))}`).expect(302);
+
+  const now = new Date();
+  const ago = (days) => new Date(now.getTime() - days * 24 * 3600 * 1000);
+  const draft = (campaign, publish, posted) => AdDraft.create({ campaign, title: campaign, template: "chat", status: "posted", publish, posted });
+  const both = await draft("yap-beide", { instagram: { status: "posted", id: "media-9" }, tiktok: { status: "posted", id: "7401" } }, { instagram: ago(2), tiktok: ago(2) });
+  // Older API: "views" refused, the same metrics with "plays"
+  const older = await draft("yap-plays", { instagram: { status: "posted", id: "media-7" } }, { instagram: ago(5) });
+  const broken = await draft("yap-kaputt", { instagram: { status: "posted", id: "media-err" } }, { instagram: ago(1) });
+  // Not measured: posted by hand (no id), too old, TikTok still in the inbox (publish id)
+  const byHand = await draft("yap-hand", {}, { instagram: ago(1) });
+  const old = await draft("yap-alt", { instagram: { status: "posted", id: "media-old" } }, { instagram: ago(31) });
+  const inbox = await AdDraft.create({ campaign: "yap-inbox", title: "x", template: "chat", status: "approved", publish: { tiktok: { status: "inbox", id: "v_pub_file~v2-1.123" } } });
+
+  fake["/media-9/insights"] = (u) => ({
+    json: {
+      data: [
+        { name: "views", period: "lifetime", values: [{ value: 1200 }] },
+        { name: "reach", total_value: { value: 900 } },
+        { name: "likes", values: [{ value: 80 }] },
+        { name: "shares", values: [{ value: 12 }] },
+        { name: "saved", values: [{ value: 5 }] },
+        { name: "comments", values: [{ value: 3 }] },
+      ],
+      metricAsked: u.searchParams.get("metric"),
+    },
+  });
+  fake["/media-7/insights"] = (u) =>
+    u.searchParams.get("metric").split(",").includes("views")
+      ? { status: 400, json: { error: { message: "(#100) metric[0] must be one of the following values: plays, reach, likes, shares, saved, comments" } } }
+      : { json: { data: [{ name: "plays", values: [{ value: 444 }] }, { name: "likes", values: [{ value: 4 }] }] } };
+  fake["/media-err/insights"] = () => ({ status: 400, json: { error: { message: "Unsupported get request" } } });
+  fake["POST /v2/video/query/"] = (u, body) => ({
+    json: {
+      data: { videos: JSON.parse(body).filters.video_ids.includes("7401") ? [{ id: "7401", view_count: 5000, like_count: 300, comment_count: 20, share_count: 40 }] : [] },
+      error: { code: "ok" },
+    },
+  });
+
+  calls = [];
+  assert.deepEqual(await posting.fetchStats(now), { instagram: 2, tiktok: 1, failed: 1 });
+  const insights = calls.filter((c) => c.path.endsWith("/insights"));
+  assert.deepEqual([...new Set(insights.map((c) => c.path))].sort(), ["/media-7/insights", "/media-9/insights", "/media-err/insights"]);
+  assert.equal(new URL(`https://x${calls.find((c) => c.path === "/media-9/insights").query}`).searchParams.get("metric"), "views,reach,likes,shares,saved,comments");
+  const query = calls.find((c) => c.path === "/v2/video/query/");
+  assert.equal(new URLSearchParams(query.query).get("fields"), "id,view_count,like_count,comment_count,share_count");
+  assert.deepEqual(JSON.parse(query.body).filters.video_ids, ["7401"]);
+  assert.equal(query.headers.Authorization, "Bearer tt-access-authorization_code");
+
+  const stats = (await AdDraft.findById(both._id).lean()).stats;
+  assert.deepEqual({ ...stats.instagram, at: undefined }, { plays: 1200, reach: 900, likes: 80, shares: 12, saved: 5, comments: 3, at: undefined });
+  assert.equal(stats.instagram.at.getTime(), now.getTime());
+  assert.deepEqual({ ...stats.tiktok, at: undefined }, { views: 5000, likes: 300, comments: 20, shares: 40, at: undefined });
+  const fromPlays = (await AdDraft.findById(older._id).lean()).stats.instagram;
+  assert.equal(fromPlays.plays, 444);
+  assert.equal(fromPlays.reach, null);
+  for (const d of [broken, byHand, old, inbox]) assert.equal((await AdDraft.findById(d._id).lean()).stats?.instagram ?? null, null, d.campaign);
+  assert.equal((await AdDraft.findById(inbox._id).lean()).stats?.tiktok ?? null, null);
+
+  // The console shows them on the posted video
+  const listed = (await request(ctx.app).get("/admin/marketing/drafts?status=posted").set(admin(cookie)).expect(200)).body.drafts;
+  const shown = listed.find((d) => d.campaign === "yap-beide").stats;
+  assert.equal(shown.instagram.plays, 1200);
+  assert.equal(shown.tiktok.views, 5000);
+
+  // TikTok refuses (a connection from before video.list): logged, Instagram still measured
+  const ttQuery = fake["POST /v2/video/query/"];
+  fake["POST /v2/video/query/"] = () => ({ status: 401, json: { data: {}, error: { code: "scope_not_authorized", message: "The user did not authorize the scope required for completing this request." } } });
+  assert.deepEqual(await posting.fetchStats(new Date(now.getTime() + 6 * 3600 * 1000)), { instagram: 2, tiktok: 0, failed: 2 });
+  assert.equal((await AdDraft.findById(both._id).lean()).stats.tiktok.views, 5000, "the last numbers stay");
+  // ... and the console says why at the channel; one unreadable reel is no news
+  let channels = (await request(ctx.app).get("/admin/marketing/channels").set(admin(cookie)).expect(200)).body;
+  assert.match(channels.tiktok.lastError, /^Zahlen: .*video\.list/);
+  assert.equal(channels.instagram.lastError, null);
+
+  // Instagram token without instagram_business_manage_insights: every reel refused
+  const igFakes = { ...fake };
+  for (const m of ["/media-9/insights", "/media-7/insights"]) fake[m] = () => ({ status: 400, json: { error: { message: "(#10) Application does not have permission for this action", type: "OAuthException" } } });
+  assert.deepEqual(await posting.fetchStats(new Date(now.getTime() + 12 * 3600 * 1000)), { instagram: 0, tiktok: 0, failed: 4 });
+  channels = (await request(ctx.app).get("/admin/marketing/channels").set(admin(cookie)).expect(200)).body;
+  assert.match(channels.instagram.lastError, /instagram_business_manage_insights/);
+  // A token error is more important: the numbers never write over it
+  await MarketingChannel.updateOne({ _id: "tiktok" }, { lastError: "Token-Erneuerung: abgelaufen" });
+  await posting.fetchStats(new Date(now.getTime() + 18 * 3600 * 1000));
+  assert.equal((await MarketingChannel.findById("tiktok").lean()).lastError, "Token-Erneuerung: abgelaufen");
+  // Readable again: the stats line goes, the token error stays
+  Object.assign(fake, igFakes);
+  assert.equal((await posting.fetchStats(new Date(now.getTime() + 20 * 3600 * 1000))).instagram, 2);
+  assert.equal((await MarketingChannel.findById("instagram").lean()).lastError, null);
+  assert.equal((await MarketingChannel.findById("tiktok").lean()).lastError, "Token-Erneuerung: abgelaufen");
+  await MarketingChannel.updateOne({ _id: "tiktok" }, { lastError: "Zahlen: alt" });
+  fake["POST /v2/video/query/"] = ttQuery;
+  assert.equal((await posting.fetchStats(new Date(now.getTime() + 30 * 3600 * 1000))).tiktok, 1);
+  assert.equal((await MarketingChannel.findById("tiktok").lean()).lastError, null);
+  // Nothing connected: nothing to do
+  await request(ctx.app).delete("/admin/marketing/channels/instagram").set(admin(cookie)).expect(200);
+  await request(ctx.app).delete("/admin/marketing/channels/tiktok").set(admin(cookie)).expect(200);
+  calls = [];
+  assert.deepEqual(await posting.fetchStats(now), { instagram: 0, tiktok: 0, failed: 0 });
+  assert.equal(calls.length, 0);
+});
+
+test("post stats (plan 2.14): read at most every 6 hours, however often the job (or a restart) asks", async () => {
+  fakeInstagram();
+  const cookie = await ownerCookie();
+  await request(ctx.app).post("/admin/marketing/channels/instagram").set(admin(cookie)).send({ token: "IGTOKEN-long-lived-0123456789" }).expect(200);
+  const now = new Date();
+  await AdDraft.create({ campaign: "yap-takt", title: "x", template: "chat", status: "posted", publish: { instagram: { status: "posted", id: "media-5" } }, posted: { instagram: now } });
+  fake["/media-5/insights"] = () => ({ json: { data: [{ name: "views", values: [{ value: 10 }] }] } });
+  const reads = () => calls.filter((c) => c.path === "/media-5/insights").length;
+
+  calls = [];
+  // Two instances (Render overlaps them on a deploy) ask at once: one reads
+  const [a, b] = await Promise.all([posting.statsDue(now), posting.statsDue(now)]);
+  assert.equal([a, b].filter(Boolean).length, 1);
+  assert.equal(reads(), 1);
+  // The next checks (every 30 minutes, or right after a restart): nothing
+  assert.equal(await posting.statsDue(new Date(now.getTime() + 30 * 60000)), null);
+  assert.equal(await posting.statsDue(new Date(now.getTime() + posting.STATS_EVERY_MS - 60000)), null);
+  assert.equal(reads(), 1);
+  // 6 hours later: again
+  assert.deepEqual(await posting.statsDue(new Date(now.getTime() + posting.STATS_EVERY_MS)), { instagram: 1, tiktok: 0, failed: 0 });
+  assert.equal(reads(), 2);
+  assert.ok((await request(ctx.app).get("/admin/marketing/agent").set(admin(cookie)).expect(200)).body.lastStatsAt);
+});
+
+test("TikTok token: the token job and the stats reading share one refresh, never two with the same refresh token", async () => {
+  fakeTiktok();
+  const cookie = await ownerCookie();
+  const { url } = (await request(ctx.app).get("/admin/marketing/channels/tiktok/connect").set(admin(cookie)).expect(200)).body;
+  await request(ctx.app).get(`/marketing/tiktok/callback?code=good-code&state=${encodeURIComponent(new URL(url).searchParams.get("state"))}`).expect(302);
+  const now = new Date();
+  await AdDraft.create({ campaign: "yap-refresh", title: "x", template: "chat", status: "posted", publish: { tiktok: { status: "posted", id: "7402" } }, posted: { tiktok: now } });
+  fake["POST /v2/video/query/"] = () => ({ json: { data: { videos: [{ id: "7402", view_count: 7 }] }, error: { code: "ok" } } });
+  await MarketingChannel.updateOne({ _id: "tiktok" }, { expiresAt: new Date(now.getTime() + 60000) });
+
+  calls = [];
+  const [stats, refreshed] = await Promise.all([posting.fetchStats(now), posting.refreshTokens(now)]);
+  assert.equal(stats.tiktok, 1);
+  assert.deepEqual(refreshed, ["tiktok"]);
+  const refreshes = calls.filter((c) => c.path === "/v2/oauth/token/" && new URLSearchParams(c.body).get("grant_type") === "refresh_token");
+  assert.equal(refreshes.length, 1);
+  assert.equal(calls.find((c) => c.path === "/v2/video/query/").headers.Authorization, "Bearer tt-access-refresh_token");
+});
