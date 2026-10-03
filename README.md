@@ -287,6 +287,76 @@ The daily snapshot (`lib/metrics.js` computeDay) carries
 `waitlist.byPlatform { ios, android, unknown }` (confirmations of the day)
 and `users.byLocale` (the five most common locales of the day's sign-ups).
 
+## Yap Moment
+
+Once a day, at a random time between 10:00 and 21:00 per time zone, everyone
+in the zone gets the `daily_moment` push and has ten minutes
+(`lib/dailyMoment.js`; the leader's minute tick starts it, `DailyMoment`
+holds one document per day and zone, Europe/Berlin first).
+
+- `GET /daily` (token): `{ success, active, nextAt, nextEndsAt }`, while it
+  runs also `startedAt`, `endsAt`, `joined` (am I in) and `participants`
+  (contacts who joined and are still available). Since plan 2.13 `nextAt`
+  and `nextEndsAt` (ISO or null) are today's start and end in the caller's
+  zone (`User.timezone`, else Europe/Berlin) while the moment is still ahead,
+  for the countdown on the home screen ("Beim Yap Moment treffen"); null
+  once it runs (then `active` is true), once it is over, and on a day whose
+  moment was created after 21:00 (it never fires). The route creates the
+  day's moment with `momentFor` when the minute tick has not done it yet, so
+  the time is fixed from the first request on.
+- `POST /daily/join { mood? }` (token): available until the end plus five
+  minutes; 409 `not_active` outside the window.
+
+## Re-match
+
+Plan 2.13, `lib/rematch.js`: "Sag mir, wenn jemand aus meinem Adressbuch
+dazukommt". The invite tells the inviter when the invited person joins
+(`contact_joined`); re-match does the same for people who never sent an
+invite but have the number in their address book, and only when they asked
+for it.
+
+- `PUT /me/rematch { optIn: boolean }` (token, 401 without; anything but a
+  boolean is 400 `invalid_optIn`) answers `{ success: true, optIn }` and
+  stores `User.rematch { optIn, at }` (default off). Off deletes the stored
+  list at once. `GET /me` (own profile) returns `rematchOptIn`. The app
+  syncs the contacts right after switching it on, so the list exists.
+- `POST /contacts/match` with `hashes` (the SHA-256 variant only, never the
+  legacy `phones`): for a caller with the opt-in, the hashes that matched no
+  account (users, blocked users and the own number are left out) replace
+  the caller's `AddressBookHash` document: one per person, each entry
+  HMAC-SHA256 with the pepper of `User.hmacPhone` over the SHA-256 hex the
+  app sent (never the hash itself), deduplicated, at most 5,000,
+  `expiresAt` 90 days after the sync (TTL index). A request that looks like
+  a scan (over 2,000 hashes without a match, `matchSuspicious`) is never
+  kept: the push would tell a scanner when any of those numbers joins. A
+  sync where every entry is a user leaves no document. A failure is logged
+  and never fails the match.
+- A new user sets a name (`POST /me/update`, `lib/invites.js`
+  announceJoined, the same moment the inviters hear it): every owner whose
+  list holds the user's entry loses it by a conditional `$pull` (so two
+  parallel updates never push twice), and those that still have the opt-in,
+  are not blocked either way and are not among the user's inviters
+  (`invitedBy`, `connections`, `pendingJoinAnnouncement`: they get
+  `contact_joined` from the invite) get the socket event `contactJoined
+  { phone, name, via: "address_book" }` and the push `contact_joined` (the
+  usual type, social cap and quiet hours; the body says "Die Nummer ist in
+  deinem Adressbuch …" in place of the invite text; deep link
+  `/friend?phone=…`). A user who never sets a name tells nobody; the next
+  sync of the owners finds them as a user anyway.
+- Deletion (`lib/account.js`): the own list, and the own entry in other
+  lists. Export (`GET /me/export`): `rematch { optIn, at, storedHashes,
+  updatedAt, expiresAt }`, the number of entries, never the entries.
+  `COMPLIANCE.md` has the row `AddressBookHash` and `User.rematch`.
+- A new pepper (README "Pseudonymous data") makes the stored entries
+  unreachable; every owner's next sync replaces them, the rest expire with
+  the TTL. No migration needed.
+
+Before optimizing the conversion around the first talk, look at the limit
+hits of the free plan (`MetricsDaily.plus.limitHits`, plan 2.6a, see
+"Paywall funnel, limit hits, trials"): a full circle (`circleMembers`, 12)
+or the round time (`roomMinutes`, 60) may slow invites down more than the
+product does.
+
 ## Acquisition and campaigns
 
 Plan 2.10, `lib/acquisition.js`: first-party attribution from the sign-up
@@ -1182,7 +1252,9 @@ Two hashes of the phone number exist, for two reasons (plan 2.8,
   (`User.hmacPhone`, `PHONE_HASH_PEPPER`). Only the server knows the pepper,
   so the hash cannot be computed without it. It is the key of the analytics
   rows that outlive the request (`ActiveDay.who`, kept 400 days) and of
-  every future analytics collection; it is never sent to the app.
+  every future analytics collection; it is never sent to the app. The
+  re-match lists (`AddressBookHash.hashes`, plan 2.13) use the same pepper
+  over the SHA-256 hash the app sends (see Re-match).
 
 The pepper is set once and never changed: a new pepper gives every number a
 new `phoneHmac`. Without the variable the pepper is derived from

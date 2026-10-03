@@ -1,12 +1,13 @@
 /**
- * GET /daily: is the daily Yap Moment running, am I in, who else is?
+ * GET /daily: is the daily Yap Moment running, am I in, who else is, and
+ * (plan 2.13) when does today's start, for the countdown?
  * POST /daily/join { mood? }: I'm in: available until the moment ends.
  */
 const express = require("express");
 const { noteUnlock } = require("../lib/unlock");
 const User = require("../models/User");
 const DailyMoment = require("../models/DailyMoment");
-const { activeMomentFor } = require("../lib/dailyMoment");
+const { activeMomentFor, momentFor, zoneOf } = require("../lib/dailyMoment");
 const { broadcastStatus } = require("./status");
 
 /** Joiners stay available a little after the window, to finish the call they started */
@@ -18,11 +19,29 @@ module.exports = (io) => {
     req.auth ? next() : res.status(401).json({ success: false, error: "Authentication required" }),
   );
 
+  /**
+   * Today's moment of the user's zone while it is still ahead (plan 2.13):
+   * { nextAt, nextEndsAt }, both null once it runs or is over, and for a
+   * moment created after 21:00 (sentAt set, it never fires). momentFor
+   * creates the day's moment when the minute tick has not yet; a failure
+   * only costs the countdown.
+   */
+  async function upcoming(me, now) {
+    try {
+      const today = await momentFor(zoneOf(me), now);
+      if (!today.sentAt && today.at > now) return { nextAt: today.at, nextEndsAt: today.endsAt };
+    } catch (err) {
+      console.error("❌ daily nextAt:", err.message);
+    }
+    return { nextAt: null, nextEndsAt: null };
+  }
+
   router.get("/daily", async (req, res) => {
     const me = await User.findOne({ phone: req.auth.phone });
     if (!me) return res.status(404).json({ success: false });
-    const moment = await activeMomentFor(me);
-    if (!moment) return res.json({ success: true, active: false });
+    const now = new Date();
+    const moment = await activeMomentFor(me, now);
+    if (!moment) return res.json({ success: true, active: false, ...(await upcoming(me, now)) });
 
     // Contacts who joined and are still available
     const joined = moment.joined.filter((p) => p !== me.phone && me.contacts.includes(p));
@@ -34,6 +53,8 @@ module.exports = (io) => {
       endsAt: moment.endsAt,
       joined: moment.joined.includes(me.phone),
       participants: available.map((u) => u.phone),
+      nextAt: null,
+      nextEndsAt: null,
     });
   });
 

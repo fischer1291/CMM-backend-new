@@ -260,6 +260,15 @@ const userSchema = new mongoose.Schema({
   badgeSeen: { type: mongoose.Schema.Types.Mixed, default: null },
   showcase: { type: [String], default: [] },
 
+  // Re-match (plan 2.13, lib/rematch.js, PUT /me/rematch): "Sag mir, wenn
+  // jemand aus meinem Adressbuch dazukommt". Off unless the person switches
+  // it on; with it, contact syncs keep the unmatched hashes peppered in
+  // AddressBookHash. at: the last change of the switch
+  rematch: {
+    optIn: { type: Boolean, default: false },
+    at: { type: Date, default: null },
+  },
+
   // Inviters to tell "X ist jetzt dabei" once this new user set a name
   pendingJoinAnnouncement: { type: [String], default: [] },
 

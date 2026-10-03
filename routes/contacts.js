@@ -1,9 +1,14 @@
+/**
+ * POST /contacts/match: the address book sync, which registered users are in
+ * it, and with that the contact list that decides who may call whom.
+ */
 const express = require("express");
 const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
 const User = require("../models/User");
 const { normalizePhone, regionOf } = require("../lib/phone");
 const { blockedWith, audienceOf } = require("../lib/relations");
 const opsCounters = require("../lib/opsCounters");
+const rematch = require("../lib/rematch");
 
 const router = express.Router();
 
@@ -34,16 +39,18 @@ const perUser = rateLimit({
  * contact list, which limits who receives their status updates, whose
  * CallMoments they see and whom they may call. lastOnline is only told for
  * people who know the caller too, so the endpoint can't be used to watch
- * strangers.
+ * strangers. With the re-match opt-in (User.rematch, plan 2.13) the hashes
+ * that matched nobody are kept peppered (lib/rematch.js storeHashes).
  */
 router.post("/match", perUser, async (req, res) => {
   const { phones, hashes } = req.body || {};
   const region = regionOf(req.auth?.phone);
 
   let query;
+  let sent = null;
   if (Array.isArray(hashes)) {
-    const valid = hashes.filter((h) => typeof h === "string" && SHA256_HEX.test(h));
-    query = { phoneHash: { $in: valid.slice(0, MAX_CONTACTS) } };
+    sent = hashes.filter((h) => typeof h === "string" && SHA256_HEX.test(h)).slice(0, MAX_CONTACTS);
+    query = { phoneHash: { $in: sent } };
   } else if (Array.isArray(phones)) {
     const normalized = phones
       .slice(0, MAX_CONTACTS)
@@ -75,9 +82,26 @@ router.post("/match", perUser, async (req, res) => {
       if (others.length) milestones["milestones.firstRegisteredContactAt"] = { $ifNull: ["$milestones.firstRegisteredContactAt", now] };
       await User.updateOne({ phone: own }, [{ $set: { contacts: { $setDifference: [union, [own, ...blocked]] }, ...milestones } }]);
     }
-    if (asked > SUSPICIOUS_HASHES && others.length === 0) {
+    const suspicious = asked > SUSPICIOUS_HASHES && others.length === 0;
+    if (suspicious) {
       console.warn(`⚠️ contacts/match: ${asked} entries without a match from ${own ? `${own.slice(0, 3)}…${own.slice(-3)}` : req.ip}`);
       opsCounters.count("matchSuspicious").catch((err) => console.error("❌ opsCounters:", err.message));
+    }
+    // Re-match (plan 2.13, lib/rematch.js): with the opt-in, the hashes that
+    // matched nobody (no account, blocked accounts and the own number are
+    // users, so they are left out too) are kept peppered. Never from a
+    // request that looks like a scan: it would turn the push into an oracle
+    // for numbers that join later. A failure never fails the match.
+    if (own && sent && !suspicious) {
+      try {
+        const me = await User.findOne({ phone: own }, { rematch: 1 }).lean();
+        if (me?.rematch?.optIn) {
+          const users = new Set(matched.map((u) => u.phoneHash));
+          await rematch.storeHashes(own, sent.filter((h) => !users.has(h)));
+        }
+      } catch (err) {
+        console.error("❌ rematch.storeHashes:", err.message);
+      }
     }
 
     // Only if the user shares their availability with you

@@ -198,6 +198,8 @@ async function reset() {
   await require("../models/Campaign").syncIndexes();
   // One review per week and admin: POST /admin/weekly/ack upserts on it
   await require("../models/WeeklyReview").syncIndexes();
+  // One re-match list per owner (plan 2.13): storeHashes upserts on it
+  await require("../models/AddressBookHash").syncIndexes();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
   fakes.failExpo = false;

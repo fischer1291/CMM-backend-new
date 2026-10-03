@@ -1,8 +1,8 @@
 /**
  * The own profile and what belongs to it: GET /me, the research answer, the
  * device's permission state, profile edits, since plan 2.9 the device
- * list and "Überall abmelden", and since plan 2.10 the answer to "Woher
- * kennst du Wanna yap?".
+ * list and "Überall abmelden", since plan 2.10 the answer to "Woher
+ * kennst du Wanna yap?", and since plan 2.13 the re-match switch.
  */
 const express = require("express");
 const User = require("../models/User");
@@ -15,6 +15,7 @@ const { endSessions } = require("../lib/moderation");
 const { deviceIdOf, listDevices, forgetDevices } = require("../lib/devices");
 const opsCounters = require("../lib/opsCounters");
 const acquisition = require("../lib/acquisition");
+const rematch = require("../lib/rematch");
 
 const router = express.Router();
 
@@ -44,7 +45,8 @@ const consentOf = (user) => ({
 
 // GET /me            -> own profile (authenticated), with `inviteCode`, `research`, `consent`,
 //                       `acquisition` (the answer or null) and `joinedViaInvite` (plan 2.10: the
-//                       app preselects "Über Freund·in" and asks only once)
+//                       app preselects "Über Freund·in" and asks only once) and `rematchOptIn`
+//                       (plan 2.13, PUT /me/rematch)
 // GET /me?phone=...  -> profile of that user (name, avatar, last online)
 router.get("/", async (req, res) => {
   let phone;
@@ -77,6 +79,7 @@ router.get("/", async (req, res) => {
               consent: consentOf(user),
               acquisition: acquisition.acquisitionOf(user),
               joinedViaInvite: !!user.joinedViaInvite,
+              rematchOptIn: !!user.rematch?.optIn,
             }
           : {}),
       },
@@ -163,6 +166,29 @@ router.post("/acquisition", async (req, res) => {
   } catch (err) {
     console.error("❌ acquisition:", err.message);
     res.status(500).json({ success: false, error: "Antwort konnte nicht gespeichert werden" });
+  }
+});
+
+// PUT /me/rematch { optIn } (plan 2.13, lib/rematch.js): "Sag mir, wenn
+// jemand aus meinem Adressbuch dazukommt". On: the next contact syncs keep
+// the hashes that matched nobody, peppered (the app syncs right after
+// switching it on). Off: the stored list goes at once. Token only.
+router.put("/rematch", async (req, res) => {
+  if (!req.auth) return res.status(401).json({ success: false, error: "Authentication required" });
+  const optIn = req.body?.optIn;
+  if (typeof optIn !== "boolean") return res.status(400).json({ success: false, error: "invalid_optIn" });
+  try {
+    const user = await User.findOneAndUpdate(
+      { phone: req.auth.phone },
+      { $set: { "rematch.optIn": optIn, "rematch.at": new Date() } },
+      { new: true, projection: { rematch: 1 } },
+    );
+    if (!user) return res.status(404).json({ success: false, error: "User not found" });
+    if (!optIn) await rematch.forget(req.auth.phone);
+    res.json({ success: true, optIn: !!user.rematch?.optIn });
+  } catch (err) {
+    console.error("❌ rematch:", err.message);
+    res.status(500).json({ success: false, error: "Einstellung konnte nicht gespeichert werden" });
   }
 });
 

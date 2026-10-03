@@ -82,7 +82,12 @@ test("daily moment: joining makes you available until the end; friends see who's
   // A moment that started a minute ago
   const now = new Date();
   const { dateKey } = localParts(now, TZ);
-  await DailyMoment.create({ day: dateKey, zone: TZ, at: new Date(now - MIN), endsAt: new Date(now.getTime() + 9 * MIN), sentAt: new Date(now - MIN) });
+  // GET /daily above already created today's moment (plan 2.13, nextAt): move it
+  await DailyMoment.updateOne(
+    { day: dateKey, zone: TZ },
+    { $set: { at: new Date(now - MIN), endsAt: new Date(now.getTime() + 9 * MIN), sentAt: new Date(now - MIN) } },
+    { upsert: true },
+  );
 
   const joined = await request(ctx.app).post("/daily/join").set(auth(ben)).send({ mood: "😊" }).expect(200);
   assert.ok(new Date(joined.body.availableUntil) >= new Date(now.getTime() + 14 * MIN - 1000));
@@ -96,6 +101,58 @@ test("daily moment: joining makes you available until the end; friends see who's
   assert.equal(view.body.active, true);
   assert.equal(view.body.joined, false);
   assert.deepEqual(view.body.participants, [BEN]);
+});
+
+test("daily moment: GET /daily tells today's start ahead (nextAt), not while it runs or after", async () => {
+  const anna = await login(ANNA, "Anna");
+  const now = new Date();
+  const { dateKey } = localParts(now, TZ);
+  const place = (fields) => DailyMoment.updateOne({ day: dateKey, zone: TZ }, { $set: fields }, { upsert: true });
+  const daily = async () => (await request(ctx.app).get("/daily").set(auth(anna)).expect(200)).body;
+
+  // No moment yet today: GET /daily creates it like the minute tick would
+  assert.equal(await DailyMoment.countDocuments({ day: dateKey, zone: TZ }), 0);
+  const first = await daily();
+  const created = await DailyMoment.findOne({ day: dateKey, zone: TZ });
+  assert.ok(created, "created on demand");
+  const ahead = !created.sentAt && created.at > new Date();
+  assert.equal(first.nextAt, ahead ? created.at.toISOString() : null);
+  assert.equal(first.nextEndsAt, ahead ? created.endsAt.toISOString() : null);
+
+  // Before the start
+  const at = new Date(now.getTime() + 30 * MIN);
+  await place({ at, endsAt: new Date(at.getTime() + 10 * MIN), sentAt: null });
+  let body = await daily();
+  assert.equal(body.active, false);
+  assert.equal(body.nextAt, at.toISOString());
+  assert.equal(body.nextEndsAt, new Date(at.getTime() + 10 * MIN).toISOString());
+
+  // Due, but the tick has not started it yet: no countdown into the past
+  await place({ at: new Date(now - MIN), endsAt: new Date(now.getTime() + 9 * MIN), sentAt: null });
+  body = await daily();
+  assert.equal(body.active, false);
+  assert.equal(body.nextAt, null);
+
+  // Running
+  await place({ at: new Date(now - MIN), endsAt: new Date(now.getTime() + 9 * MIN), sentAt: new Date(now - MIN) });
+  body = await daily();
+  assert.equal(body.active, true);
+  assert.ok(body.startedAt && body.endsAt);
+  assert.equal(body.nextAt, null);
+  assert.equal(body.nextEndsAt, null);
+
+  // Over
+  await place({ at: new Date(now - 20 * MIN), endsAt: new Date(now - 10 * MIN), sentAt: new Date(now - 20 * MIN) });
+  body = await daily();
+  assert.equal(body.active, false);
+  assert.equal(body.nextAt, null);
+  assert.equal(body.nextEndsAt, null);
+
+  // Created after 21:00 (sentAt set, never fires) while `at` lies ahead
+  await place({ at: new Date(now.getTime() + 24 * HOUR), endsAt: new Date(now.getTime() + 24 * HOUR + 10 * MIN), sentAt: now });
+  body = await daily();
+  assert.equal(body.active, false);
+  assert.equal(body.nextAt, null);
 });
 
 test("moments: consent, 24 h in the feed, then memories; unanswered requests expire", async () => {
