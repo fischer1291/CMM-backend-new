@@ -1808,6 +1808,8 @@ function AdDraftCard({ draft, owner, connected, onChanged, compact, onClose }) {
       </div>
       ${idea && !compact ? html`<p style="margin:0 0 8px;color:var(--text-2)">${idea}</p>` : null}
       ${checks && !compact ? html`<p class="note warn" style="margin:0 0 8px">⚠︎ ${checks}</p>` : null}
+      ${draft.hookVariants?.length && !compact ? html`<div class="note" style="margin:0 0 8px"><span class="label" style="margin:0">Hook-Varianten</span>${draft.hookVariants.map((h) => html`<div>„${h}“</div>`)}</div>` : null}
+      ${statsParts(draft.stats).length ? html`<div class="note" style="margin:0 0 8px">${statsParts(draft.stats).map((line) => html`<div>${line}</div>`)}<span class="muted">Stand ${dateTime([draft.stats.instagram?.at, draft.stats.tiktok?.at].filter(Boolean).sort().at(-1))}</span></div>` : null}
       ${compact ? null : html`<${SoundTip} draft=${draft} />`}
       ${draft.feedback ? html`<div class="quote">${draft.status === 'rejected' ? 'Verworfen' : 'Notiz'}: ${draft.feedback}</div>` : null}
       <details class="texts">
@@ -1838,6 +1840,23 @@ function AdDraftCard({ draft, owner, connected, onChanged, compact, onClose }) {
   </div>`;
 }
 
+/**
+ * How a posted video did (plan 2.14, AdDraft.stats, read every 6 hours):
+ * views, likes and shares per platform, or null while nothing is measured.
+ */
+function statsParts(stats) {
+  if (!stats) return [];
+  return Object.entries(PLATFORM_LABELS).flatMap(([p, label]) => {
+    const s = stats[p];
+    if (!s) return [];
+    const views = p === 'instagram' ? s.plays : s.views;
+    return [`${label}: ${num(views)} Views · ${num(s.likes)} Likes · ${num(s.shares)}× geteilt`];
+  });
+}
+
+/** Views over both platforms, for the one-line list. */
+const viewsOf = (stats) => (stats ? (stats.instagram?.plays || 0) + (stats.tiktok?.views || 0) : null);
+
 /** Where a posted video went: a link per platform, or a tick when posted by hand. */
 function PlatformPills({ draft }) {
   return Object.entries(PLATFORM_LABELS).map(([p, label]) => {
@@ -1866,6 +1885,7 @@ function DraftList({ drafts, tab, owner, connected, onChanged }) {
       </span>
       ${tab === 'posted' ? html`<span class="draftrow-side">
         <span class="inline"><${PlatformPills} draft=${d} /></span>
+        ${d.stats ? html`<span class="muted">${num(viewsOf(d.stats))} Views</span>` : null}
         ${d.visits?.visits ? html`<span class="muted">${d.visits.visits} ${d.visits.visits === 1 ? 'Besuch' : 'Besuche'}${d.visits.submitted ? ` · ${d.visits.submitted} Anmeldung${d.visits.submitted === 1 ? '' : 'en'}` : ''}</span>` : null}
       </span>` : null}
     </button>`;
@@ -1884,6 +1904,29 @@ function BudgetLine({ onOpen }) {
   </button>`;
 }
 
+/**
+ * This week's bio link to copy into Instagram and TikTok, and how the
+ * agent's last run went (plan 2.14, GET /admin/marketing/agent).
+ */
+function AgentLine() {
+  const [a, setA] = useState(null);
+  useEffect(() => { api('/marketing/agent').then(setA).catch(() => {}); }, []);
+  if (!a) return null;
+  const r = a.runs || {};
+  const failedLast = r.lastFailedAt && (!r.lastOkAt || new Date(r.lastFailedAt) > new Date(r.lastOkAt));
+  return html`<div class="card" style="margin-bottom:12px;padding:10px 14px">
+    <div class="inline" style="justify-content:space-between">
+      <span>Bio-Link KW ${a.bioWeek}: <b style="overflow-wrap:anywhere">${a.bioLink}</b></span>
+      <${CopyButton} text=${a.bioLink} label="Link kopieren" />
+    </div>
+    <p class="note" style="margin:6px 0 0">Jeden Montag neu, damit der Kampagnen-Tab die Bio-Klicks je Woche zählt (Kampagne ${a.bioSlug}).
+      ${r.lastRunAt ? (failedLast
+        ? html` <span class="bad">Letzter Lauf ${dateTime(r.lastFailedAt)} abgebrochen${r.lastStep ? ` (Schritt ${r.lastStep})` : ''}.</span>${r.lastRunUrl ? html` <a href=${r.lastRunUrl} target="_blank" rel="noopener">Log ↗</a>` : null}`
+        : ` Letzter Lauf ${dateTime(r.lastOkAt)} ok${r.lastDurationSec != null ? `, ${Math.round(r.lastDurationSec / 60)} min` : ''}.`) : ' Noch kein Lauf gemeldet.'}
+      ${a.lastStatsAt ? ` Zahlen der Posts zuletzt ${dateTime(a.lastStatsAt)} gelesen (alle 6 Stunden; Probleme stehen bei den Kanälen).` : ''}</p>
+  </div>`;
+}
+
 function BudgetCard({ owner }) {
   const [data, setData] = useState(null);
   const [star, setStar] = useState(null);
@@ -1893,6 +1936,8 @@ function BudgetCard({ owner }) {
   useEffect(() => { load(); }, [load]);
   // The north star (lib/today.js): red card while activation is under goal
   useEffect(() => { api('/today').then((t) => setStar(t.activation)).catch(() => {}); }, []);
+  const [agent, setAgent] = useState(null);
+  useEffect(() => { api('/marketing/agent').then(setAgent).catch(() => {}); }, []);
   if (!data) return null;
   if (data.error) return html`<div class="card">Das Budget konnte nicht geladen werden.</div>`;
   const b = data.budget;
@@ -1923,6 +1968,7 @@ function BudgetCard({ owner }) {
     </div>` : null}
     ${error ? html`<p class="error" style="margin:8px 0 0">${error}</p>` : null}
     <p class="note" style="margin:8px 0 0">Vor jedem Aufruf (Claude, Veo, Bilder) reserviert der Agent den Betrag; was nicht mehr ins Budget passt, lässt er aus. Diese Woche: Claude ${euro(data.weekByProvider.anthropic || 0)}, Google ${euro(data.weekByProvider.google || 0)}.</p>
+    <p class="note" style="margin:8px 0 0">KI-Kosten je gepostetes Video (30 Tage): <b>${agent ? euro(agent.aiCostPerPostedVideoEur) : '–'}</b>. Kein höheres KI-Budget, bevor die Rückkopplung (Views und Aktivierung je Video) ein paar Wochen läuft.</p>
   </div>`;
 }
 
@@ -2159,6 +2205,7 @@ function Approvals({ role, onCount }) {
   return html`
     <div class="now"><div class="tabs subtabs">${Object.entries(APPROVAL_FILTERS).map(([k, label]) => html`<button class=${filter === k ? 'on' : ''} onClick=${() => setFilter(k)}>${label}${counts[k] ? html` <span class=${k === 'pending' ? 'count' : 'muted'}>${counts[k]}</span>` : null}</button>`)}</div></div>
     <${BudgetLine} onOpen=${() => setFilter('settings')} />
+    ${filter === 'posted' || filter === 'approved' ? html`<${AgentLine} />` : null}
     ${!data ? html`<p class="note">Lade …</p>`
       : data.error ? html`<div class="card">Die Entwürfe konnten nicht geladen werden.</div>`
       : filter === 'pending' && focus ? html`<${FocusReview} drafts=${drafts} owner=${owner} onChanged=${load} onList=${() => setFocusKept(false)} />`

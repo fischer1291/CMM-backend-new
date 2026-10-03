@@ -213,6 +213,23 @@ async function main() {
       .catch((err) => console.error("❌ token refresh:", err.message));
   }, 60 * 60 * 1000);
 
+  // How the posted videos do (plan 2.14): Instagram and TikTok numbers of the
+  // last 30 days every 6 hours, checked every 30 minutes against the stored
+  // last reading so deploys never reset the clock; this week's bio link
+  // campaign, checked hourly (lib/socialPosting.js statsDue,
+  // lib/marketing.js ensureBioCampaign)
+  setInterval(() => {
+    asJobLeader("post-stats", () => posting.statsDue())
+      .then((r) => r && (r.instagram || r.tiktok || r.failed) && console.log(`📈 Post-Zahlen: Instagram ${r.instagram}, TikTok ${r.tiktok}, fehlgeschlagen ${r.failed}`))
+      .catch((err) => console.error("❌ post stats:", err.message));
+  }, 30 * 60 * 1000);
+  const bioCampaign = () =>
+    asJobLeader("bio-link", () => require("./lib/marketing").ensureBioCampaign())
+      .then((r) => r?.created && console.log(`🔗 Bio-Link-Kampagne ${r.slug} angelegt`))
+      .catch((err) => console.error("❌ bio link campaign:", err.message));
+  bioCampaign();
+  setInterval(bioCampaign, 60 * 60 * 1000);
+
   // Confirmation mails that failed (mail provider down): send them now
   setInterval(() => {
     asJobLeader("waitlist-resend", () => require("./lib/waitlist").resendMissing())

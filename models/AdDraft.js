@@ -1,5 +1,11 @@
 const mongoose = require("mongoose");
 
+/** One platform's counts as a sub-document: a number per metric and when they were read. */
+function statsOf(metrics) {
+  const fields = Object.fromEntries(metrics.map((m) => [m, { type: Number, default: null }]));
+  return new mongoose.Schema({ ...fields, at: { type: Date, default: null } }, { _id: false });
+}
+
 // An ad video the marketing agent (CMM repo, marketing/agent) proposed. It
 // waits in the console (tab Freigabe) until a person approves or rejects it;
 // in stage 1 the approved video is posted by hand.
@@ -18,6 +24,9 @@ const adDraftSchema = new mongoose.Schema({
   characters: { type: [String], default: [] },
   // Hero videos form a running story: what happened in this episode
   episode: { type: String, default: null },
+  // Two alternative opening lines the agent proposes with the video (plan
+  // 2.14), each at most 120 characters: shown in the console, to try later
+  hookVariants: { type: [String], default: [] },
   // What making it cost (Claude, Veo), in euros
   costEur: { type: Number, default: null },
   template: { type: String, required: true },
@@ -86,11 +95,21 @@ const adDraftSchema = new mongoose.Schema({
       error: { type: String, default: null },
     },
   },
+  // How it did once posted (plan 2.14, lib/socialPosting.js fetchStats,
+  // every 6 hours for 30 days): the platform's own counts, null until the
+  // first measurement. Instagram's Reels "views" (formerly "plays") is kept
+  // under plays. No data about people, only totals.
+  stats: {
+    instagram: { type: statsOf(["plays", "reach", "likes", "shares", "saved", "comments"]), default: null },
+    tiktok: { type: statsOf(["views", "likes", "comments", "shares"]), default: null },
+  },
   createdAt: { type: Date, default: Date.now },
 });
 
 adDraftSchema.index({ status: 1, createdAt: -1 });
 adDraftSchema.index({ scheduledAt: 1 });
 adDraftSchema.index({ createdAt: -1 });
+adDraftSchema.index({ "posted.instagram": 1 });
+adDraftSchema.index({ "posted.tiktok": 1 });
 
 module.exports = mongoose.model("AdDraft", adDraftSchema);

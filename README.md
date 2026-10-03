@@ -452,6 +452,88 @@ whose 7 days are over (`measured`), and the last 30 days of sign-ups. The
 dashboard card "Herkunft" shows both; under 50 measured per source it says
 "zu wenig Daten" (the plan's goal: over 70 % of new people answer).
 
+## Marketing agent: performance, bio link, failed runs
+
+Plan 2.14 closes the loop between what the daily marketing agent (CMM
+repo, `marketing/agent`) posts and what it learns from.
+
+**Post numbers.** A leader job (`post-stats`, `index.js`, checked every 30
+minutes, `lib/socialPosting.js` statsDue) claims a reading at most every 6
+hours over `MarketingTally` `runs.lastStatsAt`, so deploys and restarts
+never postpone it, and reads the numbers of every video posted through the API in the last 30
+days (`lib/socialPosting.js` fetchStats) into `AdDraft.stats`: Instagram
+`GET /{media-id}/insights?metric=views,reach,likes,shares,saved,comments`
+(Instagram replaced the Reels metric `plays` with `views` in 2025; an older
+API version that refuses `views` is asked again with `plays`; stored as
+`stats.instagram.plays` either way), TikTok `POST /v2/video/query/` with
+`view_count,like_count,comment_count,share_count` (`stats.tiktok.views`
+…). Each block carries `at`, null until the first reading. Videos posted by
+hand (no platform id) and TikTok posts still in the inbox or private (only a
+publish id) stay without numbers. A failure is logged per video (TikTok per
+batch of 20) and the rest goes on; posting never waits for it. **TikTok
+needs the scope `video.list`**, which the login asks for since plan 2.14:
+a channel connected before has to be connected once more (Console →
+Freigabe → Einstellungen → Kanäle → Trennen, Mit TikTok verbinden), until
+then the TikTok numbers stay empty and the log says `scope_not_authorized`.
+**Instagram needs the permission `instagram_business_manage_insights`**:
+the token from the Meta app dashboard (CMM `marketing/AGENT.md`) has to be
+generated once more with it next to `instagram_business_basic` and
+`instagram_business_content_publish` and pasted again (Console → Freigabe →
+Einstellungen → Kanäle). When no video of a channel can be read, the
+channel's `lastError` in the console says why (`Zahlen: …`, with the
+missing permission or scope named); the next good reading clears it, and it
+never writes over a token or connection error. TikTok token refreshes run
+one at a time per process (posting, the token job and the reading share
+one), so a refresh token is never spent twice.
+
+**Back into the agent.** `GET /marketing/context` carries, next to the
+drafts (each with `hookVariants` and `stats`), `performance { top, flop }`:
+up to 10 videos each, posted in the last 30 days, ranked by `viewsPerEur`
+(`views` = Instagram plays + TikTok views over `costEur` = the
+`MarketingSpend` booked under its campaign, settled at cost, reserved at
+the estimate, or the draft's own `costEur` when none was booked; with
+fewer than 20 measured the two split the list), each with `campaign,
+title, template, kind, postedAt, views, likes, shares, costEur,
+viewsPerEur, newUsers, activatedD7` (the campaign tab's numbers for the
+slug, `lib/acquisition.js` peopleBySlug, for every slug, registered or
+not); `aiCostPerPostedVideoEur` (all `MarketingSpend` of 30 days over the
+videos posted on at least one platform in that time, null while none
+was); `bioLink`; and `runs { lastRunAt, lastOkAt, lastFailedAt, lastStep,
+lastDurationSec }`. Only videos with views and a cost are ranked.
+`POST /marketing/drafts` takes `hookVariants` (an array of strings: each
+trimmed and cut to 120 characters, empty ones dropped, the first two kept,
+because the video is already rendered when the draft arrives; only a wrong
+type, no array or an entry that is no string, is `400
+invalid_hook_variants`), shown in the console on the draft. No higher AI budget before this loop has run for
+a few weeks (the budget card says so).
+
+**Bio link per week.** A leader job (`bio-link`, hourly and at start)
+registers the campaign `bio-<year>-w<week>` (ISO week, Europe/Berlin, e.g.
+`bio-2026-w41`) once per week: channel `other`, title "Bio-Link KW 41",
+status `running` from Monday 00:00 for 7 days, `createdBy: automatisch`;
+earlier bio weeks that ran out are set to `ended`. Idempotent over the slug;
+a campaign the owner already changed is left alone. The link is
+`https://wannayap.app/k/bio-<year>-w<week>` (`SITE_URL`); the console
+shows it to copy (Freigabe → Freigegeben and Gepostet), and the owner puts
+it into the Instagram and TikTok bio on Mondays, so the campaign tab counts
+the bio per week.
+
+**Every run reports.** `POST /marketing/notify` (agent key) `{ failed?,
+step?, runUrl?, durationSec? }` at the end of every run: without `failed`
+as before (push and mail to the owners when drafts wait, `{ pending, mailed
+}`) plus `runs.lastOkAt`; with `failed: true` (the workflow's `if:
+failure()` step) `runs.lastFailedAt` and `lastStep` and the alert
+`agent_failed` (`{ alerted }`), whose text names the step and the run link
+but never an error message (the log stays in GitHub). Lenient on purpose:
+a `step` keeps only letters, digits and `._:/()-` (at most 60 characters), a
+`runUrl` counts only as https on github.com, `durationSec` only as a number
+from 0 to 86400; anything else is left out instead of refusing the report.
+Every run raises the day counter `agentRunsOk` or `agentRunsFailed`
+(MetricsDaily `ops.*`). `GET /admin/marketing/agent` (viewer) gives the
+console `{ bioLink, bioSlug, bioWeek, runs (plus lastRunUrl),
+aiCostPerPostedVideoEur, lastStatsAt }`. The rule `agent_silent` (no draft for 36 hours)
+stays: it also catches a schedule GitHub paused, where nothing reports.
+
 ## User research
 
 Once someone has two talks (`Talk` documents counted like `lib/stats.js`
@@ -795,6 +877,7 @@ here (or, with the app repo checked out next to this one, in the runbook).
 | `revenuecat` | error | today `rcUnauthorized > 0` (wrong `REVENUECAT_WEBHOOK_SECRET`) or `rcUnknownUser > 0` (`routes/plus.js`) | Compare the secret in RevenueCat and on Render; for unknown users find the purchase in RevenueCat and grant Plus by hand |
 | `purchase_failures` | warn | today's paywall failures `purchaseError + restoreError + offeringEmpty > 3` (day counters from `POST /me/plus/funnel`, `lib/paywall.js`; `purchaseCancel` is the person's choice and does not count) | Console → Plus (Paywall row: which failure); App Store Connect status (agreements, tax, banking; products "Ready to Submit"/approved), RevenueCat dashboard (offering `default` current, products attached, App Store key valid); a single build: Console → Fehler |
 | `agent_silent` | warn | the newest `AdDraft` is older than 36 hours (only once one ever existed) | GitHub → Actions → marketing-agent: re-enable the schedule (paused after 60 days without commits) or read the failed run |
+| `agent_failed` | warn | not a rule here but `POST /marketing/notify { failed: true, step, runUrl }` (`lib/marketing.js` reportRun): the workflow `marketing-agent` failed in a step (its `if: failure()` step reports it). The text names the step and the GitHub run link, never the error message | Open the run link (GitHub → Actions → marketing-agent): a provider outage (Anthropic, Google, Cloudinary) needs nothing, the next scheduled run tries again; a refused key or an exhausted spend limit: renew it in the repo secrets; a code error: fix it in the CMM repo (`marketing/agent`) |
 | `support_overdue` | warn | an open `SupportTicket` whose last message is from the user and older than 24 hours (`overdueTickets` in `lib/today.js`, the same count the morning push shows) | Console → Support: answer |
 | `social_token` | warn | a connected `MarketingChannel` whose token (TikTok: refresh token) expires within 7 days | Console → Freigabe → Kanäle: reconnect |
 | `no_talks` | error | yesterday's snapshot has `users.dau > 20` and `talks.count == 0` | Call delivery is broken: VoIP push, Agora certificate, `GET /api/push-health` |
