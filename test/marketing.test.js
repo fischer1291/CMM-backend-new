@@ -343,8 +343,9 @@ test("agent context: top and flop by views per euro with new users per slug, AI 
     { day: "2026-10-01", week: "2026-09-28", provider: "google", purpose: "video-clip", campaign: "yap-b", estimateEur: 1, status: "reserved" },
     { day: "2026-10-01", week: "2026-09-28", provider: "google", purpose: "video-clip", campaign: "yap-b", estimateEur: 7, status: "released" },
     { day: "2026-10-01", week: "2026-09-28", provider: "anthropic", purpose: "plan", estimateEur: 2, costEur: 2, status: "settled" },
-    // Paid reach (plan 2.7) is not an AI cost of the videos
+    // Paid reach (plan 2.7) is not an AI cost of the videos, neither overall nor under a campaign
     { day: "2026-10-01", week: "2026-09-28", provider: "media", purpose: "boost", estimateEur: 50, costEur: 50, status: "settled" },
+    { day: "2026-10-01", week: "2026-09-28", provider: "media", purpose: "boost", campaign: "yap-b", estimateEur: 20, costEur: 20, status: "settled" },
   ]);
   // Two sign-ups from a's link, one of them talked within 7 days
   await User.create({ phone: "+491701000001", phoneHash: User.hashPhone("+491701000001"), acquisition: { at: daysAgo(2), campaign: "yap-a" }, milestones: { firstTalkAt: daysAgo(1) } });

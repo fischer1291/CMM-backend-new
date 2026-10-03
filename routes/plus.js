@@ -156,7 +156,9 @@ async function applyEvent(event, now = new Date()) {
     await SubscriptionEvent.deleteOne({ _id: stored._id }).catch(() => {});
     throw err;
   }
-  await SubscriptionEvent.updateOne({ _id: stored._id }, { result: outcome.result, userId: outcome.users[0]?._id || null });
+  // The event's user also when it changed nothing (stale, admin grant kept, ignored): Apple's
+  // notifications of the same subscription find their account through it (plan 2.6b)
+  await SubscriptionEvent.updateOne({ _id: stored._id }, { result: outcome.result, userId: (outcome.user || outcome.users[0])?._id || null });
   // Apple's notifications of this subscription that came before us and found nobody get the user now (plan 2.6b)
   const owner = outcome.user || outcome.users[0];
   if (stored.originalTransactionId && owner) {

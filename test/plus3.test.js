@@ -281,3 +281,21 @@ test("sync: an admin grant without end and gift Plus are not overwritten by an e
   assert.equal(body.plus.source, "admin");
   assert.equal(body.plus.until, null);
 });
+
+test("events keep their user also when they change nothing: stale, admin grant kept", async () => {
+  await login(ANNA, "Anna");
+  const anna = await User.findOne({ phone: ANNA });
+  const id = String(anna._id);
+  // An admin grant without end stays: the store event is stored with its user all the same
+  await User.updateOne({ phone: ANNA }, { plus: { active: true, until: null, since: new Date(), source: "admin" } });
+  await hook(event("INITIAL_PURCHASE", id, Date.now(), { id: "evt-kept-1" })).expect(200);
+  const kept = await SubscriptionEvent.findOne({ rcEventId: "evt-kept-1" }).lean();
+  assert.equal(kept.result, "admin_grant_kept");
+  assert.equal(String(kept.userId), id, "Apple's notifications of this subscription find the account through it (plan 2.6b)");
+  // An event older than what the account already has: stale, but still Anna's
+  await User.updateOne({ phone: ANNA }, { plus: { active: true, until: new Date(Date.now() + 30 * DAY), since: new Date(), source: "store", eventAt: new Date() } });
+  await hook(event("RENEWAL", id, Date.now() - DAY, { id: "evt-stale-1" })).expect(200);
+  const stale = await SubscriptionEvent.findOne({ rcEventId: "evt-stale-1" }).lean();
+  assert.equal(stale.result, "stale");
+  assert.equal(String(stale.userId), id);
+});
