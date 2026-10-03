@@ -8,12 +8,20 @@ const appConfigSchema = new mongoose.Schema(
     minVersion: { type: String, default: null }, // e.g. "1.0.0"
     minBuild: { type: Number, default: null }, // e.g. 21
     updateUrl: { type: String, default: null }, // App Store / TestFlight link
-    // A notice at the top of the app
+    // A notice at the top of the app. source: null when set by hand in the
+    // console, "alert:<tag>" when an alert rule with userFacing switched it
+    // on (lib/statusBanner.js, plan 2.15); only such a banner is switched
+    // off again automatically. muted: the "alert:<tag>" sources the owner
+    // silenced by taking an automatic banner over or switching it off, so
+    // the rules don't bring it back during the same outage (each dropped
+    // once no rule of its text fires any more)
     banner: {
       enabled: { type: Boolean, default: false },
       text: { type: String, default: "" },
       level: { type: String, enum: ["info", "warning"], default: "info" },
       until: { type: Date, default: null },
+      source: { type: String, default: null },
+      muted: { type: [String], default: [] },
     },
     // Switch features on and off without a new build
     flags: { type: Map, of: Boolean, default: {} },

@@ -12,7 +12,7 @@ const supportTicketSchema = new mongoose.Schema({
         _id: false,
         from: { type: String, enum: ["user", "support"], required: true },
         text: { type: String, required: true },
-        by: { type: String, default: null }, // admin e-mail
+        by: { type: String, default: null }, // admin e-mail, or "auto" for the outage answer (routes/support.js)
         at: { type: Date, default: Date.now },
       },
     ],

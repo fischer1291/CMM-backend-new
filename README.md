@@ -169,7 +169,10 @@ is logged and counted (`MetricsDaily.ops.matchSuspicious`).
 
 Day counters like these live in `lib/opsCounters.js` (one `OpsTally`
 document per day, raised with `$inc`); `lib/metrics.js` copies them into the
-day's snapshot under `ops`.
+day's snapshot under `ops`. The five counters behind the outage banner
+(`RECENT`: `smsStarted`, `smsFailed`, `pushCredentialErrors`,
+`rtcTokenIssued`, `rtcTokenFailed`) are also kept per UTC hour
+(`opsh:YYYY-MM-DDTHH`, TTL two days via `expiresAt`), see Outage banner.
 
 ## Sign-up SMS: cost brakes
 
@@ -691,7 +694,7 @@ any database without that prefix.
 
 ## Alerts
 
-`lib/alerts.js` runs 16 rules every 30 minutes on the job leader, right
+`lib/alerts.js` runs 17 rules every 30 minutes on the job leader, right
 after the metrics snapshots (`index.js`). A hit goes out through
 `alert(tag, text, { level })`: at most once an hour per tag, and only once
 a day while the text is unchanged (one `AlertState` document per tag keeps
@@ -705,12 +708,17 @@ needs `TWILIO_SMS_FROM`; `GET /admin/config` shows the number only to
 owners, others get `•••`). The "Heute" card lists the last alerts
 (`GET /admin/alerts`, viewer); the morning push names the tags of the last
 12 hours. What to do in detail: `CMM/docs/RUNBOOK.md`, section "Alarme".
+Rules people notice in the app (`sms_failures`, `push_failures`,
+`push_credentials`, `agora_tokens`) also switch the outage banner on and off
+(see Outage banner). `test/docs-drift.test.js` fails when a tag has no row
+here (or, with the app repo checked out next to this one, in the runbook).
 
 | Tag | Level | Fires when | What to do |
 |---|---|---|---|
 | `sms_failures` | error | today `smsFailed / smsStarted > 20 %` with at least 5 starts (`lib/opsCounters.js`) | Twilio console: balance, Verify service status, Fraud Guard; pause SMS in the console if it is pumping |
 | `push_failures` | warn | of the pushes tried in the last 60 minutes (`PushDecision` result `sent`/`failed`) more than 10 % failed or got an error receipt, at least 20 tried | Expo status and `GET /api/push-health`; a single bad app build shows in Console → Fehler |
 | `push_credentials` | error | `pushCredentialErrors > 0` today: Apple/Expo refused our credentials (`InvalidProviderToken`, `ExpiredProviderToken`, `TopicDisallowed`, `MismatchSenderId` …; counted in `lib/push.js` and `lib/receipts.js`, not for dead device tokens) | Renew the APNs key / Expo credentials (`VOIP_KEY_*`, EAS credentials), redeploy |
+| `agora_tokens` | error | today more than 5 Agora tokens failed (`rtcTokenFailed`: no `AGORA_APP_CERTIFICATE`, or the builder threw) and more than 20 % of the tokens handed out (`rtcTokenIssued`); both day counters from `POST /rtcToken` (`app.js`). Sets the outage banner "Anrufe sind gerade gestört." | Render → Environment: `AGORA_APP_ID` and `AGORA_APP_CERTIFICATE` present and matching the Agora console project (certificate enabled, not rotated without redeploy); Agora status page; Render logs for "Fehler beim Erstellen des Tokens" |
 | `tick_late` | error | the tick's own stamp `tickAt` on the `jobs` lock is older than 3 minutes (`lib/leader.js` `asLeader` with `tick: true`; the other jobs under the lock refresh only `lastRunAt`), not during the first 5 minutes after a start (`STARTUP_GRACE_SEC` as for `/healthz`) | `/healthz` and Render logs; restart the service if the leader hangs |
 | `moment_missing` | warn | after 21:30 Berlin time today's `DailyMoment` for Europe/Berlin has no `sentAt` | Check `tickDailyMoments` errors in the logs; the tick may be stalled (see `tick_late`) |
 | `client_errors` | warn | a new `ClientError` with `fatal` (kept only from a signed-in app, the report carries the token) in the last 60 minutes, or today's reported errors are more than three times yesterday's with at least 10 (`clientErrors` day counter, `routes/diagnostics.js`) | Console → Fehler: message, stack, versions and OTA updates (`ClientError.updates`); hotfix (OTA) or raise `minBuild` |
@@ -728,6 +736,73 @@ owners, others get `•••`). The "Heute" card lists the last alerts
 | `sentry_fatal` | error | not a rule here but `POST /webhooks/sentry` (`routes/webhooks.js`): an alert rule with the action "Send a notification via Wanna yap? Alarme" fired (`event_alert`, level `fatal` or `error`; the rules decide per project: app fatal, backend fatal and error), or, only if the integration's `issue` webhooks are on, a new issue with level `fatal` in any project (`issue`, action `created`); signed with `SENTRY_WEBHOOK_SECRET`. The text names project, level, release, short issue id and the Sentry link, never the message. Like every tag at most once an hour: a second new crash within the hour shows only in Sentry | Open the link: which build/commit, how many users. App: OTA hotfix or raise `minBuild`, pause the phased release; backend: roll back on Render to the last `api/…` tag (see Releases and deploys) |
 | `owner_silent` | warn | not a rule here but the dead-man check in `lib/adminPush.js` (see Team): no owner acknowledged the morning push or signed in for 7 days; once per 7 days | Owner: open the console. Emergency contact: `CMM/docs/EMERGENCY.md` |
 | `weekly_silent` | warn | not a rule here but the dead-man check in `lib/adminPush.js` (see Weekly report): the weekly report has gone out for at least 14 days (`AppConfig.ops.weeklyReportFirstAt`) and no active owner acknowledged one (`WeeklyReview.ackAt`) in the last 14 days; only while `owner_silent` does not hold; once per 7 days, mail to the emergency contact or push to the owners | Owner: Console → Woche, enter the hours and acknowledge (support's acknowledgements do not count). Emergency contact: ask whether everything is fine, `CMM/docs/EMERGENCY.md` |
+
+## Outage banner
+
+People should learn about an outage from a calm line in the app, not from
+an error dialog (plan 2.15). Alert rules with `userFacing: { text }` in
+`lib/alerts.js` drive `AppConfig.banner` through `lib/statusBanner.js`:
+
+| Tag | Banner text |
+|---|---|
+| `sms_failures` | Die Anmeldung per SMS ist gerade gestört. Wir arbeiten dran. |
+| `push_failures`, `push_credentials` | Mitteilungen kommen gerade verzögert an. Wir arbeiten dran. |
+| `agora_tokens` | Anrufe sind gerade gestört. Wir arbeiten dran. |
+
+- **On:** every rules run in which such a rule fires sets `banner = {
+  enabled: true, text, level: "warning", until: null, source:
+  "alert:<tag>" }`, independent of the alert's own debounce, and sends the
+  socket event `appConfig` with the public config (as `PUT /admin/config`).
+  The rules run with the alerts every 30 minutes and, for the banner alone
+  (no alert), in the leader job `banner` every 5 minutes (`index.js`,
+  `runBannerRules`), so the banner follows an outage within about 5 minutes
+  of the counters showing it (plan goal: banner within 5 minutes). Open
+  apps show it at once, others on their next start; the landing page
+  wannayap.app reads the same `GET /app-config` (`banner: { text, level,
+  until }` or `null`).
+- **Recent, not all day:** `sms_failures`, `push_credentials` and
+  `agora_tokens` alert on the day's counters (Europe/Berlin). Their banner
+  additionally needs the same threshold over the last one to two hours
+  (`userFacing.acute`, hour rows of `smsStarted`, `smsFailed`,
+  `pushCredentialErrors`, `rtcTokenIssued`, `rtcTokenFailed` in
+  `lib/opsCounters.js` `countsOfRecent`: this UTC hour and the one before).
+  So a single refused push credential in the morning or a fixed Agora
+  certificate takes the banner down within two hours, while the alert text
+  still reports the whole day. `push_failures` already looks at the last
+  60 minutes.
+- **Off:** the first run in which the banner condition is false again
+  switches the banner off, only while `banner.source` is still
+  `alert:<tag>`, and sends `appConfig` again. Rules switching off are
+  applied before rules switching on, so a second outage takes the banner in
+  the same run.
+- **Hand wins:** an automatic banner only takes a banner that is off or
+  expired; one the owner set stays. Both steps are one conditional update
+  on `banner.source`. The console sends the banner only when it was edited
+  in the App tab, together with `bannerSeen` (the banner as loaded);
+  `saveConfig` refuses the save with `banner_changed` when the stored
+  banner is no longer that one (an alert switched it on or off since the tab
+  was loaded), and the console loads the current banner and keeps the other
+  inputs. So a stale tab can neither turn an ended outage text into a
+  permanent hand banner nor silently switch off a fresh automatic one. A
+  save that changes text, switch, level or end makes the banner the
+  owner's (`source: null`) and mutes the automatic one: `banner.muted`
+  gets the sources of every rule with the same text (switching off the
+  `push_credentials` banner also keeps `push_failures` from bringing the
+  same line back). A source leaves `muted` once no rule of its text fires
+  any more; switching another alert's banner on never clears it. So
+  "Banner jetzt abschalten" in the console holds for the rest of the
+  outage. Two alerts with different texts at once: the first keeps the
+  banner; when it ends, the same run hands it to the other.
+- **Support:** a ticket opened while an automatic banner is on gets an
+  immediate answer (`by: "auto"`): "Danke für deine Nachricht! Gerade gibt
+  es eine bekannte Störung: <Bannertext> Wir melden uns, sobald sie behoben
+  ist." The ticket stays open: the automatic answer is no answer from a
+  person, `support_overdue` and the morning push still count it, and the
+  console marks it "Automatisch".
+- **Postmortem:** every alert with an effect on users (these four tags)
+  gets a postmortem in `CMM/docs/incidents/`, written after
+  `CMM/docs/POSTMORTEM-TEMPLATE.md` (timeline, cause, alert yes/no, measure
+  as an issue).
 
 ## Team
 
@@ -1161,6 +1236,7 @@ days under `activeDays`.
 | `JWT_SECRET` | yes | Signs auth tokens; without it no tokens are issued |
 | `PHONE_HASH_PEPPER` | recommended | Pepper of the keyed phone pseudonyms (`User.hmacPhone`, `ActiveDay.who`), at least 32 random characters (`openssl rand -hex 32`); set once, before the first deploy of plan 2.8, and never changed, see Pseudonymous data. Without it the pepper is derived from `JWT_SECRET` and the start logs a warning |
 | `AUTH_REQUIRED` | later | `true` rejects requests without a token |
+| `ADMIN_API_KEY` | once | Key for the very first console account (`POST /admin/auth/setup` with `setupKey`, see Team); only works while no admin exists. Can be removed once the first owner is set up |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SID` | yes | SMS verification |
 | `TWILIO_SMS_FROM` | alerts | A Twilio phone number (`+49…`) or Messaging Service SID (`MG…`) for alert SMS to `AppConfig.ops.alertPhone` (`lib/twilio.js`); without it alerts go out as push and mail only |
 | `BACKUP_PING_KEY` | backup | Bearer key for `POST /ops/backup-done` (`routes/ops.js`), at least 24 characters; the same value is the GitHub secret of the backup workflow. Without it the endpoint refuses everyone |
@@ -1188,4 +1264,6 @@ days under `activeDays`.
 | `REVIEW_PHONE`, `REVIEW_CODE` | no | App Store review demo login: this number signs in with this code (6–10 digits) without SMS; remove both after the review |
 | `REVIEW_UNTIL` | with `REVIEW_PHONE` | Last day of the demo login, `YYYY-MM-DD` (Europe/Berlin); from the next midnight it is off (`reviewLogin: "expired"` in `/api/push-health`). Missing: the login stays on and the alert `review_login` reminds you |
 | `RENDER_GIT_COMMIT` | no | Set by Render: the deployed commit, shown in `/healthz`/`/api/push-health` and used as Sentry release |
+| `RENDER_INSTANCE_ID` | no | Set by Render: names the instance in the leader lease (`lib/leader.js`) and its log lines; without it the host name |
+| `NODE_ENV` | no | Not needed on Render; never set it to `test` there. `npm test` runs with `test`: rate limits, Sentry and the `Secure` flag of the console cookie are off, mail counts as configured |
 | `TEST_MONGODB_URI` | no | Tests only: `npm test` runs against this cluster (in its own `wannayap-test-<pid>` database) instead of the in-memory MongoDB; used in the restore drill, see Backup |

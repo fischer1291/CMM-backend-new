@@ -255,7 +255,21 @@ function createApp({ ringTimeoutMs } = {}) {
   });
 
   // Agora token. Authenticated users only get tokens for their own account
-  // and for channels of calls they take part in.
+  // and for channels of calls they take part in. Day counters rtcTokenIssued
+  // and rtcTokenFailed feed the alert agora_tokens (lib/alerts.js, plan 2.15)
+  const countToken = (name) => opsCounters.count(name).catch((err) => console.error("❌ opsCounters:", err.message));
+  const sendToken = (res, channelName, uid, role) => {
+    let token;
+    try {
+      token = buildRtcToken(channelName, uid, role);
+    } catch (err) {
+      console.error("❌ Fehler beim Erstellen des Tokens:", err.message);
+      countToken("rtcTokenFailed");
+      return res.status(500).json({ error: "Token-Generierung fehlgeschlagen" });
+    }
+    countToken("rtcTokenIssued");
+    return res.json({ token });
+  };
   app.post("/rtcToken", async (req, res) => {
     const { channelName, uid, role } = req.body || {};
     if (typeof channelName !== "string" || !channelName || uid === undefined) {
@@ -274,7 +288,7 @@ function createApp({ ringTimeoutMs } = {}) {
         if (!circle || !circle.members.some((m) => m.phone === req.auth.phone)) {
           return res.status(403).json({ error: "Not a member of this circle" });
         }
-        return res.json({ token: buildRtcToken(channelName, uid, role) });
+        return sendToken(res, channelName, uid, role);
       }
       const call = await Call.findOne({
         channel: channelName,
@@ -294,12 +308,7 @@ function createApp({ ringTimeoutMs } = {}) {
       await calls.acceptCall({ callee: ringing.callee, caller: ringing.caller, channel: channelName });
     }
 
-    try {
-      res.json({ token: buildRtcToken(channelName, uid, role) });
-    } catch (err) {
-      console.error("❌ Fehler beim Erstellen des Tokens:", err.message);
-      res.status(500).json({ error: "Token-Generierung fehlgeschlagen" });
-    }
+    sendToken(res, channelName, uid, role);
   });
 
   app.post("/user/push-token", async (req, res) => {
@@ -453,6 +462,8 @@ function createApp({ ringTimeoutMs } = {}) {
   });
 
   registerSocketHandlers(io, calls);
+  // The outage banner from alerts reaches open apps right away (plan 2.15)
+  require("./lib/statusBanner").setIo(io);
   setForegroundLookup(async (phones) => {
     const states = new Map();
     if (!phones.length) return states;

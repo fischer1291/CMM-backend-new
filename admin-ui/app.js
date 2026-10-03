@@ -854,7 +854,7 @@ function Tickets({ openId, onOpen, onOpenUser, onCount }) {
         <td style="width:44px"><${Avatar} name=${t.user.name} url=${t.user.avatarUrl} /></td>
         <td><strong>${t.user.name || t.user.phone}</strong></td>
         <td><span class="pill">${CATEGORIES[t.category]}</span></td>
-        <td class="preview">${t.lastFrom === 'support' ? html`<span class="muted">Du: </span>` : null}${t.preview}</td>
+        <td class="preview">${t.lastFrom === 'auto' ? html`<span class="muted">Automatisch: </span>` : t.lastFrom === 'support' ? html`<span class="muted">Du: </span>` : null}${t.preview}</td>
         <td class="muted">${t.app?.version ? `${t.app.version} (${t.app.build || '?'})` : '–'}</td>
         <td>${dateTime(t.updatedAt)}</td>
       </tr>`)}</tbody></table></div>`}`;
@@ -904,7 +904,7 @@ function Ticket({ id, onBack, onOpenUser }) {
     <div class="thread">
       ${ticket.messages.map((m) => html`<div class="msg ${m.from}">
         <div>${m.text}</div>
-        <div class="note">${m.from === 'support' ? m.by || 'Support' : ticket.user.name || 'Nutzer'} · ${dateTime(m.at)}</div>
+        <div class="note">${m.from === 'support' ? (m.by === 'auto' ? 'Automatisch (Störung)' : m.by || 'Support') : ticket.user.name || 'Nutzer'} · ${dateTime(m.at)}</div>
       </div>`)}
     </div>
     <div class="card reply">
@@ -957,6 +957,9 @@ function AppSettings({ role }) {
         minBuild: c.minBuild ? String(c.minBuild) : '',
         updateUrl: c.updateUrl || '',
         banner: { enabled: !!c.banner?.enabled, text: c.banner?.text || '', level: c.banner?.level || 'info', until: c.banner?.until ? c.banner.until.slice(0, 16) : '' },
+        // Plan 2.15: alerts switch the banner on and off on their own, so it
+        // is only sent when edited here, with the state it was loaded in
+        bannerLoaded: { enabled: !!c.banner?.enabled, text: c.banner?.text || '', level: c.banner?.level || 'info', until: c.banner?.until ? c.banner.until.slice(0, 16) : '' },
         flags: { ...(c.flags || {}) },
         ops: { smsPerDay: String(c.ops?.smsPerDay ?? 100), smsPaused: !!c.ops?.smsPaused, smsRegions: (c.ops?.smsRegions || ['DE', 'AT', 'CH']).join(', '), alertPhone: c.ops?.alertPhone || '', emergencyContact: c.ops?.emergencyContact || '' },
         goals: { activationPct: String(c.goals?.activationPct ?? 40), densityPct: String(c.goals?.densityPct ?? 50), giftDaysPerWeek: String(c.goals?.giftDaysPerWeek ?? 200), seedSignupsPerWeek: String(c.goals?.seedSignupsPerWeek ?? 30) },
@@ -976,6 +979,29 @@ function AppSettings({ role }) {
   const owner = role === 'owner';
   const set = (patch) => setForm({ ...form, ...patch });
   const setFixed = (i, patch) => set({ fixedCosts: form.fixedCosts.map((f, j) => (j === i ? { ...f, ...patch } : f)) });
+  const bannerEdited = ['enabled', 'text', 'level', 'until'].some((k) => form.banner[k] !== form.bannerLoaded[k]);
+  // The banner as edited, plus the stored one it was loaded from: the server
+  // refuses the save (banner_changed) when an alert changed it meanwhile
+  const bannerBody = (b) => {
+    const seen = data.config.banner || {};
+    return {
+      banner: { ...b, until: b.until ? new Date(b.until).toISOString() : null },
+      bannerSeen: { enabled: !!seen.enabled, text: seen.text || '', level: seen.level || 'info', until: seen.until || null },
+    };
+  };
+  // After banner_changed: load the current banner, keep everything else typed in
+  const refreshBanner = async () => {
+    try {
+      const d = await api('/config');
+      const b = d.config.banner || {};
+      const banner = { enabled: !!b.enabled, text: b.text || '', level: b.level || 'info', until: b.until ? b.until.slice(0, 16) : '' };
+      setData({ ...data, config: { ...data.config, banner: d.config.banner } });
+      setForm({ ...form, banner, bannerLoaded: banner });
+      setFlash('Nicht gespeichert: Der Banner hat sich inzwischen geändert (ein Alarm hat ihn an- oder abgeschaltet). Der aktuelle Stand ist jetzt geladen, deine anderen Eingaben sind noch da. Prüf ihn und speichere noch einmal.');
+    } catch (err) {
+      setFlash(`Fehler: ${err.code || err.message}`);
+    }
+  };
   const save = async () => {
     setFlash(null);
     const unclear = [];
@@ -1005,7 +1031,7 @@ function AppSettings({ role }) {
           minVersion: form.minVersion.trim() || null,
           minBuild: form.minBuild.trim() ? Number(form.minBuild) : null,
           updateUrl: form.updateUrl.trim() || null,
-          banner: { ...form.banner, until: form.banner.until ? new Date(form.banner.until).toISOString() : null },
+          ...(bannerEdited ? bannerBody(form.banner) : {}),
           flags: form.flags,
           ops: { smsPerDay: Number(form.ops.smsPerDay), smsPaused: form.ops.smsPaused, smsRegions: form.ops.smsRegions.toUpperCase().split(/[\s,]+/).filter(Boolean), alertPhone: form.ops.alertPhone.trim() || null, emergencyContact: form.ops.emergencyContact.trim() || null, bankBalanceEurCents: bank },
           goals: { activationPct: Number(form.goals.activationPct), densityPct: Number(form.goals.densityPct), giftDaysPerWeek: Number(form.goals.giftDaysPerWeek), seedSignupsPerWeek: Number(form.goals.seedSignupsPerWeek) },
@@ -1018,7 +1044,23 @@ function AppSettings({ role }) {
       load();
     } catch (err) {
       const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH), Alarm-Nummer mit Ländervorwahl (+49…), Notfallkontakt als E-Mail-Adresse', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100, Geschenk-Tage und Seed-Registrierungen als ganze Zahl ab 1', invalid_marketing_notes: 'Marketing-Hinweise: höchstens 1.000 Zeichen', invalid_prices: 'Preise: Zahlen ab 0 (Freiminuten und Listenpreise ganzzahlig, Provision bis 100 %)', invalid_fixed_costs: 'Fixkosten: Name bis 60 Zeichen, Betrag in Euro (Gutschriften negativ), höchstens 50 Posten' };
+      if (err.code === 'banner_changed') return refreshBanner();
       setFlash(`Fehler: ${msg[err.code] || err.code || err.message}`);
+    }
+  };
+  // Plan 2.15: a banner an alert switched on (lib/statusBanner.js)
+  const tagOfSource = (source) => (typeof source === 'string' && source.startsWith('alert:') ? source.slice(6) : null);
+  const autoBanner = data.config.banner?.enabled ? tagOfSource(data.config.banner?.source) : null;
+  const mutedBanner = (Array.isArray(data.config.banner?.muted) ? data.config.banner.muted : []).map(tagOfSource).filter(Boolean).join(', ');
+  const switchOffBanner = async () => {
+    setFlash(null);
+    try {
+      await api('/config', { method: 'PUT', body: bannerBody({ enabled: false, text: data.config.banner?.text || '', level: data.config.banner?.level || 'info', until: '' }) });
+      setFlash('Banner abgeschaltet. Die Automatik bringt ihn für diese Störung nicht zurück.');
+      load();
+    } catch (err) {
+      if (err.code === 'banner_changed') return refreshBanner();
+      setFlash(`Fehler: ${err.code || err.message}`);
     }
   };
   const blocked = form.minBuild ? data.versions.filter((v) => v.build && Number(v.build) < Number(form.minBuild)).reduce((a, v) => a + v.users, 0) : 0;
@@ -1036,7 +1078,10 @@ function AppSettings({ role }) {
       </div>
       <div class="card">
         <div class="label">Hinweis-Banner</div>
-        <p class="note" style="margin-top:0">Erscheint oben in der App, z. B. bei Wartung oder Störungen.</p>
+        <p class="note" style="margin-top:0">Erscheint oben in der App und auf wannayap.app, z. B. bei Wartung oder Störungen.</p>
+        ${autoBanner ? html`<p class="bad" style="margin-top:0">Automatisch (Alarm ${autoBanner}): verschwindet von selbst, sobald der Alarm vorbei ist. Änderst du Text oder Schalter und speicherst, gilt er als von Hand gesetzt und bleibt, bis du ihn abschaltest.</p>
+          ${owner ? html`<button class="btn small ghost" onClick=${switchOffBanner}>Banner jetzt abschalten</button>` : null}` : null}
+        ${!autoBanner && mutedBanner ? html`<p class="note" style="margin-top:0">Automatik pausiert (Alarm ${mutedBanner}): sie springt wieder an, sobald diese Störung vorbei ist.</p>` : null}
         <label class="check"><input type="checkbox" checked=${form.banner.enabled} onChange=${(e) => set({ banner: { ...form.banner, enabled: e.target.checked } })} disabled=${!owner} /> Banner anzeigen</label>
         <label class="field"><span>Text (max. 200 Zeichen)</span><input value=${form.banner.text} maxlength="200" onInput=${(e) => set({ banner: { ...form.banner, text: e.target.value } })} disabled=${!owner} /></label>
         <div class="inline">

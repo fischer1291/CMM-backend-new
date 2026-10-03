@@ -1,10 +1,14 @@
 /**
- * "Hilfe & Feedback" in the app: open a ticket, read answers, reply.
+ * "Hilfe & Feedback" in the app: open a ticket, read answers, reply. While
+ * an automatic outage banner is on (lib/statusBanner.js, plan 2.15), a new
+ * ticket gets an immediate answer that names the outage (by "auto"); the
+ * ticket stays open and still counts as waiting for a person.
  */
 const express = require("express");
 const mongoose = require("mongoose");
 const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
 const SupportTicket = require("../models/SupportTicket");
+const { activeOutage } = require("../lib/statusBanner");
 
 const CATEGORIES = ["bug", "idea", "account", "other"];
 const MAX_TEXT = 2000;
@@ -24,6 +28,10 @@ const view = (t) => ({
   closedAt: t.status === "closed" ? t.updatedAt : null,
 });
 
+/** The automatic answer while an outage banner is on (`text`: the banner's). */
+const outageReply = (text) => `Danke für deine Nachricht! Gerade gibt es eine bekannte Störung: ${text} Wir melden uns, sobald sie behoben ist.`;
+const AUTO = "auto";
+
 const CATEGORY_LABEL = { bug: "Fehler", idea: "Idee", account: "Konto", other: "Sonstiges" };
 /** Push to the console: a new ticket or a reply from the user. */
 function tellSupport(ticket, message) {
@@ -36,7 +44,7 @@ function tellSupport(ticket, message) {
   });
 }
 
-module.exports = () => {
+const routes = () => {
   const router = express.Router();
   const requireAuth = (req, res, next) =>
     req.auth ? next() : res.status(401).json({ success: false, error: "Authentication required" });
@@ -62,11 +70,16 @@ module.exports = () => {
     const open = await SupportTicket.countDocuments({ phone: req.auth.phone, status: { $ne: "closed" } });
     if (open >= MAX_OPEN) return res.status(429).json({ success: false, error: "too_many_open" });
     const app = req.body?.app || {};
+    const outage = await activeOutage().catch(() => null);
+    const now = new Date();
+    const messages = [{ from: "user", text: message, at: now }];
+    if (outage) messages.push({ from: "support", text: outageReply(outage.text), by: AUTO, at: new Date(now.getTime() + 1) });
     const ticket = await SupportTicket.create({
       phone: req.auth.phone,
       category,
-      messages: [{ from: "user", text: message }],
+      messages,
       app: { version: clean(app.version, 20), build: clean(app.build, 10), platform: clean(app.platform, 10), os: clean(app.os, 20) },
+      unreadByUser: !!outage,
     });
     tellSupport(ticket, message);
     res.json({ success: true, ticket: view(ticket) });
@@ -94,3 +107,5 @@ module.exports = () => {
 
   return router;
 };
+
+module.exports = Object.assign(routes, { outageReply, AUTO });

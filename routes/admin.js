@@ -1024,7 +1024,8 @@ module.exports = (io) => {
       user: u ? { id: String(u._id), name: u.name || "", avatarUrl: u.avatarUrl || null, phone: maskPhone(t.phone) } : { id: null, name: "Gelöscht", phone: maskPhone(t.phone) },
       app: t.app || null,
       preview: last ? last.text.slice(0, 140) : "",
-      lastFrom: last?.from || null,
+      // "auto": the automatic outage answer (routes/support.js), no person has answered yet
+      lastFrom: last?.by === "auto" ? "auto" : last?.from || null,
       count: t.messages.length,
       messages: full ? t.messages : undefined,
       currentApp: full ? u?.app || null : undefined,

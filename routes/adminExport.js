@@ -95,8 +95,9 @@ const EXPORTS = {
         const last = msgs[msgs.length - 1];
         return [
           String(t._id), t.category, t.status, iso(t.createdAt), iso(t.updatedAt),
-          msgs.length, msgs.filter((m) => m.from === "user").length, msgs.filter((m) => m.from === "support").length,
-          last?.from, iso(last?.at), t.app?.version, t.app?.build, t.app?.platform, t.app?.os,
+          // The automatic outage answer (plan 2.15, by "auto") is no answer from a person
+          msgs.length, msgs.filter((m) => m.from === "user").length, msgs.filter((m) => m.from === "support" && m.by !== "auto").length,
+          last?.by === "auto" ? "auto" : last?.from, iso(last?.at), t.app?.version, t.app?.build, t.app?.platform, t.app?.os,
         ];
       });
     },

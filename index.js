@@ -18,7 +18,7 @@ const { checkReceipts } = require("./lib/receipts");
 const { tickDailyMoments } = require("./lib/dailyMoment");
 const { expirePendingMoments } = require("./lib/moments");
 const { runSnapshots } = require("./lib/metrics");
-const { runRules } = require("./lib/alerts");
+const { runRules, runBannerRules } = require("./lib/alerts");
 const { tickMomentsWaiting } = require("./lib/unlock");
 const { asLeader, releaseLease, INSTANCE } = require("./lib/leader");
 const { migratePrivateCircles, tickRituals, endStaleRooms } = require("./lib/circles");
@@ -177,6 +177,13 @@ async function main() {
       .catch((err) => console.error("❌ alerts:", err.message));
   snapshots();
   setInterval(snapshots, 30 * 60 * 1000);
+
+  // Outage banner (plan 2.15): the userFacing rules every 5 minutes without
+  // alerting, so the banner follows an outage within minutes, not with the
+  // 30-minute alert run (lib/alerts.js runBannerRules)
+  setInterval(() => {
+    asJobLeader("banner", runBannerRules).catch((err) => console.error("❌ outage banner:", err.message));
+  }, 5 * 60 * 1000);
 
   // Launch mail to the waitlist, once started in the console: a batch every 15 s
   const { runLaunchBatch } = require("./lib/waitlist");
