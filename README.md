@@ -35,7 +35,9 @@ npm start       # needs the environment below
 | `routes/verify.js` | SMS sign-in, the review login, "Ist das dein Konto?" for recycled numbers (`/verify/account-check`) |
 | `routes/adminCampaigns.js` | Console tab Kampagnen: campaigns, numbers per slug, QR (`/admin/campaigns`) |
 | `routes/adminWeekly.js` | Console tab Woche: the weekly report and its review with the hours of operations (`/admin/weekly`, `/admin/weekly/ack`) |
-| `routes/webhooks.js` | Webhooks signed over the raw body: `POST /webhooks/sentry` → alert `sentry_fatal` |
+| `routes/webhooks.js` | Signed webhooks: `POST /webhooks/sentry` → alert `sentry_fatal`; `POST /webhooks/apple` (App Store Server Notifications V2) |
+| `lib/appleNotifications.js` | App Store Server Notifications: JWS and certificate chain check, `SubscriptionEvent` with source apple, REFUND, CONSUMPTION_REQUEST, see Subscriptions |
+| `lib/appleRoot.js` | Apple Root CA - G3, embedded with its SHA-256 fingerprint |
 | `lib/launchChecklist.js` | The launch gate: automatic and manual ticks before paid reach, see Launch gate |
 | `routes/adminLaunch.js` | Console tab Gate (`/admin/launch-checklist`) |
 | `lib/moderation.js` | Suspend, ban, hide or delete moments; the statement of reasons, see Statement of reasons |
@@ -849,7 +851,7 @@ any database without that prefix.
 
 ## Alerts
 
-`lib/alerts.js` runs 17 rules every 30 minutes on the job leader, right
+`lib/alerts.js` runs 18 rules every 30 minutes on the job leader, right
 after the metrics snapshots (`index.js`). A hit goes out through
 `alert(tag, text, { level })`: at most once an hour per tag, and only once
 a day while the text is unchanged (one `AlertState` document per tag keeps
@@ -878,6 +880,7 @@ here (or, with the app repo checked out next to this one, in the runbook).
 | `moment_missing` | warn | after 21:30 Berlin time today's `DailyMoment` for Europe/Berlin has no `sentAt` | Check `tickDailyMoments` errors in the logs; the tick may be stalled (see `tick_late`) |
 | `client_errors` | warn | a new `ClientError` with `fatal` (kept only from a signed-in app, the report carries the token) in the last 60 minutes, or today's reported errors are more than three times yesterday's with at least 10 (`clientErrors` day counter, `routes/diagnostics.js`) | Console → Fehler: message, stack, versions and OTA updates (`ClientError.updates`); hotfix (OTA) or raise `minBuild` |
 | `revenuecat` | error | today `rcUnauthorized > 0` (wrong `REVENUECAT_WEBHOOK_SECRET`) or `rcUnknownUser > 0` (`routes/plus.js`) | Compare the secret in RevenueCat and on Render; for unknown users find the purchase in RevenueCat and grant Plus by hand |
+| `apple_notifications` | warn | today `appleUnverified > 0` (a `POST /webhooks/apple` with a JWS whose certificate chain, signature, bundle id or environment didn't check out: 401; bodies that aren't a JWS at all count as `appleMalformed` and never alert), or a verified notification of the last 24 hours still without a user 30 minutes after it came (`result` `unknown_user`: no event of its `originalTransactionId` knows a user and no usable `appAccountToken`; RevenueCat's event normally assigns it within seconds, `resolved_late`), or today `appleConsumptionFailed > 0`, `lib/appleNotifications.js` | Unverified: the logs name the reason (`Apple notification refused: <reason>`); `bundle_id`/`environment` after a change in App Store Connect: check `APPLE_BUNDLE_ID` and the URLs there (RevenueCat's URL stays in App Store Connect, ours in RevenueCat's forwarding field). Unassigned: find the transaction in the CSV export `plus` (Console → Plus, `quelle` apple) and in RevenueCat; did RevenueCat's webhook arrive at all (alert `revenuecat`)? RevenueCat stays the source of Plus, so usually nothing is lost. Consumption answer failed: the logs name Apple's status; check the `ASC_*` key, or switch the flag `apple_consumption` off |
 | `purchase_failures` | warn | today's paywall failures `purchaseError + restoreError + offeringEmpty > 3` (day counters from `POST /me/plus/funnel`, `lib/paywall.js`; `purchaseCancel` is the person's choice and does not count) | Console → Plus (Paywall row: which failure); App Store Connect status (agreements, tax, banking; products "Ready to Submit"/approved), RevenueCat dashboard (offering `default` current, products attached, App Store key valid); a single build: Console → Fehler |
 | `agent_silent` | warn | the newest `AdDraft` is older than 36 hours (only once one ever existed) | GitHub → Actions → marketing-agent: re-enable the schedule (paused after 60 days without commits) or read the failed run |
 | `agent_failed` | warn | not a rule here but `POST /marketing/notify { failed: true, step, runUrl }` (`lib/marketing.js` reportRun): the workflow `marketing-agent` failed in a step (its `if: failure()` step reports it). The text names the step and the GitHub run link, never the error message | Open the run link (GitHub → Actions → marketing-agent): a provider outage (Anthropic, Google, Cloudinary) needs nothing, the next scheduled run tries again; a refused key or an exhausted spend limit: renew it in the repo secrets; a code error: fix it in the CMM repo (`marketing/agent`) |
@@ -1118,8 +1121,9 @@ needs `REVENUECAT_API_KEY`. The rules of that answer live in
 production events of the day (sandbox never counts): `newPaid`
 (INITIAL_PURCHASE outside a trial), `trialsStarted` (with TRIAL),
 `trialsConverted` (a RENEWAL whose user's latest earlier paid event was a
-TRIAL), `renewed`, `cancelled`, `billingIssue`, `expired`, `refunds`
-(CANCELLATION with `cancel_reason` CUSTOMER_SUPPORT), the active plans at
+TRIAL), `renewed`, `cancelled`, `billingIssue`, `expired` (RevenueCat's
+events only), `refunds` (one per refund from either source, see App Store
+Server Notifications below), the active plans at
 the end of the day by source (`activeStore`, `activeGift` = admin,
 referral, waitlist, gift; `activeSandbox`) and `mrrCents`: for every active
 store plan the price of the user's last paid event (purchase currency, else
@@ -1224,10 +1228,111 @@ minutes), booked in `AppConfig.ops.plusReconcileFor`; without
 `export_<name>`) with `metrics` (one row per `MetricsDaily` day, flat, the
 `plus.*` columns included, the gift budget as `geschenk_tage_einladung`,
 `geschenk_tage_warteliste`, `geschenk_tage_konsole`, `geschenk_zu_store`, the paywall of plan 2.6a as `paywall_aufrufe`, `kauf_gestartet`, `kauf_erfolgreich`, `kauf_abgebrochen`, `kauf_fehler`, `wiederherstellen_ok`, `wiederherstellen_fehler`, `angebot_leer`, `limit_treffer`, and where the day's sign-ups came from (plan 2.10) as `herkunft_freund`, `herkunft_tiktok`, `herkunft_instagram`, `herkunft_flyer`, `herkunft_presse`, `herkunft_sonstiges`, `herkunft_ohne_antwort`, `android_freunde_mittel`), `plus` (one row per `SubscriptionEvent`, users by
-id, no app user ids), `marketing-spend` (`MarketingSpend`) and `support`
+id, no app user ids; `quelle` revenuecat or apple, for apple
+`preis_usd_cent` holds the purchase currency), `marketing-spend` (`MarketingSpend`) and `support`
 (`SupportTicket` without phone numbers or message texts: id, category,
 status, times, message counts, app version). Same CSV dialect as
 `GET /admin/waitlist/export` (BOM, semicolon); the links sit in the Plus tab.
+
+### App Store Server Notifications (plan 2.6b)
+
+`POST /webhooks/apple` (`routes/webhooks.js`, public, before the token
+check, JSON `{ signedPayload }` up to 256 kB) takes Apple's App Store
+Server Notifications V2 as the second source next to RevenueCat.
+
+App Store Connect takes only ONE URL per environment (Production,
+Sandbox), and RevenueCat wants Apple's notifications too (refunds,
+renewals and billing trouble reach it in seconds instead of at the next
+receipt refresh). So first look at App Store Connect → App → App
+Information → App Store Server Notifications:
+
+- RevenueCat's URL is set there (the usual case): leave it, and enter
+  `https://api.wannayap.app/webhooks/apple` in RevenueCat → Project → the
+  App Store app → "Apple Server Notification Forwarding URL"; RevenueCat
+  forwards Apple's signed payload unchanged, so the check below holds.
+- No URL is set: enter ours directly, Version 2, for Production and
+  Sandbox.
+
+Never replace RevenueCat's URL with ours: that cuts the primary source of
+`User.plus` off from Apple. (The app-repo side: `CMM/docs/PLUS.md`.)
+
+Verification (`lib/appleNotifications.js` `verifyJws`, node:crypto only):
+`alg` ES256; the header's `x5c` chain leaf → intermediate → Apple Root CA -
+G3, the root embedded in `lib/appleRoot.js` with its SHA-256 fingerprint
+checked at load (a root the payload brings along is never trusted on its
+own); every certificate valid at the payload's `signedDate`; Apple's marker
+extensions on leaf (`1.2.840.113635.100.6.11.1`) and intermediate
+(`1.2.840.113635.100.6.2.1`); the signature with the leaf's P-256 key.
+Then `bundleId` must be `APPLE_BUNDLE_ID` (default
+`com.schly21.kontaktlisteapp`) and `environment` Production or Sandbox;
+`signedTransactionInfo` and `signedRenewalInfo` are verified the same
+way. Anything else: 401 and the day counter `appleUnverified`; a body
+that isn't even a JWS with a parseable certificate chain (scanners, `{}`;
+log reasons `format`, `header`, `payload`, `x5c`, `certificate`) is
+counted as `appleMalformed` instead and never alerts.
+
+Every verified notification becomes a `SubscriptionEvent` with `source`
+apple, `rcEventId` `apple:<notificationUUID>` (Apple's retries answer
+`duplicate`), `type` the notificationType with its subtype after a colon
+(`REFUND`, `DID_RENEW`, `SUBSCRIBED:INITIAL_BUY`), `originalTransactionId`,
+product, environment, price and currency of the transaction (Apple's
+milliunits as cents of the purchase currency, in `priceCents` and
+`priceInPurchasedCurrencyCents`), expiry and `eventAt` = `signedDate`.
+RevenueCat's events store `original_transaction_id` as
+`originalTransactionId` too, so the user is the one of the newest event
+of the same `originalTransactionId`; else the transaction's
+`appAccountToken`, if it is our user id padded to a UUID (`00000000-` +
+the ObjectId's 24 hex digits; the app sets none today); else `result`
+`unknown_user` and the day counter `appleUnknownUser`. Apple is often
+seconds faster than RevenueCat (`SUBSCRIBED:INITIAL_BUY`, and every
+notification of a subscription whose RevenueCat events predate the field),
+so such an event waits: when RevenueCat's event of the same
+`originalTransactionId` arrives and finds its user (even one it changes
+nothing for, `stale`), `routes/plus.js` gives the waiting Apple events that
+user (`result` `resolved_late`, `lib/appleNotifications.js` `resolveLate`).
+Only the assignment is late: a REFUND that waited is revoked by
+RevenueCat's own CANCELLATION, a CONSUMPTION_REQUEST that waited stays
+unanswered. The alert `apple_notifications` therefore counts only events
+still without a user 30 minutes after they came (last 24 hours), not the
+raw `appleUnknownUser`.
+
+What happens per type: RevenueCat stays the primary source of
+`User.plus`. `REFUND` ends a store Plus (`plus.source` store, sandbox for a
+sandbox refund) of the same product when the refunded transaction is the
+running period: `active` false, `status` expired, `until` the revocation
+date (results `refunded`, `refund_not_store`, `refund_other_product`,
+`refund_earlier_period`). The write is guarded by the `plus.eventAt` it
+was decided on: a RevenueCat event applied in between makes it decide
+again on the new state, a second conflict answers 500 and Apple retries. `CONSUMPTION_REQUEST` (someone asked Apple for a
+refund) is stored and counted (`appleConsumptionRequest`); it is answered
+(`PUT /inApps/v1/transactions/consumption/{transactionId}` with the talk
+minutes since the purchase as `playTime`, account age, `consumptionStatus`)
+only when `ASC_ISSUER_ID`, `ASC_KEY_ID` and `ASC_PRIVATE_KEY` are set AND
+the flag `apple_consumption` is on (Console → App → Feature-Flags: add
+`apple_consumption`, tick it; default off,
+because Apple requires `customerConsented: true` and the app asks nobody
+for that consent today: switch it on only after the privacy text covers
+it, `CMM/docs/PRIVACY-CHANGE.md`). The path names the `transactionId` of
+the notification's transaction, not the `originalTransactionId` (Apple's
+API wants the transaction asked about). Day counters `appleConsumptionSent`,
+`appleConsumptionFailed` (no retry; a failure raises the alert, Apple
+waits twelve hours, so it can be answered by hand). Every other type is only stored. Plus changes
+reach the app as `planChanged` over the socket.
+
+Refunds are counted once (`MetricsDaily.plus.refunds`, `lib/metrics.js`
+`refundsCounted`): RevenueCat's CANCELLATION with `cancel_reason`
+CUSTOMER_SUPPORT and Apple's REFUND report the same refund. Each counts on
+its day unless the other source's refund event of the same
+`originalTransactionId` came within the 7 days before it (at the same
+instant Apple's counts); so the first report counts and a finished day
+doesn't change when the second arrives. RevenueCat events without
+`originalTransactionId` (from before plan 2.6b) always count. Production
+only, as everything in `plus.*`.
+
+Tests: `test/apple-notifications.test.js` with a test chain shaped like
+Apple's from `test/fixtures/apple/make.sh` (openssl; test keys only),
+injected with `setRootsForTests`, which refuses to run outside
+`NODE_ENV=test`.
 
 ## Unit economics
 
@@ -1527,6 +1632,8 @@ statement when support decides on the reports (hide, delete or the queue).
 | `ADMIN_PUSH_CONTACT` | no | Contact address sent to the push services, default `hallo@wannayap.app` |
 | `REVENUECAT_WEBHOOK_SECRET` | purchases | The Authorization value RevenueCat sends to `POST /webhooks/revenuecat`; without it the webhook refuses everything |
 | `REVENUECAT_API_KEY` | no | RevenueCat secret API key (v1) for `GET /v1/subscribers/{id}`: `POST /me/plus/sync` after a purchase in the app, the nightly reconcile of every store Plus (`lib/plusReconcile.js`, see Subscriptions), and a TRANSFER whose source we don't know; also `DELETE /v1/subscribers/{id}` when an account is deleted (see Pseudonymous data). Without it sync answers 501, the reconcile never runs, such a transfer grants Plus without end date (logged) and the subscriber stays at RevenueCat |
+| `APPLE_BUNDLE_ID` | no | Bundle id App Store Server Notifications must name (`POST /webhooks/apple`, see Subscriptions), default `com.schly21.kontaktlisteapp` |
+| `ASC_ISSUER_ID`, `ASC_KEY_ID`, `ASC_PRIVATE_KEY` | no | App Store Server API key (App Store Connect → Users and Access → Integrations → In-App Purchase: issuer id, key id, the `.p8` content with `\n` for line breaks), only to answer a CONSUMPTION_REQUEST, and only with the flag `apple_consumption` on; without them requests are stored and counted, never answered |
 | `POST_SLOTS` | no | When approved ad videos go out, Europe/Berlin, default `12:00,18:00` (one video per slot) |
 | `PORT` | no | Set by Render |
 | `SENTRY_DSN` | no | DSN of the backend's Sentry project (EU region); without it nothing is sent, see Error tracking (Sentry) |

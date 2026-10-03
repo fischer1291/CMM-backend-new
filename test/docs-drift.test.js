@@ -107,7 +107,7 @@ test("alert-tags: every alert tag has a row in the README table Alerts", () => {
 // Tags whose runbook row the app repo adds in its own commit of the same
 // plan item (CMM/docs/RUNBOOK.md, plan 2.15/2.6b-docs). Tolerated only
 // while the row is missing; remove the entry once it is there.
-const RUNBOOK_PENDING = new Set(["agora_tokens", "agent_failed"]);
+const RUNBOOK_PENDING = new Set(["agora_tokens", "agent_failed", "apple_notifications"]);
 
 test("runbook: every alert tag has a row in CMM/docs/RUNBOOK.md, table Alarme", (t) => {
   if (!fs.existsSync(RUNBOOK)) {

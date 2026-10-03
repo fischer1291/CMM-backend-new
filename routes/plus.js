@@ -22,6 +22,7 @@ const revenuecat = require("../lib/revenuecat");
 const opsCounters = require("../lib/opsCounters");
 const paywall = require("../lib/paywall");
 const { PRODUCT_IDS, STORE_SOURCES, hasOpenAdminGrant, applyStoreState, previousSourceFor } = require("../lib/plusReconcile");
+const { resolveLate } = require("../lib/appleNotifications");
 
 // Webhook trouble is counted per day for the alert revenuecat (lib/alerts.js)
 const countOps = (name) => opsCounters.count(name).catch((err) => console.error("❌ opsCounters:", err.message));
@@ -59,6 +60,8 @@ async function recordEvent(event, now) {
       rcEventId,
       appUserId: event.app_user_id || null,
       type: event.type,
+      // Apple's subscription id: lets App Store Server Notifications find the user (plan 2.6b)
+      originalTransactionId: event.original_transaction_id ? String(event.original_transaction_id) : null,
       productId: event.product_id || null,
       store: event.store || null,
       environment: event.environment === "SANDBOX" ? "SANDBOX" : "PRODUCTION",
@@ -87,8 +90,8 @@ async function applyTransfer(event, now) {
   const to = await userForIds(event.transferred_to);
   if (!to) return { result: "unknown_user", users: [] };
   const eventAt = new Date(event.event_timestamp_ms || now);
-  if (to.plus?.eventAt && eventAt < to.plus.eventAt) return { result: "stale", users: [] };
-  if (hasOpenAdminGrant(to)) return { result: "admin_grant_kept", users: [] };
+  if (to.plus?.eventAt && eventAt < to.plus.eventAt) return { result: "stale", user: to, users: [] };
+  if (hasOpenAdminGrant(to)) return { result: "admin_grant_kept", user: to, users: [] };
   const from = await userForIds(event.transferred_from);
   const sandbox = event.environment === "SANDBOX";
   const users = [to];
@@ -110,31 +113,31 @@ async function applyTransfer(event, now) {
   }
   to.plus = { ...to.plus?.toObject?.(), ...moved, eventAt, active: true, since: to.plus?.since || now, source: sandbox ? "sandbox" : moved.source, previousSource: previousSourceFor(to.plus) };
   await to.save();
-  return { result: "ok", users };
+  return { result: "ok", user: to, users };
 }
 
-/** What one event does to its user: { result, users: the ones that changed }. */
+/** What one event does to its user: { result, user: the event's user (if known), users: the ones that changed }. */
 async function apply(event, now) {
   if (event.type === "TRANSFER") return applyTransfer(event, now);
   const user = await userForEvent(event);
   if (!user) return { result: "unknown_user", users: [] };
   const eventAt = new Date(event.event_timestamp_ms || now);
-  if (user.plus?.eventAt && eventAt < user.plus.eventAt) return { result: "stale", users: [] };
+  if (user.plus?.eventAt && eventAt < user.plus.eventAt) return { result: "stale", user, users: [] };
   const until = dateOf(event.expiration_at_ms);
   // A test account's purchase keeps Plus for the tester, but never counts as paying
   const source = event.environment === "SANDBOX" ? "sandbox" : "store";
   const base = { eventAt, productId: event.product_id || user.plus?.productId || null, status: revenuecat.statusFor(event.type, event.period_type) };
 
   if (ACTIVE_EVENTS.includes(event.type) || UNTIL_EXPIRY_EVENTS.includes(event.type)) {
-    if (hasOpenAdminGrant(user)) return { result: "admin_grant_kept", users: [] };
+    if (hasOpenAdminGrant(user)) return { result: "admin_grant_kept", user, users: [] };
     user.plus = { ...user.plus?.toObject?.(), ...base, active: true, until, source, previousSource: previousSourceFor(user.plus), since: user.plus?.since || now };
   } else if (event.type === "EXPIRATION") {
     if (STORE_SOURCES.includes(user.plus?.source)) user.plus = { ...user.plus.toObject(), ...base, active: false, until };
   } else {
-    return { result: "ignored", users: [] };
+    return { result: "ignored", user, users: [] };
   }
   await user.save();
-  return { result: "ok", users: [user] };
+  return { result: "ok", user, users: [user] };
 }
 
 /**
@@ -154,6 +157,11 @@ async function applyEvent(event, now = new Date()) {
     throw err;
   }
   await SubscriptionEvent.updateOne({ _id: stored._id }, { result: outcome.result, userId: outcome.users[0]?._id || null });
+  // Apple's notifications of this subscription that came before us and found nobody get the user now (plan 2.6b)
+  const owner = outcome.user || outcome.users[0];
+  if (stored.originalTransactionId && owner) {
+    await resolveLate(stored.originalTransactionId, owner._id).catch((err) => console.error("❌ Apple resolveLate:", err.message));
+  }
   return outcome;
 }
 

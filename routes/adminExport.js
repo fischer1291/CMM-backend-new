@@ -70,13 +70,15 @@ const EXPORTS = {
     },
   },
   plus: {
-    header: ["ereignis_id", "zeitpunkt", "typ", "nutzer_id", "produkt", "store", "umgebung", "periode", "preis_usd_cent", "waehrung", "preis_waehrung_cent", "anteil_pct", "kuendigungsgrund", "angebot", "gekauft_am", "laeuft_bis", "ergebnis"],
+    header: ["ereignis_id", "zeitpunkt", "typ", "nutzer_id", "produkt", "store", "umgebung", "periode", "preis_usd_cent", "waehrung", "preis_waehrung_cent", "anteil_pct", "kuendigungsgrund", "angebot", "gekauft_am", "laeuft_bis", "ergebnis", "quelle"],
     async rows() {
       const events = await SubscriptionEvent.find({}, { _id: 0, __v: 0 }).sort({ eventAt: 1, createdAt: 1 }).lean();
       return events.map((e) => [
         e.rcEventId, iso(e.eventAt), e.type, e.userId ? String(e.userId) : "", e.productId, e.store, e.environment, e.periodType,
         e.priceCents, e.currency, e.priceInPurchasedCurrencyCents, e.takehomePercent == null ? "" : Math.round(e.takehomePercent * 100),
         e.cancelReason, e.presentedOfferingId, iso(e.purchasedAt), iso(e.expirationAt), e.result,
+        // revenuecat or apple (App Store Server Notifications, plan 2.6b)
+        e.source || "revenuecat",
       ]);
     },
   },

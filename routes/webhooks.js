@@ -12,11 +12,19 @@
  * release, the short issue id and the Sentry link, never the error message:
  * it may contain user data and it reaches lock screens and inboxes.
  * README "Error tracking (Sentry)".
+ *
+ * POST /webhooks/apple (plan 2.6b): App Store Server Notifications V2,
+ * JSON { signedPayload }, signed by Apple's certificate chain instead of a
+ * shared secret, so it needs no header. lib/appleNotifications.js verifies
+ * (anything unverifiable: 401 and the day counter appleUnverified, or
+ * appleMalformed when it isn't even a JWS with a chain), stores and acts;
+ * README "App Store Server Notifications".
  */
 const crypto = require("crypto");
 const express = require("express");
 const opsCounters = require("../lib/opsCounters");
 const { alert } = require("../lib/alerts");
+const apple = require("../lib/appleNotifications");
 
 const countOps = (name) => opsCounters.count(name).catch((err) => console.error("❌ opsCounters:", err.message));
 
@@ -104,6 +112,51 @@ module.exports = () => {
     res.json({ success: true });
     if (!text) return;
     alert("sentry_fatal", text, { level: "error", title: "Neuer Absturz (Sentry)" }).catch((err) => console.error("❌ sentry alert:", err.message));
+  });
+
+  // Apple waits up to a few seconds and retries on anything but 2xx (five
+  // times over three days), so a stored-but-failed notification is
+  // removed again (lib/appleNotifications.js handleNotification) and 500
+  router.post("/webhooks/apple", express.json({ type: () => true, limit: "256kb" }), async (req, res) => {
+    const signedPayload = req.body?.signedPayload;
+    let decoded;
+    try {
+      decoded = apple.decodeNotification(signedPayload);
+    } catch (err) {
+      if (!(err instanceof apple.JwsError)) console.error("❌ Apple notification:", err.message);
+      else console.warn(`⚠️ Apple notification refused: ${err.reason}`);
+      // Not even a JWS with a certificate chain (scanners, `{}`): counted apart, no alert
+      countOps(apple.isMalformed(err) ? "appleMalformed" : "appleUnverified");
+      return res.status(401).json({ success: false, error: "unverified" });
+    }
+    const type = decoded.payload.notificationType;
+    let outcome;
+    try {
+      outcome = await apple.handleNotification(decoded);
+    } catch (err) {
+      console.error("❌ Apple notification:", err.message);
+      return res.status(500).json({ success: false });
+    }
+    if (outcome.result !== "duplicate") {
+      if (outcome.result === "unknown_user") countOps("appleUnknownUser");
+      if (type === "CONSUMPTION_REQUEST") countOps("appleConsumptionRequest");
+    }
+    const io = req.app.get("io");
+    for (const user of outcome.users) io?.to(`user:${user.phone}`).emit("planChanged", {});
+    console.log(`🍏 Apple ${type}${decoded.payload.subtype ? `:${decoded.payload.subtype}` : ""} (${decoded.environment}): ${outcome.result}`);
+    res.json({ success: true, result: outcome.result });
+    if (!outcome.consumption) return;
+    // Apple gives twelve hours for the answer: after ours to Apple's POST
+    apple
+      .answerConsumption(outcome.user, decoded)
+      .then((state) => {
+        if (state === "sent") countOps("appleConsumptionSent");
+        console.log(`🍏 Apple CONSUMPTION_REQUEST answer: ${state}`);
+      })
+      .catch((err) => {
+        countOps("appleConsumptionFailed");
+        console.error("❌ Apple consumption answer:", err.message);
+      });
   });
 
   return router;
