@@ -36,6 +36,9 @@ npm start       # needs the environment below
 | `routes/adminCampaigns.js` | Console tab Kampagnen: campaigns, numbers per slug, QR (`/admin/campaigns`) |
 | `routes/adminWeekly.js` | Console tab Woche: the weekly report and its review with the hours of operations (`/admin/weekly`, `/admin/weekly/ack`) |
 | `routes/webhooks.js` | Webhooks signed over the raw body: `POST /webhooks/sentry` → alert `sentry_fatal` |
+| `lib/launchChecklist.js` | The launch gate: automatic and manual ticks before paid reach, see Launch gate |
+| `routes/adminLaunch.js` | Console tab Gate (`/admin/launch-checklist`) |
+| `lib/moderation.js` | Suspend, ban, hide or delete moments; the statement of reasons, see Statement of reasons |
 | `COMPLIANCE.md` | Record of processing per collection, processors, the privacy change process; `test/compliance.test.js` fails when a model has no row |
 
 What is still missing on the way to a profitable, scalable company (processes,
@@ -1382,6 +1385,119 @@ logged and never stops the deletion. A waitlist code the account redeemed
 (`WaitlistEntry.claimedBy`, SHA-256) keeps `deleted` as its claimant: the
 code stays used, the hash is gone. The export (`GET /me/export`) lists the
 days under `activeDays`.
+
+## Launch gate
+
+One checklist decides whether paid reach may start (plan 2.7, Leitprinzip 2
+of `CMM/docs/SCALE-PLAN.md`): `lib/launchChecklist.js` `status()` →
+`{ complete, items: [{ key, label, kind, done, at, by, note, detail }] }`.
+Nothing else keeps a gate; the phase gate tile (plan 3.1) reads this list.
+
+| Key | Kind | Done when |
+|---|---|---|
+| `healthz` | auto | `lib/health.js` reports ok (database connected, the leader's tick fresh) |
+| `restoreDrill` | auto | `AppConfig.ops.lastRestoreDrillAt` younger than 90 days (console: App → Betrieb, after the drill in `CMM/docs/RUNBOOK.md`) |
+| `backupFresh` | auto | `AppConfig.ops.lastBackupAt` younger than 8 days (`POST /ops/backup-done`, see Backup) |
+| `twoOwners` | auto | at least two active owners with TOTP (`models/Admin.js`) |
+| `pentest` | auto | `AppConfig.ops.lastPentestAt` younger than 365 days (console: App → Betrieb) |
+| `gewerbe`, `bankAccount`, `taxAdvisor`, `branchProtection`, `insurance`, `traderStatus`, `trademark`, `ageRating`, `privacyLabel`, `dpaSigned`, `lawyerReview` | manual | an owner ticked it in the console tab Gate, with an optional note |
+
+`GET /admin/launch-checklist` (viewer) returns the status;
+`PUT /admin/launch-checklist/:key { done, note? }` (owner, manual keys only,
+audited as `launch_checklist`) stores `AppConfig.launchChecklist.<key>` =
+`{ done, at, by, note }`; an automatic key answers 400 `automatic_item`, an
+unknown one 404. The dates `ops.lastRestoreDrillAt` and `ops.lastPentestAt`
+go through `PUT /admin/config` (`saveConfig` takes a date or null, not in the
+future, not before 2024).
+
+The gate in code: `lib/marketingBudget.js` knows the provider `media` (paid
+reach) besides `anthropic` and `google`. `reserve()` refuses `media` with
+`launch_checklist_incomplete` (HTTP 403 on `POST /marketing/budget/reserve`)
+while the list is not complete; once it is, media spend uses the same daily
+and weekly caps. The AI providers are never gated. Unticking one item closes
+the gate again for every later reservation.
+
+Left out on purpose: the plan text also names an automatic tick for the
+privacy version (the app's `PRIVACY_UPDATED` matching what the backend
+expects). The backend has no source of truth for that version today (the app
+only sends it with `/verify/check`, see Authentication), so it is not part
+of this list; it is a follow-up for the phase gate tile (plan 3.1). The
+cost figure "KI-Kosten je gepostetes Video" counts the AI providers only,
+never `media`.
+
+## Reports from non-users
+
+The DSA wants a way to report content for people without an account
+(Art. 16). `POST /reports/public` (`routes/support.js` `publicRoutes()`,
+before the token check, 5 per hour and IP, honeypot field `website` like
+`/waitlist`) takes `{ category: harassment | illegal | spam | other, text
+(10–2000 characters), reportedPhone?, reporterEmail?, momentHint? (≤ 200) }`
+from the page `wannayap.app/melden` and answers `{ success: true, reference }`,
+the last 8 characters of the ticket id in capitals; anything invalid gets
+400 `invalid_report`, a filled honeypot a fake reference and nothing stored.
+The number is normalized like the app's (German without +49 works).
+
+It becomes a `SupportTicket` with `category: "report"`, `phone: null`,
+`report: { category, reportedPhone, momentHint }` and `email`, and the
+admins with the push kind `reports` hear about it. The console's support
+tab marks it "Meldung ohne Konto" with its reference; the opened ticket links
+the reported number to its account if there is one. An answer from the
+console goes by mail to `email` (`lib/mailer.js`, `mailed` in the response
+and the audit entry); without an address it stays a note. Public reports are
+kept 180 days (TTL, like in-app reports); deleting the reported account
+deletes the reports about it. The CSV export leaves out e-mail, number and
+hint.
+
+## Statement of reasons
+
+When support restricts someone, the DSA (Art. 17) wants them told what,
+why, for how long and how to object. `lib/moderation.js`
+`statementOfReasons(phone, { action, reason, until, by })` opens a
+`SupportTicket` with `category: "moderation"`, `status: "answered"`,
+`unreadByUser: true` and `moderation: { action, until }`, one message from
+support (the measure, "Grund: …", the end or that it is final, that a person
+decided, "Du kannst widersprechen: Antworte einfach hier.", and the routes
+beyond us: a certified out-of-court dispute settlement body or the courts;
+that wording waits for the gate item `lawyerReview`), emits
+`supportReply` to open apps and sends the push `support_reply` with the text
+"Wir haben dir zu einer Entscheidung über dein Konto geschrieben."
+
+It runs on a suspension (`POST /admin/users/:id/suspend`, `action:
+"suspend"`), on hiding or deleting a moment (`POST /admin/moments/:id/hide`
+and `/delete`, `hide_moment` / `delete_moment`, to the moment's author) and
+on the same decisions from the report queue (`POST
+/admin/reports/:id/resolve`, where `note` is the reason). On all of these
+the reason is required (400 `reason_required`); it is shown to the person,
+so it is written for them. The console pre-fills the queue's prompt with
+"Meldung wegen <Kategorie>" only, never with the reporter's own note (it
+could tell who reported; it stays on the report card for support). A ban
+from the queue needs no reason (the report's category goes into
+`BannedNumber.reason`).
+A suspended person cannot sign in to read the ticket. `POST /verify/start`
+therefore still sends the SMS code to a suspended (not a banned) number,
+under the same brakes as any other (kill switch, daily cap, rate limits),
+and `POST /verify/check` with a valid code answers 403 with the end date,
+the reason and the address for an objection ("Dein Konto ist bis zum …
+gesperrt (Grund: …). Du kannst widersprechen: Schreib uns an
+hallo@wannayap.app."); no token is issued while the suspension runs. The
+reason is free text that may name others, so a wrong code and
+`/verify/account-check` leave it out: knowing a number is not enough to
+read it. The reason only appears when a statement of reasons exists for
+exactly that suspension (`SupportTicket` moderation/suspend with the same
+`until`): suspensions from before plan 2.7 kept `suspendReason` as an
+internal note (possibly the reporter's words), so their 403 names the end
+date and the address, not the reason.
+The person objects by replying in the ticket (it opens again for support,
+and the console push says "Widerspruch gegen eine Entscheidung"), or by mail
+while the suspension runs; statements do not count against the five open
+tickets. A ban deletes the
+account, so there is nobody to write to in the app; the reason stays in
+`BannedNumber.reason`. Lifting a suspension writes nothing. Hiding writes
+one statement per hiding (`CallMoment.hiddenNoticeAt`): hiding a hidden
+moment again writes none (`told: false` in the answer and the audit entry),
+unhiding clears the mark, so a later hiding writes a new one. A moment
+hidden automatically after several reports (`routes/social.js`) gets its
+statement when support decides on the reports (hide, delete or the queue).
 
 ## Environment
 

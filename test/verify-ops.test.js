@@ -108,12 +108,12 @@ test("sms failures: a Twilio error answers 502 and counts smsFailed", async () =
 });
 
 test("ops config: validated on its own, defaults filled in, never sent to the app", async () => {
-  assert.deepEqual((await opsConfig()), { smsPerDay: 100, smsPaused: false, smsRegions: ["DE", "AT", "CH"], alertPhone: null, emergencyContact: null, bankBalanceEurCents: null });
+  assert.deepEqual((await opsConfig()), { smsPerDay: 100, smsPaused: false, smsRegions: ["DE", "AT", "CH"], alertPhone: null, emergencyContact: null, bankBalanceEurCents: null, lastRestoreDrillAt: null, lastPentestAt: null });
   for (const bad of [{ smsPerDay: 0 }, { smsPerDay: 1.5 }, { smsPerDay: 100001 }, { smsPaused: "yes" }, { smsRegions: [] }, { smsRegions: ["de"] }, { smsRegions: "DE" }, { smsChannel: "whatsapp" }]) {
     assert.equal((await saveConfig({ ops: bad }, "owner@test")).error, "invalid_ops", JSON.stringify(bad));
   }
   await saveConfig({ ops: { smsPerDay: 50, smsRegions: ["DE", "DE", "AT"] } }, "owner@test");
-  assert.deepEqual((await getConfig()).ops, { smsPerDay: 50, smsPaused: false, smsRegions: ["DE", "AT"], alertPhone: null, emergencyContact: null, bankBalanceEurCents: null });
+  assert.deepEqual((await getConfig()).ops, { smsPerDay: 50, smsPaused: false, smsRegions: ["DE", "AT"], alertPhone: null, emergencyContact: null, bankBalanceEurCents: null, lastRestoreDrillAt: null, lastPentestAt: null });
   assert.equal("ops" in (await publicConfig()), false);
   assert.equal("ops" in (await request(ctx.app).get("/app-config").expect(200)).body, false);
   // Other settings leave the block alone

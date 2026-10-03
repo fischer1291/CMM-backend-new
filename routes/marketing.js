@@ -52,10 +52,12 @@ function agentRoutes() {
     res.json({ success: true, budget: await budget.status() });
   });
 
-  // POST /marketing/budget/reserve { provider, purpose, estimateEur, campaign?, note? }
+  // POST /marketing/budget/reserve { provider: anthropic | google | media, purpose, estimateEur, campaign?, note? }
   router.post("/marketing/budget/reserve", agentOnly, async (req, res) => {
     const result = await budget.reserve(req.body || {});
     if (result.error === "budget_exceeded") return res.status(402).json({ success: false, error: result.error, budget: result.budget });
+    // Paid reach before the launch gate is open (plan 2.7)
+    if (result.error === "launch_checklist_incomplete") return res.status(403).json({ success: false, error: result.error });
     if (result.error) return res.status(400).json({ success: false, error: result.error });
     res.status(201).json({ success: true, ...result.reservation });
   });

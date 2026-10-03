@@ -70,8 +70,11 @@ const callMomentSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
-  // Hidden after several reports (routes/social.js)
+  // Hidden after several reports (routes/social.js) or by support
   hidden: { type: Boolean, default: false },
+  // When support's statement of reasons for hiding went to the author
+  // (lib/moderation.js hideMoment): one per hiding, cleared on unhide
+  hiddenNoticeAt: { type: Date, default: null },
   // Shared only once the other person agreed; older moments count as shared
   status: { type: String, enum: ["pending", "shared"], default: "shared" },
   sharedAt: { type: Date, default: null },

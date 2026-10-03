@@ -129,9 +129,12 @@ router.post("/start", perIp, perPhone(5), async (req, res) => {
     return res.status(400).json({ success: false, error: "Ungültige Telefonnummer" });
   }
 
-  // Banned or suspended: no SMS
-  const blocked = await signInBlock(phone);
-  if (blocked) return res.status(403).json({ success: false, error: blocked });
+  // Banned: no SMS. Suspended: the SMS goes out (under the same brakes
+  // below), because only after the code may /check name the reason of the
+  // suspension (DSA Art. 17, lib/accessGate.js); /check never signs in
+  // while the suspension runs
+  const banned = await signInBlock(phone, { banOnly: true });
+  if (banned) return res.status(403).json({ success: false, error: banned });
 
   if (reviewCodeFor(phone)) {
     return res.json({ success: true, phone });
@@ -346,8 +349,12 @@ router.post("/check", perPhone(10), async (req, res) => {
     return res.status(400).json({ success: false, error: "Nummer und Code erforderlich" });
   }
 
-  const blocked = await signInBlock(phone);
-  if (blocked) return res.status(403).json({ success: false, error: blocked });
+  // A ban ends here; a suspension is looked at after the code, so its reason
+  // goes only to whoever proved the number is theirs (lib/accessGate.js).
+  // /start sends that code to a suspended number too, so this path is the
+  // one a suspended person really takes
+  const banned = await signInBlock(phone, { banOnly: true });
+  if (banned) return res.status(403).json({ success: false, error: banned });
 
   try {
     const reviewCode = reviewCodeFor(phone);
@@ -363,6 +370,9 @@ router.post("/check", perPhone(10), async (req, res) => {
     if (!approved) {
       return res.json({ success: false, error: "Code nicht korrekt" });
     }
+
+    const blocked = await signInBlock(phone, { withReason: true });
+    if (blocked) return res.status(403).json({ success: false, error: blocked });
 
     const deviceId = deviceIdOf(req.headers);
     const question = await recycleCheck(phone, deviceId);

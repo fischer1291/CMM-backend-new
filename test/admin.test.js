@@ -261,9 +261,11 @@ test("suspend: offline, signed out, no sign-in until lifted", async () => {
   assert.equal(suspended.isAvailable, false);
   assert.ok(suspended.suspendedUntil > new Date(Date.now() + 6 * 24 * 3600 * 1000));
   await request(ctx.app).get("/me").set("Authorization", `Bearer ${anna.token}`).expect(401);
-  const start = await request(ctx.app).post("/verify/start").send({ phone: ANNA }).expect(403);
-  assert.match(start.body.error, /gesperrt/);
-  await request(ctx.app).post("/verify/check").send({ phone: ANNA, code: fakes.approvedCode }).expect(403);
+  // The code still goes out (the reason comes after it), the sign-in does not
+  await request(ctx.app).post("/verify/start").send({ phone: ANNA }).expect(200);
+  const check = await request(ctx.app).post("/verify/check").send({ phone: ANNA, code: fakes.approvedCode }).expect(403);
+  assert.match(check.body.error, /gesperrt \(Grund: Spam\)/);
+  assert.equal(check.body.token, undefined);
 
   await request(ctx.app).post(`/admin/users/${anna.id}/unsuspend`).set(admin(cookie)).expect(200);
   await new Promise((r) => setTimeout(r, 1100));
@@ -316,14 +318,14 @@ test("reports: queue with context; hide the moment settles all its reports; susp
   assert.equal(first.reporter.phone, "+49 ••• 222");
 
   await request(ctx.app).post(`/admin/reports/${r1._id}/resolve`).set(admin(cookie)).send({ action: "nope" }).expect(400);
-  const hidden = await request(ctx.app).post(`/admin/reports/${r1._id}/resolve`).set(admin(cookie)).send({ action: "hide_moment" }).expect(200);
+  const hidden = await request(ctx.app).post(`/admin/reports/${r1._id}/resolve`).set(admin(cookie)).send({ action: "hide_moment", note: "Meldung wegen unangemessener Inhalte" }).expect(200);
   assert.equal(hidden.body.settled, 2);
   assert.equal((await CallMoment.findById(moment._id)).hidden, true);
   await request(ctx.app).post(`/admin/reports/${r1._id}/resolve`).set(admin(cookie)).send({ action: "dismiss" }).expect(409);
 
   await Admin.updateOne({ email: EMAIL }, { role: "support" });
   await request(ctx.app).post(`/admin/reports/${r3._id}/resolve`).set(admin(cookie)).send({ action: "ban" }).expect(403);
-  await request(ctx.app).post(`/admin/reports/${r3._id}/resolve`).set(admin(cookie)).send({ action: "suspend", days: 3 }).expect(200);
+  await request(ctx.app).post(`/admin/reports/${r3._id}/resolve`).set(admin(cookie)).send({ action: "suspend", days: 3, note: "Meldung wegen Belästigung" }).expect(200);
   assert.ok((await User.findOne({ phone: ANNA })).suspendedUntil > new Date());
   const resolved = await request(ctx.app).get("/admin/reports?status=resolved").set("Cookie", cookie).expect(200);
   assert.deepEqual(resolved.body.reports.map((r) => r.resolution).sort(), ["hide_moment", "hide_moment", "suspend"]);
@@ -481,14 +483,17 @@ test("moments: list with filters and report counts; hide, unhide, delete settle 
   const reported = await request(ctx.app).get("/admin/moments?filter=reported").set("Cookie", cookie).expect(200);
   assert.deepEqual(reported.body.moments.map((m) => m.note), ["Eins"]);
 
-  const hide = await request(ctx.app).post(`/admin/moments/${m1._id}/hide`).set(admin(cookie)).expect(200);
+  // A reason is required: the author gets it as the statement of reasons (plan 2.7)
+  await request(ctx.app).post(`/admin/moments/${m1._id}/hide`).set(admin(cookie)).send({ reason: "  " }).expect(400);
+  const hide = await request(ctx.app).post(`/admin/moments/${m1._id}/hide`).set(admin(cookie)).send({ reason: "Nacktbild" }).expect(200);
   assert.equal(hide.body.settled, 1);
   assert.equal((await Report.findOne({ momentId: m1._id })).resolution, "hide_moment");
   assert.deepEqual((await request(ctx.app).get("/admin/moments?filter=hidden").set("Cookie", cookie)).body.moments.map((m) => m.note), ["Eins"]);
   await request(ctx.app).post(`/admin/moments/${m1._id}/unhide`).set(admin(cookie)).expect(200);
   assert.equal((await CallMoment.findById(m1._id)).hidden, false);
 
-  await request(ctx.app).post(`/admin/moments/${m2._id}/delete`).set(admin(cookie)).expect(200);
+  await request(ctx.app).post(`/admin/moments/${m2._id}/delete`).set(admin(cookie)).expect(400);
+  await request(ctx.app).post(`/admin/moments/${m2._id}/delete`).set(admin(cookie)).send({ reason: "Fremde Person im Bild" }).expect(200);
   assert.equal(await CallMoment.countDocuments({ _id: m2._id }), 0);
   const byUser = await request(ctx.app).get(`/admin/moments?user=${(await User.findOne({ phone: BEN }))._id}`).set("Cookie", cookie).expect(200);
   assert.equal(byUser.body.moments.length, 1);

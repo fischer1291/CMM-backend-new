@@ -122,6 +122,8 @@ function createApp({ ringTimeoutMs } = {}) {
   app.use(require("./routes/adminCampaigns")());
   // The weekly report and its Monday review (plan 2.11)
   app.use(require("./routes/adminWeekly")());
+  // The launch gate checklist (plan 2.7)
+  app.use(require("./routes/adminLaunch")());
   const marketingRoutes = require("./routes/marketing");
   app.use(marketingRoutes.adminRoutes());
   // The daily marketing agent (GitHub Action), with its own key
@@ -142,6 +144,8 @@ function createApp({ ringTimeoutMs } = {}) {
   app.use(waitlistRoutes.publicRoutes());
   // The invite link's visit counter: opened in the browser, no account
   app.use(require("./routes/invites").publicRoutes());
+  // Reports from people without an account (wannayap.app/melden, plan 2.7)
+  app.use(require("./routes/support").publicRoutes());
 
   // Everything below knows the requesting user (req.auth) or is legacy.
   // Exception: the invite link preview (/circles/code/:code) is public.

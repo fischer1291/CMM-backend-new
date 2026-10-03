@@ -27,7 +27,6 @@ const { INTEREST } = require("./plus");
 const { notify } = require("../lib/notify");
 const { countGiftDays } = require("../lib/referral");
 const moderation = require("../lib/moderation");
-const { deleteMoment } = require("../lib/moments");
 const { maskPhone } = moderation;
 const { shiftDateKey } = require("../lib/localTime");
 const {
@@ -734,6 +733,10 @@ module.exports = (io) => {
     res.json({ success: true });
   });
 
+  // A moderation reason from the console: required where the person gets a
+  // statement of reasons (suspend, hide or delete a moment; plan 2.7)
+  const reasonOf = (req) => (typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, moderation.MAX_REASON) : "");
+
   router.post("/admin/users/:id/suspend", requireAdmin("support"), async (req, res) => {
     const user = await findUser(req, res);
     if (!user) return;
@@ -741,8 +744,11 @@ module.exports = (io) => {
     if (!Number.isFinite(days) || days < 1 || days > moderation.MAX_SUSPEND_DAYS) {
       return res.status(400).json({ success: false, error: "invalid_days" });
     }
-    const until = await moderation.suspend(user.phone, { days, reason: req.body?.reason }, io);
-    await audit(req, "user_suspended", { target: String(user._id), meta: { days, reason: String(req.body?.reason || "").slice(0, 300) } });
+    // The person reads it in the statement of reasons (lib/moderation.js)
+    const reason = reasonOf(req);
+    if (!reason) return res.status(400).json({ success: false, error: "reason_required" });
+    const until = await moderation.suspend(user.phone, { days, reason, by: req.admin.email }, io);
+    await audit(req, "user_suspended", { target: String(user._id), meta: { days, reason } });
     res.json({ success: true, suspendedUntil: until });
   });
 
@@ -816,6 +822,12 @@ module.exports = (io) => {
     if (action === "ban" && req.admin.role !== "owner") return res.status(403).json({ success: false, error: "forbidden" });
     if (action === "suspend" && !(Number(days) >= 1 && Number(days) <= moderation.MAX_SUSPEND_DAYS)) {
       return res.status(400).json({ success: false, error: "invalid_days" });
+    }
+    // The note is the reason the person affected reads in the statement of
+    // reasons (plan 2.7), so it is required wherever one is written; a ban
+    // writes none (the account is gone) and keeps the report's reason
+    if (["hide_moment", "delete_moment", "suspend"].includes(action) && !String(note || "").trim()) {
+      return res.status(400).json({ success: false, error: "reason_required" });
     }
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ success: false, error: "invalid_id" });
     const report = await Report.findById(req.params.id);
@@ -985,43 +997,67 @@ module.exports = (io) => {
       { status: "resolved", resolution, resolvedBy: admin.email, resolvedAt: new Date() },
     ).then((r) => r.modifiedCount);
 
+  // Hide and delete write the author a statement of reasons (lib/moderation.js)
   router.post("/admin/moments/:id/hide", requireAdmin("support"), async (req, res) => {
+    const reason = reasonOf(req);
+    if (!reason) return res.status(400).json({ success: false, error: "reason_required" });
     const moment = await findMoment(req, res);
     if (!moment) return;
-    await CallMoment.updateOne({ _id: moment._id }, { hidden: true });
+    // `told`: false when the author already has a statement for this hiding
+    const told = await moderation.hideMoment(moment, { reason, by: req.admin.email }, io);
     const settled = await settleReports(moment._id, "hide_moment", req.admin);
-    await audit(req, "moment_hidden", { target: String(moment._id), meta: { settled } });
-    res.json({ success: true, settled });
+    await audit(req, "moment_hidden", { target: String(moment._id), meta: { settled, reason, told } });
+    res.json({ success: true, settled, told });
   });
 
   router.post("/admin/moments/:id/unhide", requireAdmin("support"), async (req, res) => {
     const moment = await findMoment(req, res);
     if (!moment) return;
-    await CallMoment.updateOne({ _id: moment._id }, { hidden: false });
+    await moderation.unhideMoment(moment);
     await audit(req, "moment_unhidden", { target: String(moment._id) });
     res.json({ success: true });
   });
 
   // Deletes the picture at Cloudinary too
   router.post("/admin/moments/:id/delete", requireAdmin("support"), async (req, res) => {
+    const reason = reasonOf(req);
+    if (!reason) return res.status(400).json({ success: false, error: "reason_required" });
     const moment = await findMoment(req, res);
     if (!moment) return;
     const settled = await settleReports(moment._id, "delete_moment", req.admin);
-    await audit(req, "moment_deleted", { target: String(moment._id), meta: { author: maskPhone(moment.userPhone), settled } });
-    await deleteMoment(moment);
+    await audit(req, "moment_deleted", { target: String(moment._id), meta: { author: maskPhone(moment.userPhone), settled, reason } });
+    await moderation.removeMoment(moment, { reason, by: req.admin.email }, io);
     res.json({ success: true, settled });
   });
 
   // --- Support tickets ---------------------------------------------------------
 
   const ticketView = async (t, full = false) => {
-    const u = await User.findOne({ phone: t.phone }, { name: 1, avatarUrl: 1, app: 1 }).lean();
+    // A public report (plan 2.7) has no account behind it
+    const u = t.phone ? await User.findOne({ phone: t.phone }, { name: 1, avatarUrl: 1, app: 1 }).lean() : null;
     const last = t.messages[t.messages.length - 1];
+    const publicReport = t.category === "report";
     return {
       id: String(t._id),
       category: t.category,
       status: t.status,
-      user: u ? { id: String(u._id), name: u.name || "", avatarUrl: u.avatarUrl || null, phone: maskPhone(t.phone) } : { id: null, name: "Gelöscht", phone: maskPhone(t.phone) },
+      user: publicReport
+        ? { id: null, name: "Meldung ohne Konto", avatarUrl: null, phone: null }
+        : u ? { id: String(u._id), name: u.name || "", avatarUrl: u.avatarUrl || null, phone: maskPhone(t.phone) } : { id: null, name: "Gelöscht", phone: maskPhone(t.phone) },
+      // Public reports: the reference the reporter got, the reported person
+      // (masked; with the account when the number has one) and, in the full
+      // view, the e-mail for questions
+      reference: publicReport ? referenceOf(t._id) : undefined,
+      report: publicReport
+        ? {
+            category: t.report?.category || null,
+            momentHint: t.report?.momentHint || null,
+            reported: t.report?.reportedPhone ? await reportedPerson(t.report.reportedPhone) : null,
+            hasEmail: !!t.email,
+            email: full ? t.email || null : undefined,
+          }
+        : undefined,
+      moderation: t.category === "moderation" ? { action: t.moderation?.action || null, until: t.moderation?.until || null } : undefined,
       app: t.app || null,
       preview: last ? last.text.slice(0, 140) : "",
       // "auto": the automatic outage answer (routes/support.js), no person has answered yet
@@ -1032,6 +1068,12 @@ module.exports = (io) => {
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
     };
+  };
+
+  const { referenceOf } = require("./support");
+  const reportedPerson = async (phone) => {
+    const u = await User.findOne({ phone }, { name: 1 }).lean();
+    return u ? { id: String(u._id), name: u.name || "", phone: maskPhone(phone) } : { id: null, name: "Kein Konto", phone: maskPhone(phone) };
   };
 
   router.get("/admin/tickets", requireAdmin("support"), async (req, res) => {
@@ -1072,10 +1114,25 @@ module.exports = (io) => {
     ticket.unreadByUser = true;
     ticket.updatedAt = new Date();
     await ticket.save();
-    await audit(req, "ticket_reply", { target: String(ticket._id), meta: { close: !!req.body?.close } });
-    io?.to(`user:${ticket.phone}`).emit("supportReply", { id: String(ticket._id) });
-    await notify(ticket.phone, "support_reply", {}).catch(() => {});
-    res.json({ success: true, ticket: await ticketView(ticket.toObject(), true) });
+    // A public report has no app to answer in: the answer goes by mail when
+    // the reporter left an address (plan 2.7), otherwise it is a note only
+    let mailed;
+    if (ticket.phone) {
+      io?.to(`user:${ticket.phone}`).emit("supportReply", { id: String(ticket._id) });
+      await notify(ticket.phone, "support_reply", {}).catch(() => {});
+    } else if (ticket.email) {
+      mailed = await mailer
+        .sendMail({ to: ticket.email, subject: `Deine Meldung bei Wanna yap? (${referenceOf(ticket._id)})`, text: `${text}\n\nDein Wanna-yap?-Team\n\nDu hast diese Mail bekommen, weil du uns über wannayap.app/melden etwas gemeldet und diese Adresse für Rückfragen angegeben hast.` })
+        .then(() => true)
+        .catch((err) => {
+          console.error("❌ report reply mail:", err.reason || err.message);
+          return false;
+        });
+    } else {
+      mailed = false;
+    }
+    await audit(req, "ticket_reply", { target: String(ticket._id), meta: { close: !!req.body?.close, ...(mailed !== undefined ? { mailed } : {}) } });
+    res.json({ success: true, ticket: await ticketView(ticket.toObject(), true), ...(mailed !== undefined ? { mailed } : {}) });
   });
 
   router.post("/admin/tickets/:id/status", requireAdmin("support"), async (req, res) => {
@@ -1088,7 +1145,7 @@ module.exports = (io) => {
     await ticket.save();
     await audit(req, `ticket_${status}`, { target: String(ticket._id) });
     // Open apps show the new state right away
-    io?.to(`user:${ticket.phone}`).emit("supportReply", { id: String(ticket._id), status });
+    if (ticket.phone) io?.to(`user:${ticket.phone}`).emit("supportReply", { id: String(ticket._id), status });
     res.json({ success: true });
   });
 

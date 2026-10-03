@@ -29,6 +29,7 @@ const ERRORS = {
   invalid_role: 'Bitte eine Rolle wählen.',
   locked: 'Zu viele Versuche. Bitte in 15 Minuten erneut versuchen.',
   nothing_to_post: 'Kein verbundener Kanal, auf dem das Video noch fehlt. Verbinden unter Freigabe → Kanäle.',
+  reason_required: 'Bitte einen Grund angeben: Die Person bekommt ihn als Begründung (DSA) und kann widersprechen.',
 };
 const message = (err) => ERRORS[err.code] || (err.status === 429 ? ERRORS.locked : 'Das hat nicht geklappt. Bitte erneut versuchen.');
 
@@ -669,7 +670,7 @@ function UserDetail({ id, role, onBack, onChanged, onMoments }) {
       if (key === 'ban' || key === 'delete') return onChanged();
       load();
     } catch (err) {
-      setFlash(`Fehler: ${err.code || err.message}`);
+      setFlash(`Fehler: ${ERRORS[err.code] || err.code || err.message}`);
     } finally {
       setBusy(null);
     }
@@ -748,8 +749,8 @@ function UserDetail({ id, role, onBack, onChanged, onMoments }) {
           ? html`<button class="btn small ghost" disabled=${busy} onClick=${() => act('unsuspend', '/unsuspend', null, () => 'Sperre aufgehoben.')}>Sperre aufheben</button>`
           : html`<div class="inline">
               <select value=${days} onChange=${(e) => setDays(e.target.value)}>${['1', '3', '7', '30', '90'].map((d) => html`<option value=${d}>${d} ${d === '1' ? 'Tag' : 'Tage'}</option>`)}</select>
-              <input placeholder="Grund (intern)" value=${reason} onInput=${(e) => setReason(e.target.value)} />
-              <button class="btn small danger" disabled=${busy} onClick=${() => confirm(`${user.name || 'Konto'} für ${days} Tage sperren? Die Person wird abgemeldet.`) && act('suspend', '/suspend', { days: Number(days), reason }, (r) => `Gesperrt bis ${date(r.suspendedUntil)}.`)}>Sperren</button>
+              <input placeholder="Grund (die Person liest ihn)" maxlength="300" value=${reason} onInput=${(e) => setReason(e.target.value)} />
+              <button class="btn small danger" disabled=${busy || !reason.trim()} title=${reason.trim() ? '' : 'Erst einen Grund eintragen'} onClick=${() => confirm(`${user.name || 'Konto'} für ${days} Tage sperren? Die Person wird abgemeldet und bekommt die Begründung mit dem Grund im Support-Bereich der App.`) && act('suspend', '/suspend', { days: Number(days), reason }, (r) => `Gesperrt bis ${date(r.suspendedUntil)}. Begründung ist verschickt.`)}>Sperren</button>
             </div>`}
         ${role === 'owner' ? html`<a class="btn small ghost" href=${`/admin/users/${id}/export`} download>Daten exportieren (DSGVO)</a>` : null}
         ${role === 'owner' ? (user.plan === 'plus' && user.plus?.source !== 'store'
@@ -769,6 +770,16 @@ function UserDetail({ id, role, onBack, onChanged, onMoments }) {
 }
 
 // --- Reports -----------------------------------------------------------------------
+
+// The reason the person affected reads in the statement of reasons (plan 2.7).
+// Pre-filled with the report's category only: the reporter's own note stays
+// internal (it is on the card), it could tell who reported. Same wording as
+// lib/moderation.js REPORT_REASONS
+const REASON_FOR_PERSON = { spam: 'Spam', harassment: 'Belästigung', inappropriate: 'unangemessener Inhalte', other: 'eines Verstoßes' };
+const askReason = (r) => {
+  const text = prompt('Grund für die Person (sie bekommt ihn als Begründung und kann widersprechen; nenn nicht, wer gemeldet hat):', `Meldung wegen ${REASON_FOR_PERSON[r.reason] || 'eines Verstoßes'}`);
+  return text && text.trim() ? text.trim() : null;
+};
 
 function Reports({ role, onOpenUser, onCount }) {
   const [status, setStatus] = useState('open');
@@ -815,9 +826,9 @@ function Reports({ role, onOpenUser, onCount }) {
           ${r.status === 'open' ? html`<div class="inline" style="margin-top:12px">
             <button class="btn small ghost" disabled=${busy} onClick=${() => resolve(r, 'dismiss')}>Verwerfen</button>
             ${r.moment && !r.moment.deleted ? html`
-              <button class="btn small ghost" disabled=${busy} onClick=${() => resolve(r, 'hide_moment')}>Moment ausblenden</button>
-              <button class="btn small ghost" disabled=${busy} onClick=${() => confirm('Moment endgültig löschen?') && resolve(r, 'delete_moment')}>Moment löschen</button>` : null}
-            <button class="btn small danger" disabled=${busy} onClick=${() => { const d = prompt('Für wie viele Tage sperren?', '7'); if (d) resolve(r, 'suspend', { days: Number(d) }); }}>Sperren …</button>
+              <button class="btn small ghost" disabled=${busy} onClick=${() => { const note = askReason(r); if (note) resolve(r, 'hide_moment', { note }); }}>Moment ausblenden …</button>
+              <button class="btn small ghost" disabled=${busy} onClick=${() => { const note = confirm('Moment endgültig löschen?') && askReason(r); if (note) resolve(r, 'delete_moment', { note }); }}>Moment löschen …</button>` : null}
+            <button class="btn small danger" disabled=${busy} onClick=${() => { const d = prompt('Für wie viele Tage sperren?', '7'); const note = d && askReason(r); if (note) resolve(r, 'suspend', { days: Number(d), note }); }}>Sperren …</button>
             ${role === 'owner' ? html`<button class="btn small danger" disabled=${busy} onClick=${() => confirm(`${r.reported.name || 'Konto'} löschen und die Nummer dauerhaft sperren?`) && resolve(r, 'ban')}>Bannen</button>` : null}
           </div>` : html`<p class="note">${RESOLUTIONS[r.resolution] || 'Erledigt'} von ${r.resolvedBy || '–'} · ${dateTime(r.resolvedAt)}</p>`}
         </div>
@@ -828,7 +839,10 @@ function Reports({ role, onOpenUser, onCount }) {
 
 // --- Support tickets ---------------------------------------------------------------
 
-const CATEGORIES = { bug: 'Fehler', idea: 'Idee', account: 'Konto', other: 'Sonstiges' };
+const CATEGORIES = { bug: 'Fehler', idea: 'Idee', account: 'Konto', other: 'Sonstiges', report: 'Meldung ohne Konto', moderation: 'Begründung' };
+// Public reports (POST /reports/public, plan 2.7)
+const PUBLIC_REPORT = { harassment: 'Belästigung', illegal: 'Rechtswidrig', spam: 'Spam', other: 'Sonstiges' };
+const MEASURES = { suspend: 'Sperre', hide_moment: 'Moment ausgeblendet', delete_moment: 'Moment gelöscht' };
 const TICKET_STATUS = { open: 'Offen', answered: 'Beantwortet', closed: 'Geschlossen' };
 
 function Tickets({ openId, onOpen, onOpenUser, onCount }) {
@@ -853,7 +867,7 @@ function Tickets({ openId, onOpen, onOpenUser, onCount }) {
       <tbody>${data.tickets.map((t) => html`<tr class="click" onClick=${() => onOpen(t.id)}>
         <td style="width:44px"><${Avatar} name=${t.user.name} url=${t.user.avatarUrl} /></td>
         <td><strong>${t.user.name || t.user.phone}</strong></td>
-        <td><span class="pill">${CATEGORIES[t.category]}</span></td>
+        <td><span class=${`pill ${t.category === 'report' ? 'warn' : ''}`}>${CATEGORIES[t.category] || t.category}</span>${t.report ? html` <span class="muted">${PUBLIC_REPORT[t.report.category] || ''} · ${t.reference}</span>` : null}${t.moderation ? html` <span class="muted">${MEASURES[t.moderation.action] || ''}</span>` : null}</td>
         <td class="preview">${t.lastFrom === 'auto' ? html`<span class="muted">Automatisch: </span>` : t.lastFrom === 'support' ? html`<span class="muted">Du: </span>` : null}${t.preview}</td>
         <td class="muted">${t.app?.version ? `${t.app.version} (${t.app.build || '?'})` : '–'}</td>
         <td>${dateTime(t.updatedAt)}</td>
@@ -873,6 +887,7 @@ function Ticket({ id, onBack, onOpenUser }) {
       const d = await api(`/tickets/${id}/reply`, { method: 'POST', body: { text, close } });
       setTicket(d.ticket);
       setText('');
+      if (d.mailed === false && d.ticket.report?.email) alert('Gespeichert, aber die Mail ging nicht raus (App → Mail prüfen). Schreib der Person notfalls direkt.');
     } catch (err) {
       alert(`Fehler: ${err.code || err.message}`);
     } finally {
@@ -887,28 +902,35 @@ function Ticket({ id, onBack, onOpenUser }) {
   if (ticket === false) return html`<button class="btn small ghost" onClick=${onBack}>← Zurück</button><p class="card">Nicht gefunden.</p>`;
   if (!ticket) return html`<p class="note">Lade …</p>`;
   const app = ticket.app || {};
+  const report = ticket.report || null;
   return html`
     <button class="btn small ghost" onClick=${onBack}>← Alle Anfragen</button>
     <div class="profile">
       <${Avatar} name=${ticket.user.name} url=${ticket.user.avatarUrl} size=${56} />
       <div style="flex:1">
-        <h2>${ticket.user.name || ticket.user.phone} <span class="pill">${CATEGORIES[ticket.category]}</span> <span class="pill ${ticket.status === 'open' ? 'warn' : ''}">${TICKET_STATUS[ticket.status]}</span></h2>
-        <div class="muted">
+        <h2>${ticket.user.name || ticket.user.phone} <span class="pill">${CATEGORIES[ticket.category] || ticket.category}</span> <span class="pill ${ticket.status === 'open' ? 'warn' : ''}">${TICKET_STATUS[ticket.status]}</span></h2>
+        ${report ? html`<div class="muted">
+          Referenz ${ticket.reference} · ${PUBLIC_REPORT[report.category] || report.category}
+          · Gemeldet: ${report.reported ? (report.reported.id ? html`<a href="#" onClick=${(e) => { e.preventDefault(); onOpenUser(report.reported.id); }}>${report.reported.name || report.reported.phone}</a> (${report.reported.phone})` : `${report.reported.phone}, kein Konto`) : 'keine Nummer angegeben'}
+          ${report.momentHint ? html` · Moment: „${report.momentHint}“`: null}
+          · Rückfragen: ${report.email || 'keine Adresse'}
+        </div>` : html`<div class="muted">
+          ${ticket.moderation ? html`${MEASURES[ticket.moderation.action] || ''}${ticket.moderation.until ? ` bis ${dateTime(ticket.moderation.until)}` : ''} · ` : null}
           App ${app.version || '?'} (Build ${app.build || '?'}) · ${PLATFORM[app.platform] || app.platform || '?'} ${app.os || ''}
           ${ticket.currentApp?.version && ticket.currentApp.build !== app.build ? ` · jetzt ${ticket.currentApp.version} (${ticket.currentApp.build})` : ''}
           ${ticket.user.id ? html` · <a href="#" onClick=${(e) => { e.preventDefault(); onOpenUser(ticket.user.id); }}>Nutzerseite</a>` : null}
-        </div>
+        </div>`}
       </div>
       ${ticket.status === 'closed' ? html`<button class="btn small ghost" onClick=${() => setStatus('open')}>Wieder öffnen</button>` : html`<button class="btn small ghost" onClick=${() => setStatus('closed')}>Schließen</button>`}
     </div>
     <div class="thread">
       ${ticket.messages.map((m) => html`<div class="msg ${m.from}">
         <div>${m.text}</div>
-        <div class="note">${m.from === 'support' ? (m.by === 'auto' ? 'Automatisch (Störung)' : m.by || 'Support') : ticket.user.name || 'Nutzer'} · ${dateTime(m.at)}</div>
+        <div class="note">${m.from === 'support' ? (m.by === 'auto' ? 'Automatisch (Störung)' : m.by || 'Support') : report ? 'Meldende Person' : ticket.user.name || 'Nutzer'} · ${dateTime(m.at)}</div>
       </div>`)}
     </div>
     <div class="card reply">
-      <textarea rows="4" placeholder="Antwort schreiben … (die Person bekommt eine Push-Benachrichtigung)" value=${text} onInput=${(e) => setText(e.target.value)}></textarea>
+      <textarea rows="4" placeholder=${report ? (report.email ? `Antwort schreiben … (geht per Mail an ${report.email})` : 'Notiz schreiben … (keine Adresse: die meldende Person bekommt nichts)') : 'Antwort schreiben … (die Person bekommt eine Push-Benachrichtigung)'} value=${text} onInput=${(e) => setText(e.target.value)}></textarea>
       <div class="inline" style="justify-content:flex-end">
         <button class="btn small ghost" disabled=${busy || !text.trim()} onClick=${() => reply(true)}>Antworten & schließen</button>
         <button class="btn small" disabled=${busy || !text.trim()} onClick=${() => reply(false)}>Antworten</button>
@@ -961,7 +983,7 @@ function AppSettings({ role }) {
         // is only sent when edited here, with the state it was loaded in
         bannerLoaded: { enabled: !!c.banner?.enabled, text: c.banner?.text || '', level: c.banner?.level || 'info', until: c.banner?.until ? c.banner.until.slice(0, 16) : '' },
         flags: { ...(c.flags || {}) },
-        ops: { smsPerDay: String(c.ops?.smsPerDay ?? 100), smsPaused: !!c.ops?.smsPaused, smsRegions: (c.ops?.smsRegions || ['DE', 'AT', 'CH']).join(', '), alertPhone: c.ops?.alertPhone || '', emergencyContact: c.ops?.emergencyContact || '' },
+        ops: { smsPerDay: String(c.ops?.smsPerDay ?? 100), smsPaused: !!c.ops?.smsPaused, smsRegions: (c.ops?.smsRegions || ['DE', 'AT', 'CH']).join(', '), alertPhone: c.ops?.alertPhone || '', emergencyContact: c.ops?.emergencyContact || '', lastRestoreDrillAt: c.ops?.lastRestoreDrillAt ? c.ops.lastRestoreDrillAt.slice(0, 10) : '', lastPentestAt: c.ops?.lastPentestAt ? c.ops.lastPentestAt.slice(0, 10) : '' },
         goals: { activationPct: String(c.goals?.activationPct ?? 40), densityPct: String(c.goals?.densityPct ?? 50), giftDaysPerWeek: String(c.goals?.giftDaysPerWeek ?? 200), seedSignupsPerWeek: String(c.goals?.seedSignupsPerWeek ?? 30) },
         marketingNotes: c.marketingNotes || '',
         // Only changed prices are sent: untouched keys keep following DEFAULT_PRICES
@@ -1033,7 +1055,7 @@ function AppSettings({ role }) {
           updateUrl: form.updateUrl.trim() || null,
           ...(bannerEdited ? bannerBody(form.banner) : {}),
           flags: form.flags,
-          ops: { smsPerDay: Number(form.ops.smsPerDay), smsPaused: form.ops.smsPaused, smsRegions: form.ops.smsRegions.toUpperCase().split(/[\s,]+/).filter(Boolean), alertPhone: form.ops.alertPhone.trim() || null, emergencyContact: form.ops.emergencyContact.trim() || null, bankBalanceEurCents: bank },
+          ops: { smsPerDay: Number(form.ops.smsPerDay), smsPaused: form.ops.smsPaused, smsRegions: form.ops.smsRegions.toUpperCase().split(/[\s,]+/).filter(Boolean), alertPhone: form.ops.alertPhone.trim() || null, emergencyContact: form.ops.emergencyContact.trim() || null, bankBalanceEurCents: bank, lastRestoreDrillAt: form.ops.lastRestoreDrillAt || null, lastPentestAt: form.ops.lastPentestAt || null },
           goals: { activationPct: Number(form.goals.activationPct), densityPct: Number(form.goals.densityPct), giftDaysPerWeek: Number(form.goals.giftDaysPerWeek), seedSignupsPerWeek: Number(form.goals.seedSignupsPerWeek) },
           marketingNotes: form.marketingNotes.trim() || null,
           ...(Object.keys(prices).length ? { prices } : {}),
@@ -1043,7 +1065,7 @@ function AppSettings({ role }) {
       setFlash('Gespeichert. Offene Apps bekommen es sofort, alle anderen beim nächsten Start.');
       load();
     } catch (err) {
-      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH), Alarm-Nummer mit Ländervorwahl (+49…), Notfallkontakt als E-Mail-Adresse', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100, Geschenk-Tage und Seed-Registrierungen als ganze Zahl ab 1', invalid_marketing_notes: 'Marketing-Hinweise: höchstens 1.000 Zeichen', invalid_prices: 'Preise: Zahlen ab 0 (Freiminuten und Listenpreise ganzzahlig, Provision bis 100 %)', invalid_fixed_costs: 'Fixkosten: Name bis 60 Zeichen, Betrag in Euro (Gutschriften negativ), höchstens 50 Posten' };
+      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH), Alarm-Nummer mit Ländervorwahl (+49…), Notfallkontakt als E-Mail-Adresse, Restore-Test und Pentest als Datum (nicht in der Zukunft)', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100, Geschenk-Tage und Seed-Registrierungen als ganze Zahl ab 1', invalid_marketing_notes: 'Marketing-Hinweise: höchstens 1.000 Zeichen', invalid_prices: 'Preise: Zahlen ab 0 (Freiminuten und Listenpreise ganzzahlig, Provision bis 100 %)', invalid_fixed_costs: 'Fixkosten: Name bis 60 Zeichen, Betrag in Euro (Gutschriften negativ), höchstens 50 Posten' };
       if (err.code === 'banner_changed') return refreshBanner();
       setFlash(`Fehler: ${msg[err.code] || err.code || err.message}`);
     }
@@ -1108,6 +1130,8 @@ function AppSettings({ role }) {
         <label class="check"><input type="checkbox" checked=${form.ops.smsPaused} onChange=${(e) => set({ ops: { ...form.ops, smsPaused: e.target.checked } })} disabled=${!owner} /> Notschalter: keine SMS senden (Anmeldung pausiert)</label>
         <label class="field"><span>Alarm-SMS an (nur Stufe „error“, leer = keine)</span><input value=${owner ? form.ops.alertPhone : ''} onInput=${(e) => set({ ops: { ...form.ops, alertPhone: e.target.value } })} disabled=${!owner} placeholder=${owner ? '+49…' : (form.ops.alertPhone ? 'hinterlegt (nur Owner sieht die Nummer)' : 'keine')} inputmode="tel" /></label>
         <label class="field"><span>Notfallkontakt (E-Mail; bekommt eine Mail, wenn 7 Tage kein Owner quittiert hat)</span><input value=${owner ? form.ops.emergencyContact : ''} onInput=${(e) => set({ ops: { ...form.ops, emergencyContact: e.target.value } })} disabled=${!owner} placeholder=${owner ? 'vertrauensperson@…' : (form.ops.emergencyContact ? 'hinterlegt (nur Owner sieht die Adresse)' : 'keiner')} type="email" /></label>
+        <label class="field"><span>Letzter Restore-Test (Launch-Gate: jünger als 90 Tage; Ablauf in CMM/docs/RUNBOOK.md)</span><input type="date" value=${form.ops.lastRestoreDrillAt} onInput=${(e) => set({ ops: { ...form.ops, lastRestoreDrillAt: e.target.value } })} disabled=${!owner} /></label>
+        <label class="field"><span>Letzter Pentest (Launch-Gate: jünger als 365 Tage)</span><input type="date" value=${form.ops.lastPentestAt} onInput=${(e) => set({ ops: { ...form.ops, lastPentestAt: e.target.value } })} disabled=${!owner} /></label>
         ${data.config.ops?.lastBackupAt ? html`<p class="note" style="margin:0">Letztes Backup: ${new Date(data.config.ops.lastBackupAt).toLocaleString('de-DE')}${data.config.ops.lastBackupBytes ? ` (${Math.round(data.config.ops.lastBackupBytes / 1048576)} MB)` : ''}</p>` : null}
       </div>
       <div class="card">
@@ -1180,9 +1204,15 @@ function Moments({ onOpenUser, userId, userName, onClearUser }) {
 
   const act = async (m, action) => {
     if (action === 'delete' && !confirm('Moment endgültig löschen? Das Bild wird auch bei Cloudinary gelöscht.')) return;
+    // Hide and delete send the author a statement of reasons (plan 2.7)
+    let reason;
+    if (action !== 'unhide') {
+      reason = prompt('Grund für die Person, die den Moment geteilt hat (sie bekommt ihn als Begründung und kann widersprechen):', '');
+      if (!reason || !reason.trim()) return;
+    }
     setBusy(m.id);
     try {
-      await api(`/moments/${m.id}/${action}`, { method: 'POST' });
+      await api(`/moments/${m.id}/${action}`, { method: 'POST', body: reason ? { reason: reason.trim().slice(0, 300) } : undefined });
       load();
     } catch (err) {
       alert(`Fehler: ${err.code || err.message}`);
@@ -1967,7 +1997,7 @@ function BudgetCard({ owner }) {
       <button class="btn small" onClick=${save}>Speichern</button><button class="btn small ghost" onClick=${() => setEdit(null)}>Abbrechen</button>
     </div>` : null}
     ${error ? html`<p class="error" style="margin:8px 0 0">${error}</p>` : null}
-    <p class="note" style="margin:8px 0 0">Vor jedem Aufruf (Claude, Veo, Bilder) reserviert der Agent den Betrag; was nicht mehr ins Budget passt, lässt er aus. Diese Woche: Claude ${euro(data.weekByProvider.anthropic || 0)}, Google ${euro(data.weekByProvider.google || 0)}.</p>
+    <p class="note" style="margin:8px 0 0">Vor jedem Aufruf (Claude, Veo, Bilder) reserviert der Agent den Betrag; was nicht mehr ins Budget passt, lässt er aus. Diese Woche: Claude ${euro(data.weekByProvider.anthropic || 0)}, Google ${euro(data.weekByProvider.google || 0)}${data.weekByProvider.media ? `, Media ${euro(data.weekByProvider.media)}` : ''}. Bezahlte Reichweite („Media“) bucht erst, wenn das Launch-Gate grün ist (Tab Gate).</p>
     <p class="note" style="margin:8px 0 0">KI-Kosten je gepostetes Video (30 Tage): <b>${agent ? euro(agent.aiCostPerPostedVideoEur) : '–'}</b>. Kein höheres KI-Budget, bevor die Rückkopplung (Views und Aktivierung je Video) ein paar Wochen läuft.</p>
   </div>`;
 }
@@ -2279,7 +2309,7 @@ const NOTIFY_LABELS = {
   approvals: ['Neue Videos zur Freigabe', 'Wenn der Marketing-Agent Videos vorbereitet hat'],
   posting: ['Posten', 'Online auf Instagram oder TikTok, TikTok-Entwurf wartet, Fehler'],
   support: ['Support', 'Neue Anfragen und Antworten aus der App'],
-  reports: ['Meldungen', 'Wenn jemand in der App etwas meldet'],
+  reports: ['Meldungen', 'Wenn jemand in der App oder auf wannayap.app/melden etwas meldet'],
   daily: ['Tageszahlen', 'Neue Nutzer, aktive Nutzer, Gespräche, Website, Warteliste'],
   alerts: ['Störungen', 'Wenn etwas kaputt ist, z. B. Bestätigungsmails nicht rausgehen'],
   weekly: ['Wochenreport', 'Montags ab 8 Uhr: die letzte Woche in Zahlen, zum Quittieren mit Stunden Betrieb'],
@@ -2629,6 +2659,66 @@ const readRoute = () => {
   return { tab: tab || 'dashboard', id: id || null };
 };
 
+// --- Launch gate (plan 2.7) ------------------------------------------------------------
+
+/**
+ * The one checklist before the first euro of paid reach (lib/launchChecklist.js):
+ * automatic ticks from what the backend knows, manual ticks by owners with a
+ * note. Paid reach (MarketingSpend "media") is refused until all are green.
+ */
+function Gate({ role }) {
+  const [data, setData] = useState(null);
+  const [notes, setNotes] = useState({});
+  const [busy, setBusy] = useState(null);
+  const [flash, setFlash] = useState(null);
+  const owner = role === 'owner';
+  const load = useCallback(() => api('/launch-checklist').then(setData).catch(() => setData(false)), []);
+  useEffect(() => { load(); }, [load]);
+
+  const tick = async (item, done) => {
+    setBusy(item.key);
+    setFlash(null);
+    try {
+      const note = notes[item.key] ?? item.note ?? '';
+      setData(await api(`/launch-checklist/${item.key}`, { method: 'PUT', body: { done, note: note.trim() || null } }));
+      setNotes({ ...notes, [item.key]: undefined });
+    } catch (err) {
+      setFlash(`Fehler: ${err.code === 'invalid_item' ? 'Notiz höchstens 300 Zeichen' : err.code || err.message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (data === false) return html`<div class="card">Konnte nicht geladen werden.</div>`;
+  if (!data) return html`<p class="note">Lade …</p>`;
+  const open = data.items.filter((i) => !i.done).length;
+  const row = (i) => html`<div class="kv" style="align-items:flex-start;gap:12px">
+    <span style="flex:1;min-width:0">
+      <b class=${i.done ? 'good' : 'bad'}>${i.done ? '●' : '○'}</b> <strong>${i.label}</strong>
+      <div class="note" style="margin:2px 0 0">${i.detail || ''}</div>
+      ${i.kind === 'manual' && (i.at || i.note) ? html`<div class="note" style="margin:2px 0 0">${i.done ? 'Abgehakt' : 'Zurückgenommen'} ${date(i.at)}${i.by ? ` von ${i.by}` : ''}${i.note ? ` · „${i.note}“` : ''}</div>` : null}
+      ${i.kind === 'manual' && owner ? html`<div class="inline" style="margin-top:6px">
+        <input placeholder="Notiz (z. B. Vertragsnummer, Datum)" maxlength="300" style="flex:1" value=${notes[i.key] ?? i.note ?? ''} onInput=${(e) => setNotes({ ...notes, [i.key]: e.target.value })} />
+        ${i.done
+          ? html`<button class="btn small ghost" disabled=${busy} onClick=${() => tick(i, false)}>Zurücknehmen</button>`
+          : html`<button class="btn small" disabled=${busy} onClick=${() => tick(i, true)}>Abhaken</button>`}
+      </div>` : null}
+    </span>
+    <span>${i.kind === 'auto' ? html`<span class="pill muted-pill">automatisch</span>` : html`<span class=${`pill ${i.done ? 'on' : 'todo'}`}>${i.done ? 'erledigt' : 'offen'}</span>`}</span>
+  </div>`;
+  return html`
+    ${flash ? html`<div class="flash">${flash}</div>` : null}
+    <div class="card">
+      <div class="label">Launch-Gate</div>
+      <p style="margin:6px 0"><b class=${data.complete ? 'good' : 'bad'}>${data.complete ? 'Alles grün: bezahlte Reichweite ist freigegeben.' : `${open} von ${data.items.length} Punkten offen.`}</b></p>
+      <p class="note" style="margin:0">Vor dem ersten Media-Euro muss alles grün sein. Solange ein Punkt offen ist, lehnt das Marketing-Budget Buchungen für „Media“ ab (Claude und Google laufen weiter). Restore-Test und Pentest trägst du unter App → Betrieb ein.</p>
+    </div>
+    <div class="section">Automatisch</div>
+    <div class="card">${data.items.filter((i) => i.kind === 'auto').map(row)}</div>
+    <div class="section">Von Hand ${owner ? null : html`<span class="note">(nur Owner haken ab)</span>`}</div>
+    <div class="card">${data.items.filter((i) => i.kind === 'manual').map(row)}</div>`;
+}
+
 function App() {
   const [state, setState] = useState({ loading: true });
   const [route, setRoute] = useState(readRoute);
@@ -2709,7 +2799,7 @@ function App() {
   }
 
   const role = state.admin.role;
-  const tabs = ['dashboard', 'weekly', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'campaigns', 'approvals', 'app', ...(role === 'owner' ? ['audit', 'team'] : []), 'notify'];
+  const tabs = ['dashboard', 'weekly', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'campaigns', 'approvals', 'app', 'gate', ...(role === 'owner' ? ['audit', 'team'] : []), 'notify'];
   const tab = tabs.includes(route.tab) ? route.tab : 'dashboard';
   const nav = (next, id = null) => {
     const hash = id ? `#${next}/${encodeURIComponent(id)}` : `#${next}`;
@@ -2737,6 +2827,8 @@ function App() {
     body = html`<${Tickets} openId=${tab === 'support' ? route.id : null} onOpen=${(id) => nav('support', id)} onOpenUser=${openUser} onCount=${setOpenTickets} />`;
   } else if (tab === 'app') {
     body = html`<${AppSettings} role=${role} />`;
+  } else if (tab === 'gate') {
+    body = html`<${Gate} role=${role} />`;
   } else if (tab === 'audit') {
     body = html`<${Audit} />`;
   } else if (tab === 'team') {
@@ -2770,6 +2862,7 @@ function App() {
         <button class=${tab === 'campaigns' ? 'on' : ''} onClick=${() => go('campaigns')}>Kampagnen</button>
         <button class=${tab === 'approvals' ? 'on' : ''} onClick=${() => go('approvals')}>Freigabe${openApprovals ? html` <span class="count">${openApprovals}</span>` : null}</button>
         <button class=${tab === 'app' ? 'on' : ''} onClick=${() => go('app')}>App</button>
+        <button class=${tab === 'gate' ? 'on' : ''} onClick=${() => go('gate')}>Gate</button>
         ${role === 'owner' ? html`<button class=${tab === 'audit' ? 'on' : ''} onClick=${() => go('audit')}>Protokoll</button>
         <button class=${tab === 'team' ? 'on' : ''} onClick=${() => go('team')}>Team</button>` : null}
       </div>

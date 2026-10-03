@@ -6,7 +6,8 @@
  * one GET /admin/waitlist/export (routes/admin.js) started with, so Excel
  * and Numbers open the files without an import dialog. Nothing here carries
  * a phone number or a message text: the plus export names users by their
- * id, the support export counts messages instead of quoting them.
+ * id, the support export counts messages instead of quoting them (and
+ * leaves out a public report's e-mail, reported number and hint, plan 2.7).
  */
 const express = require("express");
 const MetricsDaily = require("../models/MetricsDaily");
@@ -89,7 +90,7 @@ const EXPORTS = {
   support: {
     header: ["id", "kategorie", "status", "eroeffnet", "aktualisiert", "nachrichten", "von_nutzer", "von_support", "letzte_von", "letzte_am", "app_version", "app_build", "plattform", "os"],
     async rows() {
-      const tickets = await SupportTicket.find({}, { phone: 0, "messages.text": 0 }).sort({ createdAt: 1 }).lean();
+      const tickets = await SupportTicket.find({}, { phone: 0, email: 0, report: 0, "messages.text": 0 }).sort({ createdAt: 1 }).lean();
       return tickets.map((t) => {
         const msgs = t.messages || [];
         const last = msgs[msgs.length - 1];
