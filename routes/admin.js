@@ -258,7 +258,7 @@ module.exports = (io) => {
 
   // --- Push to the console on the phone (lib/adminPush.js) ----------------------
   const adminPush = require("../lib/adminPush");
-  const NOTIFY_KEYS = ["approvals", "posting", "support", "reports", "daily", "alerts"];
+  const NOTIFY_KEYS = ["approvals", "posting", "support", "reports", "daily", "alerts", "weekly"];
   const pushView = async (admin) => ({
     publicKey: (await adminPush.vapid()).publicKey,
     // Only what this role gets at all
@@ -284,7 +284,7 @@ module.exports = (io) => {
     res.json({ success: true, ...(await pushView(req.admin)) });
   });
 
-  // PUT /admin/push/settings { approvals, posting, support, reports, daily: bool, dailyHour: 0–23 }
+  // PUT /admin/push/settings { approvals, posting, support, reports, daily, alerts, weekly: bool, dailyHour: 0–23 }
   router.put("/admin/push/settings", requireAdmin(), async (req, res) => {
     const set = {};
     for (const k of NOTIFY_KEYS) if (typeof req.body?.[k] === "boolean") set[`notify.${k}`] = req.body[k];

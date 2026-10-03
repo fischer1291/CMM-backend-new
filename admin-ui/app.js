@@ -959,7 +959,8 @@ function AppSettings({ role }) {
         banner: { enabled: !!c.banner?.enabled, text: c.banner?.text || '', level: c.banner?.level || 'info', until: c.banner?.until ? c.banner.until.slice(0, 16) : '' },
         flags: { ...(c.flags || {}) },
         ops: { smsPerDay: String(c.ops?.smsPerDay ?? 100), smsPaused: !!c.ops?.smsPaused, smsRegions: (c.ops?.smsRegions || ['DE', 'AT', 'CH']).join(', '), alertPhone: c.ops?.alertPhone || '', emergencyContact: c.ops?.emergencyContact || '' },
-        goals: { activationPct: String(c.goals?.activationPct ?? 40), densityPct: String(c.goals?.densityPct ?? 50), giftDaysPerWeek: String(c.goals?.giftDaysPerWeek ?? 200) },
+        goals: { activationPct: String(c.goals?.activationPct ?? 40), densityPct: String(c.goals?.densityPct ?? 50), giftDaysPerWeek: String(c.goals?.giftDaysPerWeek ?? 200), seedSignupsPerWeek: String(c.goals?.seedSignupsPerWeek ?? 30) },
+        marketingNotes: c.marketingNotes || '',
         // Only changed prices are sent: untouched keys keep following DEFAULT_PRICES
         prices,
         pricesLoaded: prices,
@@ -1007,7 +1008,8 @@ function AppSettings({ role }) {
           banner: { ...form.banner, until: form.banner.until ? new Date(form.banner.until).toISOString() : null },
           flags: form.flags,
           ops: { smsPerDay: Number(form.ops.smsPerDay), smsPaused: form.ops.smsPaused, smsRegions: form.ops.smsRegions.toUpperCase().split(/[\s,]+/).filter(Boolean), alertPhone: form.ops.alertPhone.trim() || null, emergencyContact: form.ops.emergencyContact.trim() || null, bankBalanceEurCents: bank },
-          goals: { activationPct: Number(form.goals.activationPct), densityPct: Number(form.goals.densityPct), giftDaysPerWeek: Number(form.goals.giftDaysPerWeek) },
+          goals: { activationPct: Number(form.goals.activationPct), densityPct: Number(form.goals.densityPct), giftDaysPerWeek: Number(form.goals.giftDaysPerWeek), seedSignupsPerWeek: Number(form.goals.seedSignupsPerWeek) },
+          marketingNotes: form.marketingNotes.trim() || null,
           ...(Object.keys(prices).length ? { prices } : {}),
           fixedCosts,
         },
@@ -1015,7 +1017,7 @@ function AppSettings({ role }) {
       setFlash('Gespeichert. Offene Apps bekommen es sofort, alle anderen beim nächsten Start.');
       load();
     } catch (err) {
-      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH), Alarm-Nummer mit Ländervorwahl (+49…), Notfallkontakt als E-Mail-Adresse', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100, Geschenk-Tage als ganze Zahl ab 1', invalid_prices: 'Preise: Zahlen ab 0 (Freiminuten und Listenpreise ganzzahlig, Provision bis 100 %)', invalid_fixed_costs: 'Fixkosten: Name bis 60 Zeichen, Betrag in Euro (Gutschriften negativ), höchstens 50 Posten' };
+      const msg = { invalid_version: 'Version im Format 1.2.3', invalid_build: 'Build ist eine Zahl', invalid_url: 'Link muss mit https:// beginnen', banner_text_required: 'Banner braucht einen Text', invalid_flags: 'Flag-Namen: kleinbuchstaben_mit_unterstrich', invalid_ops: 'Betrieb: SMS pro Tag ist eine Zahl ab 1, Länder als ISO-Codes (DE, AT, CH), Alarm-Nummer mit Ländervorwahl (+49…), Notfallkontakt als E-Mail-Adresse', invalid_goals: 'Ziele: ganze Prozentzahlen von 1 bis 100, Geschenk-Tage und Seed-Registrierungen als ganze Zahl ab 1', invalid_marketing_notes: 'Marketing-Hinweise: höchstens 1.000 Zeichen', invalid_prices: 'Preise: Zahlen ab 0 (Freiminuten und Listenpreise ganzzahlig, Provision bis 100 %)', invalid_fixed_costs: 'Fixkosten: Name bis 60 Zeichen, Betrag in Euro (Gutschriften negativ), höchstens 50 Posten' };
       setFlash(`Fehler: ${msg[err.code] || err.code || err.message}`);
     }
   };
@@ -1069,7 +1071,14 @@ function AppSettings({ role }) {
         <label class="field"><span>Aktivierung in 7 Tagen, rollierend 4 Wochen (%)</span><input value=${form.goals.activationPct} onInput=${(e) => set({ goals: { ...form.goals, activationPct: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
         <label class="field"><span>Neue Nutzer mit ≥ 3 registrierten Kontakten (%)</span><input value=${form.goals.densityPct} onInput=${(e) => set({ goals: { ...form.goals, densityPct: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
         <label class="field"><span>Geschenk-Plus-Tage je Woche (Budget, Annahme; darüber Alarm gift_days)</span><input value=${form.goals.giftDaysPerWeek} onInput=${(e) => set({ goals: { ...form.goals, giftDaysPerWeek: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
+        <label class="field"><span>Seed-Cluster: Registrierungen je Woche (Annahme; Wochenreport, über die Seed-Kampagne oder ohne sie über Einladungen)</span><input value=${form.goals.seedSignupsPerWeek} onInput=${(e) => set({ goals: { ...form.goals, seedSignupsPerWeek: e.target.value.replace(/\D/g, '') } })} disabled=${!owner} inputmode="numeric" /></label>
         <p class="note" style="margin:0">Geschenkt zählt: Einladungen, Warteliste und Plus aus der Konsole mit Enddatum. Faustregel (Annahme): Geschenk-Plus unter 20 % des MRR. Der Versuch "beide bekommen 7 Tage" läuft über das Flag referral_two_sided.</p>
+      </div>
+      <div class="card">
+        <div class="label">Marketing-Hinweise für den Agenten</div>
+        <p class="note" style="margin-top:0">Aus der Wochenreview, z. B. das Hook-Thema der Woche. Der Marketing-Agent liest sie bei jedem Lauf (höchstens 1.000 Zeichen, leer = keine).</p>
+        <label class="field"><span>Hinweise</span><textarea rows="4" maxlength="1000" value=${form.marketingNotes} onInput=${(e) => set({ marketingNotes: e.target.value })} disabled=${!owner} placeholder="Hook-Thema: …"></textarea></label>
+        <p class="note" style="margin:0">${form.marketingNotes.length} / 1.000</p>
       </div>
       <div class="card">
         <div class="label">Preise</div>
@@ -2181,6 +2190,7 @@ const NOTIFY_LABELS = {
   reports: ['Meldungen', 'Wenn jemand in der App etwas meldet'],
   daily: ['Tageszahlen', 'Neue Nutzer, aktive Nutzer, Gespräche, Website, Warteliste'],
   alerts: ['Störungen', 'Wenn etwas kaputt ist, z. B. Bestätigungsmails nicht rausgehen'],
+  weekly: ['Wochenreport', 'Montags ab 8 Uhr: die letzte Woche in Zahlen, zum Quittieren mit Stunden Betrieb'],
 };
 const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
@@ -2268,6 +2278,80 @@ function Notify() {
 
 // The open page lives in the URL hash (#users/<id>, #support/<ticket>, …), so a
 // reload, the home-screen app coming back and the back button keep it.
+// --- Weekly report (plan 2.11) ------------------------------------------------------
+
+const WEEKLY_ERRORS = {
+  hours_required: 'Bitte alle drei Stundenfelder ausfüllen (0 ist erlaubt).',
+  invalid_hours: 'Stunden: Zahlen von 0 bis 80, z. B. 1,5.',
+  invalid_decisions: 'Entscheidungen: höchstens drei, je bis 300 Zeichen.',
+  invalid_week: 'Diese Woche gibt es nicht oder sie hat noch nicht begonnen.',
+};
+const HOUR_FIELDS = [['alerts', 'Alarme'], ['support', 'Support'], ['approvals', 'Freigaben']];
+const DECISION_HINTS = ['Kanal +/−', 'Hook-Thema für den Agenten', 'Budget'];
+const kwOf = (week) => (week ? `KW ${Number(week.slice(-2))}` : '');
+
+function Weekly({ role, week, onWeek }) {
+  const [data, setData] = useState(null);
+  const [form, setForm] = useState({ hours: { alerts: '', support: '', approvals: '' }, decisions: ['', '', ''] });
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    setData(null);
+    api(`/weekly${week ? `?week=${encodeURIComponent(week)}` : ''}`).then(setData).catch(() => setData(false));
+  }, [week]);
+  useEffect(load, [load]);
+
+  if (data === false) return html`<div class="card">Der Wochenreport konnte nicht geladen werden.</div>`;
+  if (!data) return html`<p class="note">Lade …</p>`;
+  const r = data.report;
+  const canAck = role === 'owner' || role === 'support';
+  const setHour = (k, v) => setForm({ ...form, hours: { ...form.hours, [k]: v.replace(/[^\d,.]/g, '') } });
+  const setDecision = (i, v) => setForm({ ...form, decisions: form.decisions.map((d, j) => (j === i ? v : d)) });
+  const ack = async () => {
+    setMsg(null);
+    if (HOUR_FIELDS.some(([k]) => form.hours[k].trim() === '')) return setMsg({ ok: false, text: WEEKLY_ERRORS.hours_required });
+    setBusy(true);
+    try {
+      await api('/weekly/ack', { method: 'POST', body: { week: r.week, hours: form.hours, decisions: form.decisions } });
+      setMsg({ ok: true, text: `${kwOf(r.week)} quittiert. Danke! Die Entscheidungen bitte zusätzlich in CMM/docs/DECISIONS.md eintragen.` });
+      setForm({ hours: { alerts: '', support: '', approvals: '' }, decisions: ['', '', ''] });
+      load();
+    } catch (err) {
+      setMsg({ ok: false, text: WEEKLY_ERRORS[err.code] || message(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return html`
+    <div class="inline" style="justify-content:space-between;margin-bottom:12px">
+      <button class="btn small ghost" onClick=${() => onWeek(data.previousWeek)}>← ${kwOf(data.previousWeek)}</button>
+      <b>${kwOf(r.week)} (${shortDay(r.from)}–${shortDay(r.to)})</b>
+      <button class="btn small ghost" disabled=${!data.nextWeek} onClick=${() => onWeek(data.nextWeek)}>${data.nextWeek ? `${kwOf(data.nextWeek)} →` : 'neueste'}</button>
+    </div>
+    ${msg ? html`<p class=${msg.ok ? 'flash' : 'error'}>${msg.text}</p>` : null}
+    <div class="card" style="margin-bottom:12px">
+      <div class="label">Wochenreport</div>
+      <pre style="white-space:pre-wrap;font:inherit;margin:0">${r.text}</pre>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="label">Quittungen</div>
+      ${data.reviews.length ? data.reviews.map((q) => html`<${Row} label=${q.email}>${dateTime(q.ackAt)} · Alarme ${q.hours.alerts} h · Support ${q.hours.support} h · Freigaben ${q.hours.approvals} h${q.decisions.length ? html`<br />${q.decisions.map((d) => html`<span class="note">• ${d}</span><br />`)}` : null}<//>`)
+        : html`<p class="note" style="margin:0">Noch niemand hat diese Woche quittiert.</p>`}
+    </div>
+    ${canAck ? html`<div class="card">
+      <div class="label">Wochenreview (30 Minuten)</div>
+      <p class="note" style="margin-top:0">Stunden Betrieb diese Woche (Pflicht, 0 ist erlaubt). Ziel: zusammen unter 5 Stunden.</p>
+      <div class="inline" style="flex-wrap:wrap;gap:8px">
+        ${HOUR_FIELDS.map(([k, label]) => html`<label class="field" style="flex:1 1 90px"><span>${label} (h)</span><input value=${form.hours[k]} inputmode="decimal" placeholder="0" onInput=${(e) => setHour(k, e.target.value)} /></label>`)}
+      </div>
+      <p class="note">Bis zu drei Entscheidungen (optional):</p>
+      ${DECISION_HINTS.map((hint, i) => html`<label class="field"><span>Entscheidung ${i + 1}</span><input value=${form.decisions[i]} maxlength="300" placeholder=${hint} onInput=${(e) => setDecision(i, e.target.value)} /></label>`)}
+      <p class="note">Entscheidungen zusätzlich in CMM/docs/DECISIONS.md eintragen. Das Hook-Thema für den Agenten gehört außerdem unter App → Marketing-Hinweise.</p>
+      <div class="inline" style="justify-content:flex-end"><button class="btn" disabled=${busy} onClick=${ack}>Quittieren</button></div>
+    </div>` : null}`;
+}
+
 // --- Campaigns (plan 2.10) -------------------------------------------------------
 
 const CHANNEL_LABELS = { tiktok: 'TikTok', instagram: 'Instagram', flyer: 'Flyer', campus: 'Campus', creator: 'Creator', press: 'Presse', other: 'Sonstiges' };
@@ -2533,7 +2617,7 @@ function App() {
   }
 
   const role = state.admin.role;
-  const tabs = ['dashboard', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'campaigns', 'approvals', 'app', ...(role === 'owner' ? ['audit', 'team'] : []), 'notify'];
+  const tabs = ['dashboard', 'weekly', ...(role !== 'viewer' ? ['users', 'reports', 'moments', 'support'] : []), 'waitlist', 'campaigns', 'approvals', 'app', ...(role === 'owner' ? ['audit', 'team'] : []), 'notify'];
   const tab = tabs.includes(route.tab) ? route.tab : 'dashboard';
   const nav = (next, id = null) => {
     const hash = id ? `#${next}/${encodeURIComponent(id)}` : `#${next}`;
@@ -2573,6 +2657,9 @@ function App() {
     body = html`<${Approvals} role=${role} onCount=${setOpenApprovals} />`;
   } else if (tab === 'notify') {
     body = html`<${Passkeys} /><${Notify} />`;
+  } else if (tab === 'weekly') {
+    // #weekly opens the last full week (the Monday push), #weekly/2026-W39 an older one
+    body = html`<${Weekly} role=${role} week=${route.id} onWeek=${(w) => nav('weekly', w)} />`;
   } else {
     body = html`<${Dashboard} onGo=${go} />`;
   }
@@ -2582,6 +2669,7 @@ function App() {
       <${Brand} />
       <div class="tabs">
         <button class=${tab === 'dashboard' ? 'on' : ''} onClick=${() => go('dashboard')}>Übersicht</button>
+        <button class=${tab === 'weekly' ? 'on' : ''} onClick=${() => go('weekly')}>Woche</button>
         ${role !== 'viewer' ? html`<button class=${tab === 'users' ? 'on' : ''} onClick=${() => go('users')}>Nutzer</button>
         <button class=${tab === 'reports' ? 'on' : ''} onClick=${() => go('reports')}>Meldungen${openReports ? html` <span class="count">${openReports}</span>` : null}</button>
         <button class=${tab === 'moments' ? 'on' : ''} onClick=${() => { setMomentsOf(null); go('moments'); }}>Moments</button>

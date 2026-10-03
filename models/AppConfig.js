@@ -19,7 +19,9 @@ const appConfigSchema = new mongoose.Schema(
     flags: { type: Map, of: Boolean, default: {} },
     // Plan limits (lib/plan.js), e.g. { free: { circles: 3 }, plus: {...} }
     limits: { type: mongoose.Schema.Types.Mixed, default: null },
-    // Cost brakes for sign-up SMS (lib/appConfig.js DEFAULT_OPS): { smsPerDay, smsPaused, smsRegions }
+    // Cost brakes for sign-up SMS (lib/appConfig.js DEFAULT_OPS): { smsPerDay, smsPaused, smsRegions };
+    // also the weekly report's markers (lib/weeklyReport.js): weeklyReportFor
+    // (ISO week last sent), weeklyReportAt, weeklyReportFirstAt
     ops: { type: mongoose.Schema.Types.Mixed, default: null },
     // Goals the numbers are judged against (lib/appConfig.js DEFAULT_GOALS): { activationPct, densityPct }
     goals: { type: mongoose.Schema.Types.Mixed, default: null },
@@ -30,6 +32,10 @@ const appConfigSchema = new mongoose.Schema(
     // Monthly fixed costs, credits as negative entries with an end date:
     // [{ service, monthlyEurCents, note, until }] (lib/economics.js)
     fixedCosts: { type: mongoose.Schema.Types.Mixed, default: null },
+    // Hints from the Monday review for the marketing agent (plan 2.11): free
+    // text up to 1000 characters, e.g. the hook topic of the week; the agent
+    // gets it as `notes` from GET /marketing/context (lib/marketing.js)
+    marketingNotes: { type: String, default: null },
     // One-off data fixes already applied (index.js migrate), e.g. { morningPush: Date }
     migrations: { type: mongoose.Schema.Types.Mixed, default: null },
     // Launch mail to the waitlist (lib/waitlist.js): { startedAt, by, finishedAt, sent, failed }

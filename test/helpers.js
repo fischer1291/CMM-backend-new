@@ -196,6 +196,8 @@ async function reset() {
   await require("../models/ArchivedAccount").syncIndexes();
   // Unique campaign slugs: POST /admin/campaigns relies on the 11000 for a taken one
   await require("../models/Campaign").syncIndexes();
+  // One review per week and admin: POST /admin/weekly/ack upserts on it
+  await require("../models/WeeklyReview").syncIndexes();
   fakes.sms.length = 0;
   fakes.expoPushes.length = 0;
   fakes.failExpo = false;

@@ -270,3 +270,25 @@ test("console: owners rewrite captions and hashtags before posting; the agent se
   await AdDraft.updateOne({ _id: id }, { status: "approved", "publish.instagram.status": "posted" });
   await request(ctx.app).put(url).set(admin(cookie)).send({ captions: { tiktok: "zu spät" } }).expect(409);
 });
+
+test("agent: the owner's notes from the Monday review reach its context (plan 2.11)", async () => {
+  const cookie = await ownerCookie();
+  const { saveConfig, MAX_MARKETING_NOTES } = require("../lib/appConfig");
+  assert.equal((await request(ctx.app).get("/marketing/context").set(AGENT).expect(200)).body.notes, null);
+
+  await request(ctx.app).put("/admin/config").set(admin(cookie)).send({ marketingNotes: "  Hook-Thema: Erstis, die sich nicht trauen anzurufen  " }).expect(200);
+  assert.equal((await request(ctx.app).get("/marketing/context").set(AGENT).expect(200)).body.notes, "Hook-Thema: Erstis, die sich nicht trauen anzurufen");
+  // The console sees them, the app never
+  assert.equal((await request(ctx.app).get("/admin/config").set(admin(cookie)).expect(200)).body.config.marketingNotes, "Hook-Thema: Erstis, die sich nicht trauen anzurufen");
+  assert.equal((await request(ctx.app).get("/app-config").expect(200)).body.marketingNotes, undefined);
+
+  assert.equal((await request(ctx.app).put("/admin/config").set(admin(cookie)).send({ marketingNotes: "x".repeat(MAX_MARKETING_NOTES + 1) }).expect(400)).body.error, "invalid_marketing_notes");
+  assert.equal((await saveConfig({ marketingNotes: 42 }, "owner@example.com")).error, "invalid_marketing_notes");
+  assert.equal((await saveConfig({ marketingNotes: "x".repeat(MAX_MARKETING_NOTES) }, "owner@example.com")).error, undefined);
+  // null or an empty text clears them
+  assert.equal((await saveConfig({ marketingNotes: "   " }, "owner@example.com")).error, undefined);
+  assert.equal((await request(ctx.app).get("/marketing/context").set(AGENT).expect(200)).body.notes, null);
+  await saveConfig({ marketingNotes: "Budget halten" }, "owner@example.com");
+  await saveConfig({ marketingNotes: null }, "owner@example.com");
+  assert.equal((await request(ctx.app).get("/marketing/context").set(AGENT).expect(200)).body.notes, null);
+});

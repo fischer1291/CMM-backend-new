@@ -221,8 +221,18 @@ async function main() {
       .catch((err) => console.error("❌ admin daily push:", err.message));
   }, 5 * 60 * 1000);
 
-  // Dead-man rule: no owner acknowledged or signed in for 7 days (lib/adminPush.js);
-  // checked hourly, sent at most once per 7 days
+  // The weekly report, Monday from 08:00 Europe/Berlin, once per week
+  // (lib/weeklyReport.js); checked every 15 minutes
+  const weeklyReport = require("./lib/weeklyReport");
+  setInterval(() => {
+    asJobLeader("weekly", () => weeklyReport.weeklyDue())
+      .then((r) => r && console.log(`🗓️  Wochenreport ${r.week}: ${r.mails} Mail(s), ${r.pushes} Push(es)`))
+      .catch((err) => console.error("❌ weekly report:", err.message));
+  }, 15 * 60 * 1000);
+
+  // Dead-man rule: no owner acknowledged or signed in for 7 days, or no owner
+  // acknowledged the weekly report for 14 days (lib/adminPush.js); checked
+  // hourly, sent at most once per 7 days per tag
   setInterval(() => {
     asJobLeader("dead-man", () => adminPush.deadManCheck())
       .then((how) => how && console.log(`🚨 Dead-man rule: ${how === "mail" ? "emergency contact mailed" : "owners pushed"}`))

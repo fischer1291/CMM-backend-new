@@ -31,8 +31,10 @@ npm start       # needs the environment below
 | `lib/lifecycle.js` | Lifecycle pushes: onboarding days 1/3/7, inactivity, weekly series, Plus ending, billing, win-back (leader job every 30 min), see Lifecycle pushes |
 | `lib/pseudonyms.js` | Keyed phone pseudonyms (`User.phoneHmac`) and their one-off migration, see Pseudonymous data |
 | `lib/sentry.js` | Error tracking: Sentry init, scrubbing, crash reports, see Error tracking (Sentry) |
+| `lib/weeklyReport.js` | The weekly report: the last full week from `MetricsDaily`, mail and push on Monday from 08:00 (leader job every 15 min), see Weekly report |
 | `routes/verify.js` | SMS sign-in, the review login, "Ist das dein Konto?" for recycled numbers (`/verify/account-check`) |
 | `routes/adminCampaigns.js` | Console tab Kampagnen: campaigns, numbers per slug, QR (`/admin/campaigns`) |
+| `routes/adminWeekly.js` | Console tab Woche: the weekly report and its review with the hours of operations (`/admin/weekly`, `/admin/weekly/ack`) |
 | `routes/webhooks.js` | Webhooks signed over the raw body: `POST /webhooks/sentry` → alert `sentry_fatal` |
 | `COMPLIANCE.md` | Record of processing per collection, processors, the privacy change process; `test/compliance.test.js` fails when a model has no row |
 
@@ -427,11 +429,15 @@ The goals they are judged against live in the app config
 (Console → App → Ziele, `AppConfig.goals`, `lib/appConfig.js`
 DEFAULT_GOALS): `activationPct` (default 40) and `densityPct` (default 50),
 whole percentages, and `giftDaysPerWeek` (default 200, an assumption, 1 to
-100,000; the gift budget, see Invite rewards), never sent to the app. The "Heute" card shows both
+100,000; the gift budget, see Invite rewards), `seedSignupsPerWeek`
+(default 30, an assumption, 1 to 100,000; the seed cluster's sign-ups per
+week, see Weekly report), never sent to the app. The "Heute" card shows both
 numbers with a traffic light, the Marketing-Budget card (Freigabe) turns red
 with "Keine bezahlte Reichweite unter 40 %" while activation is under goal
 on a sample of at least 100, and `GET /marketing/context` gives the agent
-`activation: { pct4w, sample, goalPct, density, densityGoalPct }`.
+`activation: { pct4w, sample, goalPct, density, densityGoalPct }` and the
+owner's `notes` from the weekly review (`AppConfig.marketingNotes`, null
+without; see Weekly report).
 
 The daily push to the console is a morning push: `Admin.notify.dailyHour`
 defaults to 8 (the first start after this change moves admins still on the
@@ -721,6 +727,7 @@ owners, others get `•••`). The "Heute" card lists the last alerts
 | `review_login` | warn | the App Store review demo login (`REVIEW_PHONE`/`REVIEW_CODE`, `routes/verify.js`) is on without `REVIEW_UNTIL` ("Demo-Zugang ohne Ablaufdatum aktiv"), `REVIEW_UNTIL` has passed while `REVIEW_PHONE` or `REVIEW_CODE` is still set, valid or not ("Demo-Zugang abgelaufen"), or `REVIEW_UNTIL` is no date (the login is then off) | Render → Environment: set `REVIEW_UNTIL` to the last day the review needs it (a week after submitting is plenty), or remove `REVIEW_PHONE`, `REVIEW_CODE` and `REVIEW_UNTIL` once the review is through |
 | `sentry_fatal` | error | not a rule here but `POST /webhooks/sentry` (`routes/webhooks.js`): an alert rule with the action "Send a notification via Wanna yap? Alarme" fired (`event_alert`, level `fatal` or `error`; the rules decide per project: app fatal, backend fatal and error), or, only if the integration's `issue` webhooks are on, a new issue with level `fatal` in any project (`issue`, action `created`); signed with `SENTRY_WEBHOOK_SECRET`. The text names project, level, release, short issue id and the Sentry link, never the message. Like every tag at most once an hour: a second new crash within the hour shows only in Sentry | Open the link: which build/commit, how many users. App: OTA hotfix or raise `minBuild`, pause the phased release; backend: roll back on Render to the last `api/…` tag (see Releases and deploys) |
 | `owner_silent` | warn | not a rule here but the dead-man check in `lib/adminPush.js` (see Team): no owner acknowledged the morning push or signed in for 7 days; once per 7 days | Owner: open the console. Emergency contact: `CMM/docs/EMERGENCY.md` |
+| `weekly_silent` | warn | not a rule here but the dead-man check in `lib/adminPush.js` (see Weekly report): the weekly report has gone out for at least 14 days (`AppConfig.ops.weeklyReportFirstAt`) and no active owner acknowledged one (`WeeklyReview.ackAt`) in the last 14 days; only while `owner_silent` does not hold; once per 7 days, mail to the emergency contact or push to the owners | Owner: Console → Woche, enter the hours and acknowledge (support's acknowledgements do not count). Emergency contact: ask whether everything is fine, `CMM/docs/EMERGENCY.md` |
 
 ## Team
 
@@ -762,6 +769,11 @@ else is invited (plan 1.8).
 - **Acknowledgement**: the morning push (`lib/adminPush.js` dailyDue) links
   to `#ack`; opening it makes the console call `POST /admin/daily/ack`
   (every role), which sets `Admin.lastAckAt`.
+- **Pushes** (`Admin.notify`, switchable per admin in Console → ⚙︎):
+  `approvals`, `posting` (owners), `support`, `reports` (owners, support),
+  `daily` (everyone, at `notify.dailyHour`), `alerts` (owners), `weekly`
+  (everyone, the weekly report on Monday, opens `#weekly`; see Weekly
+  report).
 - **Dead-man rule**: `adminPush.deadManCheck`, a leader job every hour. When
   no active owner acknowledged or signed in (`lastAckAt`, `lastLoginAt`)
   within 7 days: a mail to `AppConfig.ops.emergencyContact` (Console → App →
@@ -772,7 +784,81 @@ else is invited (plan 1.8).
   mail cannot go out (no `SMTP_URL`, SMTP error) the owners get the push
   instead, saying that the contact was not reached; the next mail attempt
   is 7 days later. Name a person, set the address, and tell them where
-  `EMERGENCY.md` is; create that file before you set the address.
+  `EMERGENCY.md` is; create that file before you set the address. The
+  second condition, `weekly_silent` (plan 2.11), takes the same way: see
+  Weekly report.
+
+## Weekly report
+
+Plan 2.11: one report a week instead of dashboards, then a 30-minute
+review (`lib/weeklyReport.js`, `routes/adminWeekly.js`).
+
+- **What**: `report(week)` condenses the last full week (Monday to Sunday,
+  Europe/Berlin, ISO week `YYYY-Www`) from the `MetricsDaily` snapshots and
+  the functions of `lib/metrics.js`, no second data source; a finished day
+  without a final snapshot is counted on the spot (`saveDay`, within the
+  60-day backfill). Sections: north star (`activation4w` against
+  `goals.activationPct` with its sample, density, WAU of the Sunday against
+  the Sunday before, talks), cohorts (`retention`: W1 = signed up the week
+  before and active in this one, W4 = signed up four weeks before; under 50
+  people "kleine Stichprobe"), invites (`growth.inviteVisits`,
+  `joinedViaInvite`, `users.new`, k = joinedViaInvite / new), new people by
+  source (`growth.bySource`), Plus (sums of `newPaid`, `cancelled`,
+  `expired`, `trialsStarted`, `trialsConverted`, MRR of the Sunday),
+  paywall (`plus.funnel`; under 200 views a week shown, not judged), SMS
+  per sign-up (`ops.smsStarted / users.new`), variable costs
+  (`costs.variableEurCents`, prices are assumptions), alerts whose latest
+  firing (`AlertState.lastAt`) fell into the week (an alert that fired
+  again later shows in that later week only), what waits now (open
+  tickets, those over 24 hours as in `lib/today.js`, videos for approval,
+  open reports), user research (`User.research.doneAt` in the week, goal
+  5), the seed cluster (sign-ups with `acquisition.campaign` =
+  `goals.seedCampaign` from `growth.byCampaign`, without a seed campaign
+  the sign-ups through invites, against `goals.seedSignupsPerWeek`,
+  default 30, an assumption; Console → App → Ziele) and the hours of
+  operations of the newest acknowledged week up to this one (all admins
+  added up, goal under 5 h). Returns `{ week, from, to, headline, title,
+  missingDays, sections: [{ key, title, lines, data }], text }`; `text` is
+  the plain text of the mail and the console.
+- **Sending**: leader job `weekly` every 15 minutes (`index.js`,
+  `weeklyDue`): due from Monday 08:00 Europe/Berlin (a run missed on Monday
+  catches up later that week; a fresh deploy mid-week sends the last week
+  once), once per week. `AppConfig.ops.weeklyReportFor` (the ISO week) is
+  claimed with a conditional update before anything goes out, so a second
+  run or a second leader sends nothing; `ops.weeklyReportAt` is the last,
+  `ops.weeklyReportFirstAt` the first report. A mail to every active owner
+  (`lib/mailer.js`, subject "Wanna yap? Woche <KW>: <Kernzahl>", only with
+  `SMTP_URL`) with the link `<PUBLIC_API_URL>/console/#weekly`, and the
+  console push kind `weekly` (title "Wochenreport KW <n>", `#weekly`).
+  Without an owner (fresh install) nothing is sent or claimed.
+- **Review**: `GET /admin/weekly?week=YYYY-Www` (viewer; default the last
+  full week; a future week or the running one is `400 invalid_week`)
+  returns `{ report, reviews: [{ email, hours, decisions, ackAt }],
+  previousWeek, nextWeek }` (`nextWeek` null for the newest).
+  `POST /admin/weekly/ack { week, hours: { alerts, support, approvals },
+  decisions }` (owner and support, audited as `weekly_ack`) stores one
+  `WeeklyReview` per week and admin (a second ack replaces it); the week
+  may be any past one or the running one. All three hours are required
+  (`400 hours_required`), numbers 0–80, strings with a comma work,
+  rounded to one decimal (`400 invalid_hours`); up to three decisions of
+  at most 300 characters, empty ones dropped (`400 invalid_decisions`).
+  The console tab "Woche" (`#weekly`, `#weekly/2026-W39` for an older one)
+  shows the text, the acknowledgements and the form with the placeholders
+  "Kanal +/−", "Hook-Thema für den Agenten", "Budget".
+- **Decisions**: the owner writes the decisions into
+  `CMM/docs/DECISIONS.md` by hand as well; the hook topic goes into
+  Console → App → "Marketing-Hinweise für den Agenten"
+  (`AppConfig.marketingNotes`, up to 1000 characters, `PUT /admin/config
+  { marketingNotes }`, owner; null or empty clears it), which the agent
+  reads as `notes` from `GET /marketing/context`. Never sent to the app.
+- **Dead-man** (`weekly_silent`, `lib/adminPush.js` deadManCheck, hourly):
+  the report has gone out for at least 14 days and no active owner
+  acknowledged one within the last 14 days → a mail to
+  `AppConfig.ops.emergencyContact` naming the reason, without one (or when
+  the mail fails) a push "Wochenreport seit 14 Tagen offen" (`#weekly`) to
+  the owners; once per 7 days, booked in `AlertState`. Checked only while
+  `owner_silent` does not hold, so the contact never gets two mails about
+  the same silence.
 
 ## Subscriptions (Wanna yap+)
 

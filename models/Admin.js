@@ -39,6 +39,8 @@ const adminSchema = new mongoose.Schema({
     reports: { type: Boolean, default: true },
     daily: { type: Boolean, default: true },
     alerts: { type: Boolean, default: true },
+    // The weekly report, Monday 08:00 (plan 2.11, lib/weeklyReport.js)
+    weekly: { type: Boolean, default: true },
     dailyHour: { type: Number, default: 8, min: 0, max: 23 },
   },
   // Passkeys (Face ID / Touch ID) for signing in without password and code

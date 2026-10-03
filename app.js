@@ -120,6 +120,8 @@ function createApp({ ringTimeoutMs } = {}) {
   app.use(require("./routes/adminExport")());
   // Campaigns with their numbers per slug, link generator and QR (plan 2.10)
   app.use(require("./routes/adminCampaigns")());
+  // The weekly report and its Monday review (plan 2.11)
+  app.use(require("./routes/adminWeekly")());
   const marketingRoutes = require("./routes/marketing");
   app.use(marketingRoutes.adminRoutes());
   // The daily marketing agent (GitHub Action), with its own key
